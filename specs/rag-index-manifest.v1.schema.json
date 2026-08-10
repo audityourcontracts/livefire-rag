@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/rag-index-manifest.v1.schema.json",
+  "title": "Livefire RAG index extension v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "base_index_manifest",
+    "embedding_policy_sha256",
+    "document_table_sha256",
+    "vector_store_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "livefire.rag.index/1" },
+    "base_index_manifest": {
+      "type": "string",
+      "description": "Relative path to a livefire.index/1 manifest."
+    },
+    "embedding_policy_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "document_table_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "vector_store_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "search_index_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "score_encoding": { "const": "signed_millionths" }
+  }
+}

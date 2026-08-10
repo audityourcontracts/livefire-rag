@@ -1,0 +1,80 @@
+{
+  "schema_version": "livefire.plugin/1",
+  "plugin": {
+    "id": "com.ayc.livefire-rag",
+    "version": "0.1.0",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "sdk_compatibility": {
+    "tool_protocol": "livefire.tool/1",
+    "index_builder_protocol": "livefire.index-builder/1",
+    "schema_set_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "artifacts": [
+    {
+      "component": {
+        "id": "com.ayc.livefire-rag.provider",
+        "version": "0.1.0",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "kind": "tool_provider",
+      "target": "aarch64-apple-darwin",
+      "artifact": {
+        "path": "bin/livefire-rag-provider",
+        "media_type": "application/x-mach-binary",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "bytes": 0
+      }
+    },
+    {
+      "component": {
+        "id": "com.ayc.livefire-rag.builder",
+        "version": "0.1.0",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "kind": "index_builder",
+      "target": "aarch64-apple-darwin",
+      "artifact": {
+        "path": "bin/livefire-rag-builder",
+        "media_type": "application/x-mach-binary",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "bytes": 0
+      }
+    }
+  ],
+  "entrypoints": {
+    "provider": "bin/livefire-rag-provider",
+    "builder": "bin/livefire-rag-builder"
+  },
+  "tools": [
+    {
+      "name": "rag.search",
+      "description": "Return semantic candidate pointers from a pinned OCSF vector index.",
+      "input_schema": "specs/rag-search.input.v1.schema.json",
+      "output_schema": "specs/rag-search.output.v1.schema.json",
+      "effects": ["index.read"],
+      "required_indexes": ["ocsf-event-vector-v1"]
+    },
+    {
+      "name": "rag.more_like_event",
+      "description": "Return events semantically similar to one exact indexed event.",
+      "input_schema": "specs/rag-more-like-event.input.v1.schema.json",
+      "output_schema": "specs/rag-search.output.v1.schema.json",
+      "effects": ["index.read"],
+      "required_indexes": ["ocsf-event-vector-v1"]
+    }
+  ],
+  "builders": [
+    {
+      "name": "rag.build-ocsf-event-index",
+      "index_kind": "ocsf-event-vector-v1"
+    }
+  ],
+  "permissions": {
+    "network": [],
+    "secrets": [],
+    "source_mount": "read_only_builder",
+    "index_mount": "write_only_builder_read_only_provider",
+    "scratch_bytes": 1073741824
+  }
+}

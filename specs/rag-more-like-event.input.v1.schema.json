@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/rag-more-like-event.input.v1.schema.json",
+  "title": "rag.more_like_event input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "top_k"],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "top_k": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "exclude_event_ids": { "type": "array", "items": { "type": "string" } }
+  }
+}
+

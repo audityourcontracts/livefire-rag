@@ -1,0 +1,10 @@
+.DS_Store
+target/
+indexes/
+models/
+reports/
+*.log
+.env
+.env.*
+!.env.example
+

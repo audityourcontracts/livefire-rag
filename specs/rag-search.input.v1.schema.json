@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/rag-search.input.v1.schema.json",
+  "title": "rag.search input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query", "intent", "top_k"],
+  "properties": {
+    "query": { "type": "string", "minLength": 1, "maxLength": 8192 },
+    "intent": {
+      "enum": ["discovery", "corroboration", "benign_alternative", "lead_triage"]
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_time": { "type": "string", "format": "date-time" },
+        "end_time": { "type": "string", "format": "date-time" },
+        "event_classes": { "type": "array", "items": { "type": "string" } },
+        "activities": { "type": "array", "items": { "type": "string" } },
+        "statuses": { "type": "array", "items": { "type": "string" } },
+        "source_families": { "type": "array", "items": { "type": "string" } },
+        "exclude_event_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "top_k": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "min_score_millionths": {
+      "type": "integer",
+      "minimum": -1000000,
+      "maximum": 1000000
+    }
+  }
+}

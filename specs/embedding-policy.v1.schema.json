@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-policy.v1.schema.json",
+  "title": "Livefire RAG embedding policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "projection",
+    "model",
+    "normalization",
+    "distance",
+    "chunking"
+  ],
+  "properties": {
+    "schema_version": { "const": "livefire.rag.embedding-policy/1" },
+    "projection": { "const": "ocsf_event_document.v1" },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+        "required": ["name", "revision", "sha256", "dimensions"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "dimensions": { "type": "integer", "minimum": 1 },
+        "runtime": { "type": "string", "minLength": 1 }
+      }
+    },
+    "normalization": { "enum": ["none", "l2"] },
+    "distance": { "enum": ["cosine", "dot", "euclidean"] },
+    "chunking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy"],
+      "properties": {
+        "strategy": { "const": "one_event" },
+        "max_utf8_bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "backend": { "enum": ["exact", "hnsw"] },
+    "backend_parameters": { "type": "object" }
+  }
+}
