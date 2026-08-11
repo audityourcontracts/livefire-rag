@@ -1,37 +1,71 @@
 # Standalone evaluation plan
 
-Evaluation runs through the CLI and provider protocol without the Livefire
-runner. Expected findings are stored only in the evaluation harness, never in
-projection templates or index metadata.
+Evaluation runs through the CLI and provider without the Livefire runner.
+Labels and expected findings live only in the evaluation harness.
 
-## Correctness gates
+## Snapshot and build gates
 
-- Every pointer exists in the bound snapshot and hydrates successfully.
-- Time, class, activity, status, and source-family filters have zero violations.
-- Snapshot, policy, model, and artifact digest mismatches fail before search.
-- Empty, truncated, partial, and unavailable coverage are reported honestly.
-- Repeated requests have stable ranking, tie-breaking, cursor, and result digest.
-- Forbidden raw/native sentinel fields never appear in documents, excerpts,
-  diagnostics, or errors.
+- Every source snapshot and object digest verifies before indexing.
+- Source plus rejected counts close exactly.
+- Every indexed command has one resolvable local source pointer.
+- Scores use only events strictly before the candidate and within 30 days.
+- Equal timestamps never leak into one another's history.
+- Rebuilding with identical inputs, model/runtime profile, and policy produces
+  identical projections, counts, and canonical manifests.
+- Parser/decoder limits are enforced and no command is executed.
+- Indexing succeeds after vendor credentials are revoked and endpoints blocked.
 
-## Quality measures
+## Retrieval correctness
 
-- Recall@1/5/10/20, MRR, and nDCG@k.
-- Worst-paraphrase Recall@k and rank variance.
-- Relevant-versus-benign score margin and false-candidate rate.
-- Recall broken down by source family and investigation scenario.
-- Exact-search, BM25, dense-vector, and hybrid ablations on the same projections.
+- Time, principal, host, source, and scope filters have zero violations.
+- Requested top N is honored up to eligible cardinality and contract limits.
+- Every returned pointer resolves in the bound source snapshot.
+- Stable requests have stable rankings, integer scores, tie-breaking, coverage,
+  and result digests.
+- Snapshot, model, policy, vector dimension, and object mismatches fail closed.
+- Empty, corrupt, partial, left-censored, and insufficient-history conditions are
+  distinguished.
+- The provider passes golden tests with Splunk/Panther unavailable and no vendor
+  credentials mounted.
+
+## Anomaly quality
+
+Evaluate principal and population rankings separately:
+
+- nDCG@5/10/20 and Recall@5/10/20 for labelled unusual commands;
+- rank of encoded/obfuscated PowerShell;
+- rank of anomalous process ancestry;
+- rank of new action and new target combinations;
+- rank of sensitive cloud actions by a principal without prior use;
+- benign-admin false-candidate rate;
+- cold-start and sparse-principal behavior;
+- ablation of action, target, structural, and obfuscation components.
+
+The model may request any `top_n` within the schema. Evaluation reports the full
+curve rather than promoting a fixed alert cutoff.
+
+## Semantic retrieval quality
+
+- Recall@1/5/10/20, MRR, and nDCG@20.
+- Worst-paraphrase Recall@20 and rank variance.
+- Relevant-versus-benign score margin.
+- Command-to-command similarity quality.
+- Exact token/BM25, EmbeddingGemma, Qwen3 0.6B/4B/8B, dimension, and
+  quantization ablations.
+- Exact DuckDB scan is the vector oracle; ANN Recall@20 must be at least 0.98
+  before an ANN cache is admitted.
 
 ## Operational measures
 
-- Build duration, documents/second, output size, and peak memory.
-- Query p50/p95 latency, queries/second, provider startup, and resident memory.
-- Approximate-index recall against the exact vector scorer.
+- Snapshot/export and index build duration, rows/second, bytes, and peak memory.
+- Embedding throughput for reference and LM Studio profiles.
+- Provider startup, cold/warm query p50/p95, queries/second, and resident memory.
+- Exact scan latency at realistic principal/time filters and full population.
+- Browser feasibility is measured later and is not a v1 promotion gate.
 
 ## Anti-overfit suite
 
-Hold out whole scenarios. Rename entities, shift timestamps, add benign decoys,
-change background volume, paraphrase queries, and delete relevant records. Include
-public-storage exposure, credential misuse, a compound cloud incident, benign
-near-misses, and relevant records beyond the first result page.
-
+Hold out whole hosts/principals and scenarios. Rename users/hosts/resources,
+shift timestamps, add benign decoys, vary background volume, paraphrase queries,
+and delete labelled events. Never ship evaluation answers in projection prompts,
+policies, fixtures used by developers, or index metadata.

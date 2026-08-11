@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/cli-outliers.input.v1.schema.json",
+  "title": "cli.outliers input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "comparison", "time_range", "top_n"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.cli-outliers.input/1"},
+    "comparison": {"enum": ["principal", "population", "both"]},
+    "time_range": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/time_range"},
+    "top_n": {"type": "integer", "minimum": 1, "maximum": 1000},
+    "filters": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/filters"}
+  }
+}

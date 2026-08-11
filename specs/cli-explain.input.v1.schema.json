@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/cli-explain.input.v1.schema.json",
+  "title": "cli.explain input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command_id", "comparison"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.cli-explain.input/1"},
+    "command_id": {"type": "string", "minLength": 1},
+    "comparison": {"enum": ["principal", "population", "both"]},
+    "comparisons_per_component": {"type": "integer", "minimum": 1, "maximum": 20, "default": 3}
+  }
+}

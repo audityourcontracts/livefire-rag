@@ -1,5 +1,5 @@
 # rag-testkit
 
-Planned standalone fixture runner, exact-search oracle, BM25/vector/hybrid
-ablation harness, pointer-integrity checks, and benchmark report generator.
-
+Planned standalone fixture runner, chronological leakage checks, exact DuckDB
+oracle, embedding/dimension/quantization ablations, pointer-integrity checks,
+and anomaly/retrieval benchmark report generator.

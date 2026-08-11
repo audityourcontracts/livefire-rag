@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/command-anomaly-policy.v1.schema.json",
+  "title": "Command anomaly materialization policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "history", "comparison_scopes", "components", "component_policies", "calibration", "minimum_history_records", "comparison_retention_count", "combined_score", "cold_start"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.command-anomaly-policy/1"},
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "duration_days", "candidate_relation", "openbots_fallback"],
+      "properties": {
+        "mode": {"const": "rolling"},
+        "duration_days": {"const": 30},
+        "candidate_relation": {"const": "strictly_before_event_time"},
+        "openbots_fallback": {"const": "all_prior_available"}
+      }
+    },
+    "comparison_scopes": {"const": ["principal", "population"]},
+    "components": {"const": ["action_novelty", "target_novelty", "structural_novelty", "obfuscation_novelty"]},
+    "component_policies": {
+      "type": "object", "additionalProperties": false,
+      "required": ["action_novelty", "target_novelty", "structural_novelty", "obfuscation_novelty"],
+      "properties": {
+        "action_novelty": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "target_novelty": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "structural_novelty": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "obfuscation_novelty": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+      }
+    },
+    "calibration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "population", "distance_encoding"],
+      "properties": {
+        "method": {"const": "empirical_percentile_midrank"},
+        "population": {"const": "eligible_strictly_prior_component_distances"},
+        "distance_encoding": {"const": "round_half_even_score_times_1000000"}
+      }
+    },
+    "minimum_history_records": {"type": "integer", "minimum": 1},
+    "comparison_retention_count": {"type": "integer", "minimum": 1, "maximum": 20},
+    "combined_score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "weights_millionths"],
+      "properties": {
+        "policy": {"const": "weighted_mean_available"},
+        "weights_millionths": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action_novelty", "target_novelty", "structural_novelty", "obfuscation_novelty"],
+          "properties": {
+            "action_novelty": {"type": "integer", "minimum": 0, "maximum": 1000000},
+            "target_novelty": {"type": "integer", "minimum": 0, "maximum": 1000000},
+            "structural_novelty": {"type": "integer", "minimum": 0, "maximum": 1000000},
+            "obfuscation_novelty": {"type": "integer", "minimum": 0, "maximum": 1000000}
+          }
+        }
+      }
+    },
+    "cold_start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["missing_component", "ranking"],
+      "properties": {
+        "missing_component": {"const": "unavailable_not_zero"},
+        "ranking": {"const": "scored_first_then_unscored_deterministically"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "The four weights are parts per million and MUST sum to exactly 1000000; JSON Schema cannot express the sum, so admission enforces it."
+    }
+  ]
+}

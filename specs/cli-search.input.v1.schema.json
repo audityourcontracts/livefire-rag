@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/cli-search.input.v1.schema.json",
+  "title": "cli.search input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "query", "time_range", "top_n"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.cli-search.input/1"},
+    "query": {"type": "string", "minLength": 1, "maxLength": 8192},
+    "time_range": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/time_range"},
+    "top_n": {"type": "integer", "minimum": 1, "maximum": 1000},
+    "filters": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/filters"}
+  }
+}

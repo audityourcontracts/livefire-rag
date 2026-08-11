@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/command-snapshot-profile.v1.schema.json",
+  "title": "Canonical command source snapshot profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "record_schema", "physical_profile", "writer", "media_type", "row_order", "pointer_coordinates"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.command-snapshot-profile/1"},
+    "record_schema": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "physical_profile": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "writer": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "media_type": {"const": "application/vnd.apache.parquet"},
+    "row_order": {"const": ["event_time_asc", "command_id_asc"]},
+    "pointer_coordinates": {"const": "parquet_row_group_relative_ordinal"}
+  }
+}

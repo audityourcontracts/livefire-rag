@@ -2,43 +2,38 @@
 
 ## Strong fits
 
-1. Translate a natural-language hypothesis into candidate OCSF events before the
-   runner knows the exact class, activity, or facet vocabulary.
-2. Rank material observations from a large bounded result so the runner can test
-   the most promising lead first.
-3. Find semantically similar activity across source families whose native terms
-   differ but whose normalized actor/action/resource pattern is alike.
-4. Find events similar to an exact seed event while excluding the seed and
-   applying time, class, status, and source-family filters.
-5. Retrieve candidates for both confirming and benign explanations of a
-   hypothesis. The runner, not retrieval rank, decides which survives testing.
-6. Triage queued and ancillary leads without merging them into the active
-   investigative component.
+- Rank a user's commands against that user's prior 30-day history.
+- Rank commands against prior behavior across all users.
+- Surface encoded or obfuscated PowerShell without executing it.
+- Find unusual action/target combinations such as a familiar CLI accessing a new
+  sensitive resource.
+- Surface abnormal invocation shapes and process ancestry.
+- Find principals newly invoking sensitive AWS or other cloud actions.
+- Search command history with analyst language when exact syntax is unknown.
+- Find behaviorally similar commands across shells, hosts, and source products.
+- Explain why a command ranked highly using components and prior examples.
 
-## Separate corpus
+## Output interpretation
 
-Playbooks, OCSF documentation, ATT&CK material, and organizational runbooks can
-use the same SDK but must be a separately built `knowledge` index and separately
-named tool. Knowledge helps formulate questions; it is not telemetry evidence.
+The tools answer “what is most different or most semantically relevant within
+this snapshot?” They do not answer “is this malicious?” A high score is relative
+to declared history and may reflect a legitimate new task. Sparse or left-censored
+history reduces confidence and is always returned as coverage.
+
+The provider returns the requested top N rather than applying an alert threshold.
+Livefire decides whether to hydrate a result, compare it with other telemetry,
+form a hypothesis, or dismiss it as benign.
 
 ## Bad fits
 
-Use exact OCSF, SQL, baseline, or authority tools for:
+Use exact source/OCSF/SIEM tools for exhaustive retrieval, counts, authoritative
+raw records, causal relationships, and negative-evidence claims. Use dedicated
+numeric or delta indexes for system metrics and configuration changes. Similarity
+and novelty scores are not evidence and cannot establish identity continuity.
 
-- event IDs, IPs, hashes, accounts, resources, time ranges, and exact statuses;
-- counts, aggregation, rarity, prevalence, ordering, and pagination;
-- exhaustive absence or negative-evidence claims;
-- identity continuity, typed relationships, and causal conclusions;
-- evidence verification or finding submission.
+## Future separate indexes
 
-A high similarity score is a lead, not proof. A zero-result vector search is not
-proof of absence unless the declared index coverage and supported query class
-make that claim possible—which v1 does not.
-
-## Initial experiment
-
-Index atomic OCSF event documents and compare four methods over identical queries
-and typed filters: exact OCSF search, BM25, dense vectors, and hybrid rank fusion.
-Promote the provider only if vector or hybrid search improves held-out Recall@20
-and paraphrase robustness without returning out-of-filter or unhydratable IDs.
-
+Playbooks, ATT&CK, OCSF documentation, prior cases, configuration deltas, and
+numeric metrics have different confidentiality, lineage, deletion, and ranking
+semantics. They may reuse the SDK but do not share the command index or tool
+binding.

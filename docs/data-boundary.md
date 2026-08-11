@@ -1,46 +1,55 @@
 # Data and trust boundary
 
-## Inputs
+## Source adapters
 
-The builder reads an admitted normalized OCSF snapshot through a constrained SDK
-reader. It may read only declared semantic relations needed for event documents.
-It must not read native records, evaluator fixtures, authority-only field
-provenance, run traces, prior findings, credentials, or a developer home folder.
+Vendor adapters run only while creating a source snapshot. They may receive an
+explicit credential handle and network allow-list for the selected source. They
+must not write credentials, bearer tokens, session IDs, or mutable API URLs into
+records, manifests, diagnostics, or source pointers.
 
-The full BOTS m15 snapshot is large and dominated by classes for which general
-text embeddings are a poor first index. The initial production policy should
-exclude system metrics and configuration snapshots, report excluded counts and
-class/time coverage, and fail if input accounting does not close. Metrics belong
-in numeric anomaly indexes; configuration history belongs in template/delta
-indexes.
+An adapter writes a canonical command snapshot to staging and exits. The host
+then validates object digests, schema conformance, pointer completeness, row
+counts, time coverage, and path safety before sealing it. A remote source may
+change after export; reproducibility begins at the sealed snapshot, not by
+assuming a future vendor export will produce the same bytes.
 
-## Derived data
+## Index builder
 
-Documents, embeddings, lexical terms, previews, and indexes inherit the source
-snapshot's tenant, confidentiality, encryption, retention, revocation, and
-deletion policy. Embeddings are sensitive derived telemetry, not harmless model
-metadata.
+The builder receives sealed source snapshots read-only and a new write-only
+staging directory. It may not access vendor APIs, vendor credentials, evaluator
+fixtures, Livefire traces/findings, ambient home directories, or unrelated
+snapshots.
 
-Exact timestamps and opaque identifiers remain filter/lexical metadata. Dense
-text describes their typed role rather than expecting an embedding to understand
-an IP address, hash, session ID, or credential-like value.
+PowerShell decoding and parsing are static. The builder may decode bounded
+representations and invoke a parser, but it must never execute a command, script,
+macro, decompressed payload, shell expansion, or PowerShell expression.
 
-## Builder sandbox
+Model access is one of:
 
-- Source snapshot: read-only.
-- Staging output: write-only until host verification.
-- Network and secrets: denied by default.
-- Model/tokenizer/runtime: pre-admitted, content-addressed artifacts.
-- Build report: a claim, never self-authorizing.
+- a pre-admitted local model artifact; or
+- an explicitly allowed loopback LM Studio instance serving that artifact.
 
-The host independently checks paths, symlinks, source lineage, policy/model
-identity, object digests, coverage, and conformance before issuing an admission
-receipt.
+No remote embedding endpoint is permitted in v1. Build output and intermediate
+embeddings inherit the source telemetry's tenant, confidentiality, encryption,
+retention, revocation, and deletion policy.
 
-## Provider sandbox
+## Runtime provider
 
-The provider reads one admitted index and no ambient filesystem. It receives an
-exact dataset/index binding and enforced request/result/deadline limits at
-session open. Network, credentials, and source-snapshot access are denied by
-default. Logs are bounded diagnostics on stderr; stdout is protocol-only.
+The provider receives one admitted index read-only. It has:
 
+- no Splunk or Panther credentials;
+- no vendor-network access;
+- no source-snapshot mount by default;
+- no arbitrary filesystem access;
+- optional loopback access only to the exact bound query embedder;
+- bounded request/result sizes, candidates, memory, and wall time.
+
+It returns immutable source pointers. Authoritative hydration is performed by a
+separately admitted OCSF/Splunk/Panther evidence tool.
+
+## Derived-data handling
+
+Canonical command text, decoded layers, parse features, vectors, score tables,
+and comparison excerpts are sensitive derived telemetry. Indexes are never
+published in a plugin bundle. Logs must not contain commands or embeddings unless
+an explicit diagnostic policy permits bounded redacted samples.

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/command-document.v1.schema.json",
+  "title": "Canonical projected command document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command_id", "event_time", "observation_kind", "principal_status", "shell_family", "projection_sha256", "semantic_text", "action_text", "target_text", "structure_features", "obfuscation_features", "source_pointer"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.command-document/1"},
+    "command_id": {"type": "string", "minLength": 1},
+    "event_time": {"type": "string", "format": "date-time"},
+    "observation_kind": {"enum": ["process_command_line", "powershell_script_block", "cloud_api_action"]},
+    "principal_status": {"enum": ["identified", "ambiguous", "unavailable"]},
+    "principal_key": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/principal_key"},
+    "host_id": {"type": "string", "minLength": 1},
+    "shell_family": {"enum": ["powershell", "cmd", "posix_shell", "python", "cloud_cli", "direct_exec", "unknown"]},
+    "projection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "semantic_text": {"type": "string", "maxLength": 1048576},
+    "action_text": {"type": "string", "maxLength": 65536},
+    "target_text": {"type": "string", "maxLength": 65536},
+    "structure_features": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "obfuscation_features": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "powershell_ast_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"}
+  },
+  "allOf": [
+    {"if": {"properties": {"principal_status": {"const": "identified"}}}, "then": {"required": ["principal_key"]}}
+  ]
+}

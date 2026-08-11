@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/cli-candidates.output.v1.schema.json",
+  "title": "CLI ranked candidate pointer result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "tool", "index", "source_snapshots", "coverage", "rankings"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.cli-candidates.output/1"},
+    "kind": {"const": "pointer"},
+    "tool": {"enum": ["cli.outliers", "cli.search", "cli.similar"]},
+    "comparison": {"enum": ["principal", "population", "both"]},
+    "index": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "source_snapshots": {"type": "array", "minItems": 1, "items": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "rankings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/outlier_ranking"},
+          {"$ref": "#/$defs/semantic_ranking"}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "indexed_commands", "eligible_commands", "definitive"],
+      "properties": {
+        "status": {"enum": ["complete", "left_censored", "partial", "unavailable"]},
+        "indexed_commands": {"type": "integer", "minimum": 0},
+        "eligible_commands": {"type": "integer", "minimum": 0},
+        "definitive": {"const": false},
+        "reason_codes": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_top_n", "returned_count", "eligible_count", "exhausted", "deterministic"],
+      "properties": {
+        "requested_top_n": {"type": "integer", "minimum": 1},
+        "returned_count": {"type": "integer", "minimum": 0},
+        "eligible_count": {"type": "integer", "minimum": 0},
+        "exhausted": {"type": "boolean"},
+        "deterministic": {"type": "boolean"}
+      }
+    },
+    "candidate_base": {
+      "type": "object",
+      "properties": {
+        "rank": {"type": "integer", "minimum": 1},
+        "command_id": {"type": "string", "minLength": 1},
+        "event_time": {"type": "string", "format": "date-time"},
+        "principal_key": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/principal_key"},
+        "host_id": {"type": "string", "minLength": 1},
+        "shell_family": {"type": "string", "minLength": 1},
+        "preview": {"type": "string", "maxLength": 4096},
+        "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"}
+      }
+    },
+    "outlier_candidate": {
+      "allOf": [
+        {"$ref": "#/$defs/candidate_base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rank", "command_id", "event_time", "shell_family", "score_status", "anomaly_score_millionths", "components", "baseline_count", "source_pointer"],
+          "properties": {
+            "rank": {"type": "integer", "minimum": 1},
+            "command_id": {"type": "string", "minLength": 1},
+            "event_time": {"type": "string", "format": "date-time"},
+            "principal_key": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/principal_key"},
+            "host_id": {"type": "string", "minLength": 1},
+            "shell_family": {"type": "string", "minLength": 1},
+            "score_status": {"enum": ["available", "insufficient_history", "component_partial"]},
+            "anomaly_score_millionths": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000},
+            "components": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["action_novelty", "target_novelty", "structural_novelty", "obfuscation_novelty"],
+              "properties": {
+                "action_novelty": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000},
+                "target_novelty": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000},
+                "structural_novelty": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000},
+                "obfuscation_novelty": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000}
+              }
+            },
+            "baseline_count": {"type": "integer", "minimum": 0},
+            "preview": {"type": "string", "maxLength": 4096},
+            "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"}
+          }
+        }
+      ]
+    },
+    "semantic_candidate": {
+      "allOf": [
+        {"$ref": "#/$defs/candidate_base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rank", "command_id", "event_time", "shell_family", "cosine_distance_millionths", "source_pointer"],
+          "properties": {
+            "rank": {"type": "integer", "minimum": 1},
+            "command_id": {"type": "string", "minLength": 1},
+            "event_time": {"type": "string", "format": "date-time"},
+            "principal_key": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/principal_key"},
+            "host_id": {"type": "string", "minLength": 1},
+            "shell_family": {"type": "string", "minLength": 1},
+            "cosine_distance_millionths": {"type": "integer", "minimum": 0, "maximum": 2000000},
+            "preview": {"type": "string", "maxLength": 4096},
+            "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"}
+          }
+        }
+      ]
+    },
+    "outlier_ranking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ranking", "selection", "candidates"],
+      "properties": {
+        "ranking": {"enum": ["principal_outlier", "population_outlier"]},
+        "selection": {"$ref": "#/$defs/selection"},
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/outlier_candidate"}}
+      }
+    },
+    "semantic_ranking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ranking", "selection", "candidates"],
+      "properties": {
+        "ranking": {"enum": ["semantic_search", "similar_command"]},
+        "selection": {"$ref": "#/$defs/selection"},
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/semantic_candidate"}}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"tool": {"const": "cli.outliers"}}},
+      "then": {"required": ["comparison"]},
+      "else": {"not": {"required": ["comparison"]}}
+    },
+    {
+      "if": {"properties": {"tool": {"const": "cli.search"}}},
+      "then": {"properties": {"rankings": {"minItems": 1, "maxItems": 1, "prefixItems": [{"properties": {"ranking": {"const": "semantic_search"}}, "required": ["ranking"]}]}}}
+    },
+    {
+      "if": {"properties": {"tool": {"const": "cli.similar"}}},
+      "then": {"properties": {"rankings": {"minItems": 1, "maxItems": 1, "prefixItems": [{"properties": {"ranking": {"const": "similar_command"}}, "required": ["ranking"]}]}}}
+    },
+    {
+      "if": {"properties": {"comparison": {"const": "principal"}}, "required": ["comparison"]},
+      "then": {"properties": {"rankings": {"minItems": 1, "maxItems": 1, "prefixItems": [{"properties": {"ranking": {"const": "principal_outlier"}}, "required": ["ranking"]}]}}}
+    },
+    {
+      "if": {"properties": {"comparison": {"const": "population"}}, "required": ["comparison"]},
+      "then": {"properties": {"rankings": {"minItems": 1, "maxItems": 1, "prefixItems": [{"properties": {"ranking": {"const": "population_outlier"}}, "required": ["ranking"]}]}}}
+    },
+    {
+      "if": {"properties": {"comparison": {"const": "both"}}, "required": ["comparison"]},
+      "then": {"properties": {"rankings": {"minItems": 2, "maxItems": 2, "prefixItems": [
+        {"properties": {"ranking": {"const": "principal_outlier"}}, "required": ["ranking"]},
+        {"properties": {"ranking": {"const": "population_outlier"}}, "required": ["ranking"]}
+      ]}}}
+    }
+  ]
+}

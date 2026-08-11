@@ -1,0 +1,12 @@
+{
+  "schema_version": "livefire.rag.embedding-conformance-fixture/1",
+  "encoding": "UTF-8 JSON exactly as hashed; request body is serialized by the conformance client without changing string values",
+  "request": {
+    "model": "text-embedding-qwen3-embedding-8b",
+    "input": [
+      "livefire embedding conformance document one",
+      "Instruct: Retrieve security command-line activity relevant to this investigation query. Preserve executable or API action, target, arguments, process context, and intent.\nQuery: find encoded powershell"
+    ]
+  },
+  "output_normalization": "The server output must have L2 norm within 0.0001 of 1.0; no client renormalization is performed. With jq 1.8.2: jq -c '[.data | sort_by(.index)[] | .embedding]'; hash the emitted UTF-8 line including its final LF."
+}

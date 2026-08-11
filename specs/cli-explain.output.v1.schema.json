@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/cli-explain.output.v1.schema.json",
+  "title": "cli.explain output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "index", "command_id", "source_pointer", "explanations"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.cli-explain.output/1"},
+    "kind": {"const": "pointer"},
+    "index": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "command_id": {"type": "string", "minLength": 1},
+    "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"},
+    "static_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "decode_status": {"enum": ["decoded", "not_encoded", "unsupported", "malformed", "limit_exceeded"]},
+        "decode_layers": {"type": "integer", "minimum": 0, "maximum": 3},
+        "ast_status": {"enum": ["parsed", "parsed_with_errors", "not_powershell", "limit_exceeded", "failed"]},
+        "signals": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "explanations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["comparison", "score_status", "baseline", "components"],
+        "properties": {
+          "comparison": {"enum": ["principal", "population"]},
+          "score_status": {"enum": ["available", "insufficient_history", "component_partial"]},
+          "combined_score_millionths": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000},
+          "baseline": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["start", "end_exclusive", "reference_count", "left_censored"],
+            "properties": {
+              "start": {"type": "string", "format": "date-time"},
+              "end_exclusive": {"type": "string", "format": "date-time"},
+              "reference_count": {"type": "integer", "minimum": 0},
+              "left_censored": {"type": "boolean"}
+            }
+          },
+          "components": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action_novelty", "target_novelty", "structural_novelty", "obfuscation_novelty"],
+            "properties": {
+              "action_novelty": {"$ref": "#/$defs/component"},
+              "target_novelty": {"$ref": "#/$defs/component"},
+              "structural_novelty": {"$ref": "#/$defs/component"},
+              "obfuscation_novelty": {"$ref": "#/$defs/component"}
+            }
+          }
+        },
+        "allOf": [
+          {"if": {"properties": {"score_status": {"const": "available"}}}, "then": {"required": ["combined_score_millionths"], "properties": {"combined_score_millionths": {"type": "integer"}}}},
+          {"if": {"properties": {"score_status": {"const": "insufficient_history"}}}, "then": {"required": ["combined_score_millionths"], "properties": {"combined_score_millionths": {"type": "null"}}}}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "scorer_policy", "calibration_count", "score_millionths", "raw_distance_millionths", "nearest_prior"],
+      "properties": {
+        "status": {"enum": ["available", "insufficient_history", "unavailable_input"]},
+        "scorer_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "calibration_count": {"type": "integer", "minimum": 0},
+        "score_millionths": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000},
+        "raw_distance_millionths": {"type": ["integer", "null"], "minimum": 0},
+        "signals": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "nearest_prior": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command_id", "distance_millionths", "source_pointer"],
+            "properties": {
+              "command_id": {"type": "string", "minLength": 1},
+              "distance_millionths": {"type": "integer", "minimum": 0},
+              "preview": {"type": "string", "maxLength": 4096},
+              "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"}
+            }
+          }
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "available"}}}, "then": {"properties": {"score_millionths": {"type": "integer"}, "raw_distance_millionths": {"type": "integer"}}}},
+        {"if": {"properties": {"status": {"enum": ["insufficient_history", "unavailable_input"]}}}, "then": {"properties": {"score_millionths": {"type": "null"}, "raw_distance_millionths": {"type": "null"}}}}
+      ]
+    }
+  }
+}

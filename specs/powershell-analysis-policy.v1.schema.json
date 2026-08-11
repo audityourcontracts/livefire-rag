@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/powershell-analysis-policy.v1.schema.json",
+  "title": "PowerShell static analysis policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "parser", "ast_contract", "decode_order", "maximum_decode_layers", "maximum_input_bytes", "maximum_expanded_bytes", "execution"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.powershell-analysis-policy/1"},
+    "parser": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "ast_contract": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "decode_order": {
+      "const": ["base64_utf8_utf16le", "url_and_escapes", "identified_gzip_deflate", "constant_concatenation", "powershell_backtick_case"]
+    },
+    "maximum_decode_layers": {"const": 3},
+    "maximum_input_bytes": {"type": "integer", "minimum": 1},
+    "maximum_expanded_bytes": {"type": "integer", "minimum": 1},
+    "execution": {"const": "forbidden"}
+  }
+}

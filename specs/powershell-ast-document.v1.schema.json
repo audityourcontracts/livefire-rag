@@ -1,0 +1,11 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://livefire.dev/rag/powershell-ast-document.v1.schema.json","title":"Portable PowerShell AST document v1","type":"object","additionalProperties":false,
+  "required":["schema_version","source_sha256","parse_status","nodes","signals"],
+  "properties":{
+    "schema_version":{"const":"livefire.rag.powershell-ast-document/1"},"source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "parse_status":{"enum":["parsed","parsed_with_errors","limit_exceeded","failed"]},
+    "nodes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["ordinal","kind","depth"],"properties":{"ordinal":{"type":"integer","minimum":0},"parent_ordinal":{"type":["integer","null"],"minimum":0},"kind":{"type":"string","minLength":1},"depth":{"type":"integer","minimum":0},"literal_kind":{"enum":["none","string","number","path","uri","identifier","encoded","redacted"]},"token_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}}}},
+    "signals":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}},
+    "diagnostics":{"type":"array","items":{"type":"string","maxLength":1024}}
+  }
+}

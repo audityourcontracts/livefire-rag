@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-row.v1.schema.json",
+  "title": "Command embedding row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command_id", "purpose", "embedding_policy", "dimensions", "normalization", "vector"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.embedding-row/1"},
+    "command_id": {"type": "string", "minLength": 1},
+    "purpose": {"enum": ["semantic_search", "action_novelty", "target_novelty"]},
+    "embedding_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "dimensions": {"enum": [1024, 2048, 4096]},
+    "normalization": {"const": "l2"},
+    "vector": {"type": "array", "items": {"type": "number"}}
+  },
+  "oneOf": [
+    {"properties": {"dimensions": {"const": 1024}, "vector": {"minItems": 1024, "maxItems": 1024}}},
+    {"properties": {"dimensions": {"const": 2048}, "vector": {"minItems": 2048, "maxItems": 2048}}},
+    {"properties": {"dimensions": {"const": 4096}, "vector": {"minItems": 4096, "maxItems": 4096}}}
+  ],
+  "$comment": "Admission also requires finite IEEE-754 float32 values, dimensions equal to the bound embedding policy, and L2 norm within the policy tolerance."
+}

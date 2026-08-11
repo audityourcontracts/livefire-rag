@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/outlier-score-row.v1.schema.json",
+  "title": "Materialized command outlier score row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command_id", "event_time", "comparison", "anomaly_policy", "baseline", "score_status", "combined_score_millionths", "components"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.outlier-score-row/1"},
+    "command_id": {"type": "string", "minLength": 1},
+    "event_time": {"type": "string", "format": "date-time"},
+    "principal_key": {"$ref": "https://livefire.dev/rag/cli-common.v1.schema.json#/$defs/principal_key"},
+    "comparison": {"enum": ["principal", "population"]},
+    "anomaly_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end_exclusive", "reference_count", "left_censored"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end_exclusive": {"type": "string", "format": "date-time"},
+        "reference_count": {"type": "integer", "minimum": 0},
+        "left_censored": {"type": "boolean"}
+      }
+    },
+    "score_status": {"enum": ["available", "insufficient_history", "component_partial"]},
+    "combined_score_millionths": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000},
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action_novelty", "target_novelty", "structural_novelty", "obfuscation_novelty"],
+      "properties": {
+        "action_novelty": {"$ref": "#/$defs/component"},
+        "target_novelty": {"$ref": "#/$defs/component"},
+        "structural_novelty": {"$ref": "#/$defs/component"},
+        "obfuscation_novelty": {"$ref": "#/$defs/component"}
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"score_status": {"const": "available"}}}, "then": {"properties": {"combined_score_millionths": {"type": "integer"}}}},
+    {"if": {"properties": {"score_status": {"const": "insufficient_history"}}}, "then": {"properties": {"combined_score_millionths": {"type": "null"}}}},
+    {"if": {"properties": {"comparison": {"const": "principal"}}}, "then": {"required": ["principal_key"]}}
+  ],
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "scorer_policy", "score_millionths", "raw_distance_millionths", "calibration_count"],
+      "properties": {
+        "status": {"enum": ["available", "insufficient_history", "unavailable_input"]},
+        "scorer_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "score_millionths": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000},
+        "raw_distance_millionths": {"type": ["integer", "null"], "minimum": 0},
+        "calibration_count": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "available"}}}, "then": {"properties": {"score_millionths": {"type": "integer"}, "raw_distance_millionths": {"type": "integer"}}}},
+        {"if": {"properties": {"status": {"enum": ["insufficient_history", "unavailable_input"]}}}, "then": {"properties": {"score_millionths": {"type": "null"}, "raw_distance_millionths": {"type": "null"}}}}
+      ]
+    }
+  },
+  "$comment": "Admission requires baseline.end_exclusive equal event_time, all comparisons strictly prior, and the comparison-universe/source-snapshot sets to match the manifest."
+}

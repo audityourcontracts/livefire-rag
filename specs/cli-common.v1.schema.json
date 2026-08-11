@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/cli-common.v1.schema.json",
+  "title": "Livefire RAG CLI shared request definitions v1",
+  "$defs": {
+    "principal_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "id"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "minLength": 1}
+      }
+    },
+    "time_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end_exclusive"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end_exclusive": {"type": "string", "format": "date-time"}
+      }
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "principals": {"type": "array", "items": {"$ref": "#/$defs/principal_key"}},
+        "host_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "shell_families": {"type": "array", "items": {"enum": ["powershell", "cmd", "posix_shell", "python", "cloud_cli", "direct_exec", "unknown"]}},
+        "source_snapshot_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "exclude_command_ids": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}

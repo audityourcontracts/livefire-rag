@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/command-record.v1.schema.json",
+  "title": "Canonical command source record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command_id", "event_time", "observation_kind", "command_text", "command_text_sha256", "principal_status", "shell_family", "source_pointer"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.command-record/1"},
+    "command_id": {"type": "string", "minLength": 1},
+    "event_time": {"type": "string", "format": "date-time"},
+    "observation_kind": {"enum": ["process_command_line", "powershell_script_block", "cloud_api_action"]},
+    "command_text": {"type": "string", "maxLength": 1048576},
+    "command_text_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "principal_status": {"enum": ["identified", "ambiguous", "unavailable"]},
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "namespace", "kind"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "namespace": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["user", "service", "role", "session", "unknown"]},
+        "display": {"type": "string", "maxLength": 512}
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "display": {"type": "string", "maxLength": 512},
+        "platform": {"type": "string", "maxLength": 128}
+      }
+    },
+    "shell_family": {"enum": ["powershell", "cmd", "posix_shell", "python", "cloud_cli", "direct_exec", "unknown"]},
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {"type": "string", "maxLength": 4096},
+        "parent_image": {"type": "string", "maxLength": 4096},
+        "ancestry_images": {"type": "array", "maxItems": 16, "items": {"type": "string", "maxLength": 4096}}
+      }
+    },
+    "cloud_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "service", "action"],
+      "properties": {
+        "provider": {"type": "string", "maxLength": 128},
+        "service": {"type": "string", "maxLength": 256},
+        "action": {"type": "string", "maxLength": 512},
+        "resource_kinds": {"type": "array", "items": {"type": "string", "maxLength": 256}},
+        "resource_ids": {"type": "array", "items": {"type": "string", "maxLength": 4096}}
+      }
+    },
+    "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"principal_status": {"const": "identified"}}},
+      "then": {"required": ["principal"]}
+    },
+    {
+      "if": {"properties": {"observation_kind": {"const": "process_command_line"}}},
+      "then": {"required": ["process"]}
+    },
+    {
+      "if": {"properties": {"observation_kind": {"const": "cloud_api_action"}}},
+      "then": {"required": ["cloud_action"]}
+    }
+  ]
+}

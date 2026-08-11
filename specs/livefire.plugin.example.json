@@ -43,38 +43,82 @@
     }
   ],
   "entrypoints": {
-    "provider": "bin/livefire-rag-provider",
-    "builder": "bin/livefire-rag-builder"
+    "provider": {
+      "component": {"id": "com.ayc.livefire-rag.provider", "version": "0.1.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+      "executable": {"path": "bin/livefire-rag-provider", "media_type": "application/x-mach-binary", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bytes": 0}
+    },
+    "builder": {
+      "component": {"id": "com.ayc.livefire-rag.builder", "version": "0.1.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+      "executable": {"path": "bin/livefire-rag-builder", "media_type": "application/x-mach-binary", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bytes": 0}
+    }
   },
   "tools": [
     {
-      "name": "rag.search",
-      "description": "Return semantic candidate pointers from a pinned OCSF vector index.",
-      "input_schema": "specs/rag-search.input.v1.schema.json",
-      "output_schema": "specs/rag-search.output.v1.schema.json",
+      "descriptor": {"id": "com.ayc.livefire-rag.cli.outliers", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+      "descriptor_artifact": {"path": "descriptors/cli-outliers.json", "media_type": "application/json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bytes": 0},
+      "name": "cli.outliers",
+      "description": "Return top-N command outliers from materialized principal and/or population comparisons.",
+      "input_schema": {"id": "livefire.rag.cli-outliers.input", "version": "1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "uri": "specs/cli-outliers.input.v1.schema.json"},
+      "output_schema": {"id": "livefire.rag.cli-candidates.output", "version": "1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "uri": "specs/cli-candidates.output.v1.schema.json"},
       "effects": ["index.read"],
-      "required_indexes": ["ocsf-event-vector-v1"]
+      "required_indexes": ["command-behavior-v1"]
     },
     {
-      "name": "rag.more_like_event",
-      "description": "Return events semantically similar to one exact indexed event.",
-      "input_schema": "specs/rag-more-like-event.input.v1.schema.json",
-      "output_schema": "specs/rag-search.output.v1.schema.json",
+      "descriptor": {"id": "com.ayc.livefire-rag.cli.search", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+      "descriptor_artifact": {"path": "descriptors/cli-search.json", "media_type": "application/json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bytes": 0},
+      "name": "cli.search",
+      "description": "Return command pointers matching a semantic investigation query.",
+      "input_schema": {"id": "livefire.rag.cli-search.input", "version": "1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "uri": "specs/cli-search.input.v1.schema.json"},
+      "output_schema": {"id": "livefire.rag.cli-candidates.output", "version": "1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "uri": "specs/cli-candidates.output.v1.schema.json"},
+      "effects": ["index.read", "embedding.local"],
+      "required_indexes": ["command-behavior-v1"]
+    },
+    {
+      "descriptor": {"id": "com.ayc.livefire-rag.cli.similar", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+      "descriptor_artifact": {"path": "descriptors/cli-similar.json", "media_type": "application/json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bytes": 0},
+      "name": "cli.similar",
+      "description": "Return commands semantically similar to one indexed command.",
+      "input_schema": {"id": "livefire.rag.cli-similar.input", "version": "1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "uri": "specs/cli-similar.input.v1.schema.json"},
+      "output_schema": {"id": "livefire.rag.cli-candidates.output", "version": "1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "uri": "specs/cli-candidates.output.v1.schema.json"},
       "effects": ["index.read"],
-      "required_indexes": ["ocsf-event-vector-v1"]
+      "required_indexes": ["command-behavior-v1"]
+    },
+    {
+      "descriptor": {"id": "com.ayc.livefire-rag.cli.explain", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+      "descriptor_artifact": {"path": "descriptors/cli-explain.json", "media_type": "application/json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bytes": 0},
+      "name": "cli.explain",
+      "description": "Return materialized novelty components and nearest prior comparisons.",
+      "input_schema": {"id": "livefire.rag.cli-explain.input", "version": "1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "uri": "specs/cli-explain.input.v1.schema.json"},
+      "output_schema": {"id": "livefire.rag.cli-explain.output", "version": "1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "uri": "specs/cli-explain.output.v1.schema.json"},
+      "effects": ["index.read"],
+      "required_indexes": ["command-behavior-v1"]
     }
   ],
   "builders": [
     {
-      "name": "rag.build-ocsf-event-index",
-      "index_kind": "ocsf-event-vector-v1"
+      "builder": {"id": "com.ayc.livefire-rag.builder", "version": "0.1.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+      "executable": {"path": "bin/livefire-rag-builder", "media_type": "application/x-mach-binary", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "bytes": 0},
+      "name": "rag.build-command-index",
+      "index_kind": "command-behavior-v1",
+      "index_format": {"id": "com.ayc.livefire-rag.command-index-format", "version": "1.0.0", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
     }
   ],
   "permissions": {
-    "network": [],
-    "secrets": [],
-    "source_mount": "read_only_builder",
-    "index_mount": "write_only_builder_read_only_provider",
-    "scratch_bytes": 1073741824
+    "index_builder": {
+      "network": ["loopback:lmstudio"],
+      "secret_handles": [],
+      "source_mount": "read_only",
+      "index_mount": "none",
+      "staging_mount": "write_only",
+      "scratch_bytes": 8589934592
+    },
+    "tool_provider": {
+      "network": ["loopback:lmstudio"],
+      "secret_handles": [],
+      "source_mount": "none",
+      "index_mount": "read_only",
+      "staging_mount": "none",
+      "scratch_bytes": 1073741824
+    }
   }
 }

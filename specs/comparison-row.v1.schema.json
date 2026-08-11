@@ -1,0 +1,5 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://livefire.dev/rag/comparison-row.v1.schema.json","title":"Materialized prior-command comparison row v1","type":"object","additionalProperties":false,
+  "required":["schema_version","command_id","comparison","component","rank","prior_command_id","distance_millionths","source_pointer"],
+  "properties":{"schema_version":{"const":"livefire.rag.comparison-row/1"},"command_id":{"type":"string","minLength":1},"comparison":{"enum":["principal","population"]},"component":{"enum":["action_novelty","target_novelty","structural_novelty","obfuscation_novelty"]},"rank":{"type":"integer","minimum":1},"prior_command_id":{"type":"string","minLength":1},"distance_millionths":{"type":"integer","minimum":0},"source_pointer":{"$ref":"https://livefire.dev/sdk/source-record-pointer.v1.schema.json"}}
+}
