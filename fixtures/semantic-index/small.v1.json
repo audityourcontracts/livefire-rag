@@ -1,0 +1,119 @@
+{
+  "schema_version": "livefire.rag.semantic-index-fixture/1",
+  "index": {
+    "id": "com.ayc.livefire-rag.fixture.small",
+    "version": "1.0.0"
+  },
+  "source_snapshots": [
+    {
+      "id": "com.ayc.livefire-rag.fixture.source",
+      "version": "1.0.0",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "embedding_profile": {
+    "schema_version": "livefire.rag.fixture-embedding-profile/1",
+    "admission_status": "development_only",
+    "api_model_key": "fixture-embedding",
+    "dimensions": 4,
+    "query_instruction": "Retrieve the closest fixture command.",
+    "query_composition": "Instruct: {query_instruction}\nQuery: {query}"
+  },
+  "limitations": [
+    "deterministic four-dimensional fixture vectors; not a production embedding"
+  ],
+  "rows": [
+    {
+      "document": {
+        "schema_version": "livefire.rag.semantic-document/1",
+        "command_id": "cmd-a",
+        "event_time": "2024-01-01T00:00:00Z",
+        "observation_kind": "process_command_line",
+        "shell_family": "powershell",
+        "semantic_text": "PowerShell creates a scheduled task",
+        "preview": "powershell.exe schtasks /create",
+        "principal_key": {"namespace": "fixture", "id": "alice"},
+        "host_id": "host-1",
+        "source_kind": "fixture_process",
+        "source_pointer": {
+          "schema_version": "livefire.source-record-pointer/1",
+          "snapshot": {"id": "com.ayc.livefire-rag.fixture.source", "version": "1.0.0", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+          "snapshot_profile": {"id": "com.ayc.livefire-rag.fixture.source-profile", "version": "1.0.0", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "record_id": "source-a",
+          "record_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "locator": {"kind": "record_id_only"}
+        }
+      },
+      "vector": [1.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "document": {
+        "schema_version": "livefire.rag.semantic-document/1",
+        "command_id": "cmd-b",
+        "event_time": "2024-01-02T00:00:00Z",
+        "observation_kind": "process_command_line",
+        "shell_family": "cmd",
+        "semantic_text": "Create a local user account",
+        "preview": "net user service-account /add",
+        "principal_key": {"namespace": "fixture", "id": "bob"},
+        "host_id": "host-1",
+        "source_kind": "fixture_process",
+        "source_pointer": {
+          "schema_version": "livefire.source-record-pointer/1",
+          "snapshot": {"id": "com.ayc.livefire-rag.fixture.source", "version": "1.0.0", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+          "snapshot_profile": {"id": "com.ayc.livefire-rag.fixture.source-profile", "version": "1.0.0", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "record_id": "source-b",
+          "record_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "locator": {"kind": "record_id_only"}
+        }
+      },
+      "vector": [0.8, 0.6, 0.0, 0.0]
+    },
+    {
+      "document": {
+        "schema_version": "livefire.rag.semantic-document/1",
+        "command_id": "cmd-c",
+        "event_time": "2024-01-03T00:00:00Z",
+        "observation_kind": "process_command_line",
+        "shell_family": "powershell",
+        "semantic_text": "PowerShell disables the Windows firewall",
+        "preview": "powershell.exe Set-NetFirewallProfile -Enabled False",
+        "principal_key": {"namespace": "fixture", "id": "alice"},
+        "host_id": "host-2",
+        "source_kind": "fixture_process",
+        "source_pointer": {
+          "schema_version": "livefire.source-record-pointer/1",
+          "snapshot": {"id": "com.ayc.livefire-rag.fixture.source", "version": "1.0.0", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+          "snapshot_profile": {"id": "com.ayc.livefire-rag.fixture.source-profile", "version": "1.0.0", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "record_id": "source-c",
+          "record_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "locator": {"kind": "record_id_only"}
+        }
+      },
+      "vector": [0.0, 1.0, 0.0, 0.0]
+    },
+    {
+      "document": {
+        "schema_version": "livefire.rag.semantic-document/1",
+        "command_id": "cmd-d",
+        "event_time": "2024-01-04T00:00:00Z",
+        "observation_kind": "cloud_api_action",
+        "shell_family": "cloud_cli",
+        "semantic_text": "AWS IAM CreateAccessKey denied",
+        "preview": "iam CreateAccessKey status=denied",
+        "principal_key": {"namespace": "fixture", "id": "cloud-role"},
+        "host_id": "cloud",
+        "source_kind": "fixture_api",
+        "source_pointer": {
+          "schema_version": "livefire.source-record-pointer/1",
+          "snapshot": {"id": "com.ayc.livefire-rag.fixture.source", "version": "1.0.0", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+          "snapshot_profile": {"id": "com.ayc.livefire-rag.fixture.source-profile", "version": "1.0.0", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "record_id": "source-d",
+          "record_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "locator": {"kind": "record_id_only"}
+        }
+      },
+      "vector": [0.0, 0.0, 1.0, 0.0]
+    }
+  ]
+}

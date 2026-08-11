@@ -1,0 +1,76 @@
+{
+  "schema_version": "livefire.rag.provider-poc-results/1",
+  "run_id": "synthetic-pass",
+  "calls": [
+    {"case_id":"Q1","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q1-log","preview":"PowerShell cachedGroupPolicySettings disables ScriptBlockLogging"},
+      {"rank":2,"command_id":"q1-context","preview":"related PowerShell script"},
+      {"rank":3,"command_id":"q1-other","preview":"another script block"},
+      {"rank":4,"command_id":"q1-other2","preview":"another command"},
+      {"rank":5,"command_id":"q1-other3","preview":"another command"},
+      {"rank":6,"command_id":"q1-enc","preview":"powershell.exe -enc SQBG frombase64string"}
+    ]}]}},
+    {"case_id":"Q2","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q2-task","preview":"schtasks /Create /F /RU system /TN Updater"},
+      {"rank":2,"command_id":"q2-payload","preview":"PowerShell FromBase64String from HKLM:\\Software\\Microsoft\\Network"}
+    ]}]}},
+    {"case_id":"Q3","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q3-user","preview":"net.exe user /add svcvnc <redacted>"},
+      {"rank":2,"command_id":"q3-user-duplicate","preview":"net1.exe user /add svcvnc <redacted>"},
+      {"rank":3,"command_id":"q3-admin","preview":"net.exe localgroup administrators svcvnc /add"}
+    ]}]}},
+    {"case_id":"Q4","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q4-firewall","preview":"netsh advfirewall set allprofiles state off"},
+      {"rank":2,"command_id":"q4-scan","preview":"hdoor.exe -hbs 192.168.9.1-192.168.9.50"},
+      {"rank":3,"command_id":"q4-hard-negative","preview":"PowerShell cachedGroupPolicySettings disables ScriptBlockLogging"}
+    ]}]}},
+    {"case_id":"Q5","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q5-upload-source","preview":"python s3-upload.py --bucket frothlywebcode --file frothly_html.tar.gz"},
+      {"rank":2,"command_id":"q5-upload-ocsf","preview":"s3-upload.py target frothlywebcode archive upload"},
+      {"rank":3,"command_id":"q5-context","preview":"linux archive command"},
+      {"rank":4,"command_id":"q5-context2","preview":"linux command"},
+      {"rank":5,"command_id":"q5-scp","preview":"scp -f frothly_html.tar.gz"}
+    ]}]}},
+    {"case_id":"Q6","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q6-01","preview":"web_admin RunInstances Client.UnauthorizedOperation ap-southeast-2"},
+      {"rank":2,"command_id":"q6-02","preview":"web_admin RunInstances Client.UnauthorizedOperation ap-northeast-2"},
+      {"rank":3,"command_id":"q6-03","preview":"web_admin RunInstances Client.UnauthorizedOperation ap-northeast-1"},
+      {"rank":4,"command_id":"q6-04","preview":"web_admin RunInstances Client.UnauthorizedOperation us-west-1"},
+      {"rank":5,"command_id":"q6-05","preview":"web_admin RunInstances Client.UnauthorizedOperation eu-central-1"},
+      {"rank":6,"command_id":"q6-06","preview":"web_admin RunInstances Client.UnauthorizedOperation ap-southeast-1"},
+      {"rank":7,"command_id":"q6-07","preview":"web_admin RunInstances Client.UnauthorizedOperation us-east-1"},
+      {"rank":8,"command_id":"q6-08","preview":"web_admin RunInstances Client.UnauthorizedOperation eu-west-1"},
+      {"rank":9,"command_id":"q6-09","preview":"web_admin RunInstances Client.UnauthorizedOperation ap-south-1"},
+      {"rank":10,"command_id":"q6-10","preview":"web_admin RunInstances Client.UnauthorizedOperation ca-central-1"}
+    ]}]}},
+    {"case_id":"Q7","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q7-key","preview":"web_admin CreateAccessKey AccessDenied"},
+      {"rank":2,"command_id":"q7-user","preview":"web_admin CreateUser AccessDenied"},
+      {"rank":3,"command_id":"q7-list-denied","preview":"web_admin ListAccessKeys AccessDenied"},
+      {"rank":4,"command_id":"q7-get-denied","preview":"web_admin GetUser AccessDenied"},
+      {"rank":5,"command_id":"q7-hard-negative","preview":"splunk_access ListAccessKeys success"}
+    ]}]}},
+    {"case_id":"Q8","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q8-public","preview":"PutBucketAcl frothlywebcode AllUsers READ WRITE"},
+      {"rank":2,"command_id":"q8-tight","preview":"PutBucketAcl frothlywebcode owner LogDelivery READ WRITE"}
+    ]}]}},
+    {"case_id":"Q9","response":{"tool":"cli.search","rankings":[{"ranking":"semantic_search","candidates":[
+      {"rank":1,"command_id":"q9-acl-1","preview":"PutBucketAcl frothlywebcode owner LogDelivery"},
+      {"rank":2,"command_id":"q9-acl-2","preview":"PutBucketAcl frothlywebcode AllUsers READ WRITE"},
+      {"rank":3,"command_id":"q9-read","preview":"GetBucketAcl frothlywebcode"}
+    ]}]}},
+    {"case_id":"S1","response":{"tool":"cli.similar","rankings":[{"ranking":"similar_command","candidates":[
+      {"rank":1,"command_id":"s1-v1","preview":"cachedGroupPolicySettings ScriptBlockLogging variant one"},
+      {"rank":2,"command_id":"s1-v2","preview":"cachedGroupPolicySettings ScriptBlockLogging variant two"},
+      {"rank":3,"command_id":"s1-v3","preview":"cachedGroupPolicySettings ScriptBlockLogging variant three"},
+      {"rank":4,"command_id":"s1-v4","preview":"cachedGroupPolicySettings ScriptBlockLogging variant four"},
+      {"rank":5,"command_id":"s1-enc","preview":"powershell.exe -enc SQBG FromBase64String"}
+    ]}]}},
+    {"case_id":"S2","response":{"tool":"cli.similar","rankings":[{"ranking":"similar_command","candidates":[
+      {"rank":1,"command_id":"s2-user","preview":"web_admin CreateUser AccessDenied"},
+      {"rank":2,"command_id":"s2-list","preview":"web_admin ListAccessKeys AccessDenied"},
+      {"rank":3,"command_id":"s2-delete","preview":"web_admin DeleteAccessKey AccessDenied"},
+      {"rank":4,"command_id":"s2-hard-negative","preview":"bstoll ListAccessKeys success"}
+    ]}]}}
+  ]
+}

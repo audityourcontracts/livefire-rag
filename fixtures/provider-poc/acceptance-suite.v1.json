@@ -1,0 +1,157 @@
+{
+  "schema_version": "livefire.rag.provider-poc-acceptance-suite/1",
+  "suite_id": "openbots-provider-poc-q1-q9-v1",
+  "description": "Frozen, non-cherry-picked acceptance cases derived from the first 3,806-document OpenBOTS/OCSF prototype run.",
+  "policy": {
+    "top_n": 10,
+    "require_every_case": true,
+    "reject_unknown_cases": true,
+    "candidate_text_fields": ["preview", "command_id"],
+    "matcher_semantics": "case-insensitive literal substring matching over the joined candidate text fields",
+    "candidate_boundary": "Matches identify retrieval candidates only; they do not admit evidence or establish maliciousness, causality, chronology, or aggregate completeness."
+  },
+  "cases": [
+    {
+      "case_id": "Q1",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "Find encoded or obfuscated PowerShell that disables script-block logging or executes a payload stored in the registry.",
+      "expected_disposition": "retrieval_success",
+      "behaviors": [
+        {"label": "logging_bypass", "max_rank": 5, "min_matches": 1, "matcher": {"any": ["scriptblocklogging", "cachedgrouppolicysettings", "locklogging"]}},
+        {"label": "encoded_process_form", "max_rank": 10, "min_matches": 1, "matcher": {"any": [" -enc ", "frombase64string"]}}
+      ],
+      "hard_negatives": []
+    },
+    {
+      "case_id": "Q2",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "What persistence created a SYSTEM scheduled task that runs hidden PowerShell from registry-stored content?",
+      "expected_disposition": "retrieval_success",
+      "behaviors": [
+        {"label": "system_scheduled_task", "max_rank": 1, "min_matches": 1, "matcher": {"all": ["schtasks", "/create", "/ru system"]}},
+        {"label": "registry_backed_payload", "max_rank": 3, "min_matches": 1, "matcher": {"any": ["frombase64string", "hklm:\\software\\microsoft\\network"]}}
+      ],
+      "hard_negatives": []
+    },
+    {
+      "case_id": "Q3",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "Find a PowerShell-spawned command that creates a local service or VNC user account.",
+      "expected_disposition": "retrieval_success",
+      "behaviors": [
+        {"label": "vnc_account_creation", "max_rank": 2, "min_matches": 1, "matcher": {"all": ["user", "/add", "svcvnc"]}},
+        {"label": "administrator_group_addition", "max_rank": 4, "min_matches": 1, "matcher": {"all": ["localgroup", "administrators", "svcvnc", "/add"]}}
+      ],
+      "hard_negatives": []
+    },
+    {
+      "case_id": "Q4",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "Find PowerShell-spawned network discovery or scanning and commands that disable the Windows firewall.",
+      "expected_disposition": "retrieval_success_with_hard_negative",
+      "behaviors": [
+        {"label": "firewall_disabled", "max_rank": 2, "min_matches": 1, "matcher": {"all": ["advfirewall", "state off"]}},
+        {"label": "address_range_scan", "max_rank": 2, "min_matches": 1, "matcher": {"all": ["hdoor.exe", "192.168.9.1-192.168.9.50"]}}
+      ],
+      "hard_negatives": [
+        {"label": "related_defense_evasion_not_query_match", "mandatory": true, "max_rank": 5, "min_matches": 1, "matcher": {"any": ["scriptblocklogging", "cachedgrouppolicysettings", "locklogging"]}}
+      ]
+    },
+    {
+      "case_id": "Q5",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "Find Linux shell commands that uploaded the Frothly web archive to an S3 bucket.",
+      "expected_disposition": "retrieval_success",
+      "behaviors": [
+        {"label": "archive_upload_projections", "max_rank": 4, "min_matches": 2, "matcher": {"all": ["s3-upload.py", "frothlywebcode"]}},
+        {"label": "archive_staging_context", "max_rank": 5, "min_matches": 1, "matcher": {"all": ["scp", "frothly_html"]}}
+      ],
+      "hard_negatives": []
+    },
+    {
+      "case_id": "Q6",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "Who attempted to launch large EC2 fleets across many AWS regions, and why did the attempts fail?",
+      "expected_disposition": "retrieve_then_compute",
+      "behaviors": [
+        {"label": "failed_runinstances_prefix", "max_rank": 10, "min_matches": 10, "matcher": {"all": ["runinstances", "unauthorizedoperation", "web_admin"]}}
+      ],
+      "hard_negatives": [],
+      "boundary_note": "The ranked list may locate candidate failures but cannot establish total counts or regional distribution; exact structured expansion is mandatory."
+    },
+    {
+      "case_id": "Q7",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "Which identity attempted to create an IAM user or access key and was denied?",
+      "expected_disposition": "retrieval_success_with_hard_negative",
+      "behaviors": [
+        {"label": "denied_access_key_creation", "max_rank": 1, "min_matches": 1, "matcher": {"all": ["createaccesskey", "accessdenied", "web_admin"]}},
+        {"label": "denied_user_creation", "max_rank": 2, "min_matches": 1, "matcher": {"all": ["createuser", "accessdenied", "web_admin"]}}
+      ],
+      "hard_negatives": [
+        {"label": "successful_iam_read_wrong_polarity", "mandatory": true, "max_rank": 5, "min_matches": 1, "matcher": {"all": ["listaccesskeys", "success"]}}
+      ]
+    },
+    {
+      "case_id": "Q8",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "Find actions that made the Frothly S3 bucket publicly readable or writable and later tightened access.",
+      "expected_disposition": "retrieve_then_compute",
+      "behaviors": [
+        {"label": "public_acl", "max_rank": 1, "min_matches": 1, "matcher": {"all": ["putbucketacl", "frothlywebcode", "allusers"]}},
+        {"label": "tightened_acl", "max_rank": 2, "min_matches": 1, "matcher": {"all": ["putbucketacl", "frothlywebcode", "logdelivery"], "none": ["allusers"]}}
+      ],
+      "hard_negatives": [],
+      "boundary_note": "Retrieval must not state chronology; hydrate the candidates and order them by immutable source event time."
+    },
+    {
+      "case_id": "Q9",
+      "kind": "acceptance",
+      "tool": "cli.search",
+      "query": "Show activity that staged the Frothly HTML archive in S3 and then changed who could access the bucket.",
+      "expected_disposition": "expected_boundary_failure",
+      "behaviors": [],
+      "hard_negatives": [],
+      "boundary": {
+        "label": "flat_dense_facet_collapse",
+        "required_present": {"max_rank": 2, "matcher": {"all": ["putbucketacl", "frothlywebcode"]}},
+        "required_absent": {"max_rank": 10, "matcher": {"all": ["s3-upload.py", "frothlywebcode"]}},
+        "follow_up": "Decompose into upload and ACL searches, hydrate both candidate sets, then correlate with structured bucket and time fields."
+      }
+    },
+    {
+      "case_id": "S1",
+      "kind": "diagnostic",
+      "tool": "cli.similar",
+      "seed": "obfuscated PowerShell 4104 logging-bypass command",
+      "expected_disposition": "diagnostic_neighborhood",
+      "behaviors": [
+        {"label": "case_obfuscated_variants", "max_rank": 4, "min_matches": 4, "matcher": {"any": ["scriptblocklogging", "cachedgrouppolicysettings", "locklogging"]}},
+        {"label": "encoded_process_form", "max_rank": 5, "min_matches": 1, "matcher": {"any": [" -enc ", "frombase64string"]}}
+      ],
+      "hard_negatives": []
+    },
+    {
+      "case_id": "S2",
+      "kind": "diagnostic",
+      "tool": "cli.similar",
+      "seed": "denied IAM CreateAccessKey activity",
+      "expected_disposition": "diagnostic_neighborhood_with_hard_negative",
+      "behaviors": [
+        {"label": "related_denied_iam_actions", "max_rank": 3, "min_matches": 3, "matcher": {"all": ["accessdenied", "web_admin"], "any": ["createuser", "listaccesskeys", "deleteaccesskey"]}}
+      ],
+      "hard_negatives": [
+        {"label": "similar_action_wrong_status", "mandatory": true, "max_rank": 4, "min_matches": 1, "matcher": {"all": ["listaccesskeys", "success"]}}
+      ],
+      "diagnostic_note": "A useful neighborhood is not semantic equivalence and must retain action and status distinctions."
+    }
+  ]
+}

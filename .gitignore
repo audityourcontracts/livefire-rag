@@ -3,9 +3,11 @@ target/
 indexes/
 models/
 reports/
+dist/
 *.log
 __pycache__/
 *.py[cod]
 .env
 .env.*
 !.env.example
+.venv/

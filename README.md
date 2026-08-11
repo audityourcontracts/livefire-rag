@@ -37,22 +37,44 @@ All tools return candidate pointers, never a malicious/benign verdict or
 authoritative evidence. `top_n` is honored up to the declared bound; there is no
 hidden alert threshold.
 
-## Planned commands
+## Implemented standalone POC commands
 
 ```text
-livefire-rag build --source SNAPSHOT --policy POLICY --out INDEX
+livefire-rag build-fixture --fixture FIXTURE --out INDEX
+livefire-rag promote-prototype --prototype-dir CACHE --out INDEX
 livefire-rag verify --index INDEX
 livefire-rag inspect --index INDEX
-livefire-rag outliers --index INDEX --request REQUEST
 livefire-rag search --index INDEX --request REQUEST
-livefire-rag evaluate --index INDEX --suite SUITE
-livefire-rag evaluate-facts --queries QUERIES --qrels QRELS \
-  --candidate RANKINGS --baseline BASELINE --out REPORT
-livefire-rag provider --index INDEX
+livefire-rag similar --index INDEX --request REQUEST
+livefire-rag provider
+livefire-rag package-bundle --index INDEX --sdk-specs SDK_SPECS --out BUNDLE
+livefire-rag demo-provider-poc --index INDEX --suite SUITE --out RESULTS
 ```
 
-Every command is testable without a Livefire checkout. The provider uses the
-released `livefire-sdk` protocol; the repository never imports Livefire source.
+The immutable POC pack contains canonical `documents.jsonl`, row-major
+little-endian float32 L2 vectors, an object lock, and a content-addressed
+manifest. Exact search accumulates in float64 and breaks equal distances by
+ascending command ID. The SDK provider implements the complete JSONL lifecycle
+and returns typed pointer or miss results. Remaining planned production work
+includes admitted source-snapshot building, `cli.outliers`, `cli.explain`, and
+the canonical Parquet profile. The fact-evidence evaluator remains the separate
+`tools/evaluate_fact_evidence.py` command documented below.
+
+The fixture builder, immutable-index verifier, provider, bundle packager, and
+SDK replay are testable without a Livefire checkout. The one-off prototype
+promotion command reads the pinned local M21/OpenBOTS output paths used to build
+the exploratory corpus; it does not import or modify Livefire source. The
+provider uses the adjacent `livefire-sdk` protocol and standalone harness.
+
+A runnable development-only implementation of the immutable semantic pack,
+standalone CLI, JSONL provider, SDK bundle, and frozen real-data demonstration is
+documented in [`docs/standalone-provider-poc.md`](docs/standalone-provider-poc.md).
+The focused provider suite covers reproducible builds, object corruption,
+document/vector pairing, filters, misses, deadlines, exact ranking, loopback
+search, and both in-process and subprocess lifecycle execution. The real-data
+demo freezes all Q1-Q9 and S1/S2 calls; its SDK replay verifier requires exact
+output equality for request IDs 3 through 13 and records per-case canonical
+digests.
 
 See [`docs/architecture.md`](docs/architecture.md),
 [`docs/source-snapshots.md`](docs/source-snapshots.md),
@@ -93,7 +115,7 @@ Run the evaluator tests and validate every schema/fixture against the adjacent
 private SDK checkout with:
 
 ```sh
-python3 -m unittest discover -s tests -v
+uv run --extra test python -m unittest discover -s tests -v
 uv run --with jsonschema python tools/validate_evidence_fixtures.py \
   --sdk-specs ../livefire-sdk/specs \
   --report reports/fact-evidence-synthetic/report.json
