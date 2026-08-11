@@ -577,7 +577,8 @@ def validate_candidate_universes(
     indexes: set[str] = set()
     required = {
         "schema_version", "query_id", "index", "filter_sha256",
-        "eligible_document_count", "expected_top_k_cardinality",
+        "candidate_document_count", "candidate_document_ids_sha256",
+        "source_pointer_membership_sha256", "expected_top_k_cardinality",
         "computation_policy", "receipt_sha256",
     }
     for query_id, universe in by_query.items():
@@ -586,13 +587,19 @@ def validate_candidate_universes(
             raise EvaluationError(f"candidate universe {query_id} missing fields {missing}")
         if universe["schema_version"] != "livefire.rag.evidence-candidate-universe-row/1":
             raise EvaluationError(f"candidate universe {query_id} has unsupported schema_version")
-        eligible_count = universe["eligible_document_count"]
+        candidate_count = universe["candidate_document_count"]
         expected = universe["expected_top_k_cardinality"]
-        if type(eligible_count) is not int or eligible_count < 0:
-            raise EvaluationError(f"candidate universe {query_id} has invalid eligible_document_count")
-        if type(expected) is not int or expected != min(k, eligible_count):
+        if type(candidate_count) is not int or candidate_count < 0:
+            raise EvaluationError(f"candidate universe {query_id} has invalid candidate_document_count")
+        for digest_field in ("candidate_document_ids_sha256", "source_pointer_membership_sha256"):
+            digest = universe[digest_field]
+            if not isinstance(digest, str) or len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise EvaluationError(f"candidate universe {query_id} has invalid {digest_field}")
+        if type(expected) is not int or expected != min(k, candidate_count):
             raise EvaluationError(
-                f"candidate universe {query_id} expected_top_k_cardinality must equal min({k}, eligible_document_count)"
+                f"candidate universe {query_id} expected_top_k_cardinality must equal min({k}, candidate_document_count)"
             )
         query = active[query_id]
         if query.get("expected_top_k_cardinality") != expected:

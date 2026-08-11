@@ -102,7 +102,7 @@ The current answer-free planning review is closed at 34 `eligible_native`
 atoms, 10 `external_source_unbound` atoms, and 32 `outside_index_domain`
 atoms. The tracked real-suite eligibility ledger is the normative denominator
 input; the preliminary plan is retained as review provenance. The companion
-query-authoring worklist requests 99 surfaces for the 33 eligible atoms but
+query-authoring worklist requests 102 surfaces for the 34 eligible atoms but
 contains no query text, answer values, source pointers, qrels, or rankings.
 Those surfaces must be authored by a reviewer who has not seen the answer
 material, then pass a literal-leakage audit before they are compiled into active
@@ -156,11 +156,18 @@ before metrics are finalized. An unjudged candidate is not silently treated as
 irrelevant; it returns the suite to blinded adjudication and produces a new
 qrel-object digest before metrics are calculated or released.
 
-Each active query also binds `expected_top_k_cardinality = min(20, eligible
-corpus cardinality after its sealed filters)`, computed independently of the
+Each active query also binds `expected_top_k_cardinality = min(20, candidate
+document count after its sealed filters)`, computed independently of the
 retriever. A ranking file must contain exactly that many contiguous rows. This
 prevents a system from returning only an easy positive and suppressing difficult
 or still-unjudged candidates.
+
+The corresponding candidate-universe receipt binds the immutable command-index
+manifest, canonical filter, deterministic enumeration policy, sorted post-filter
+command-ID-set digest, and complete command-to-source-pointer membership digest.
+The prototype PCA corpus is not eligible for this role: it is a selected,
+deduplicated exploratory corpus and does not provide complete occurrence or
+filterable metadata membership.
 
 ## Primary metric and gates
 

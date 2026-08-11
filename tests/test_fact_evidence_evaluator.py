@@ -247,6 +247,35 @@ class FactEvidenceEvaluatorTest(unittest.TestCase):
         with self.assertRaises(module.EvaluationError):
             module.validate_ranking_cardinality(queries, rankings, "suppressed", 20)
 
+    def test_candidate_universe_requires_bound_membership_digests(self) -> None:
+        module = self.load_module()
+        queries = [
+            {
+                "query_id": "q",
+                "fact_id": "f",
+                "eligibility": "eligible",
+                "status": "active",
+                "expected_top_k_cardinality": 1,
+                "candidate_universe_receipt_sha256": "0" * 64,
+            }
+        ]
+        universes = [
+            {
+                "schema_version": "livefire.rag.evidence-candidate-universe-row/1",
+                "query_id": "q",
+                "index": {"id": "index", "version": "1", "sha256": "0" * 64},
+                "filter_sha256": "0" * 64,
+                "candidate_document_count": 1,
+                "expected_top_k_cardinality": 1,
+                "computation_policy": {
+                    "id": "enumerator", "version": "1", "sha256": "0" * 64
+                },
+                "receipt_sha256": "0" * 64,
+            }
+        ]
+        with self.assertRaises(module.EvaluationError):
+            module.validate_candidate_universes(queries, universes, 20)
+
     def test_every_active_query_requires_a_declared_hard_negative(self) -> None:
         module = self.load_module()
         queries = module.load_rows(FIXTURE / "queries.jsonl")

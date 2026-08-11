@@ -21,7 +21,7 @@
     "status": {"enum": ["active", "excluded", "unresolved"]},
     "query_text": {"type": "string", "minLength": 1, "maxLength": 8192},
     "query_text_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "expected_top_k_cardinality": {"type": "integer", "minimum": 0, "maximum": 20, "description": "Independently computed min(20, eligible corpus cardinality) after sealed query filters."},
+    "expected_top_k_cardinality": {"type": "integer", "minimum": 0, "maximum": 20, "description": "Independently computed min(20, candidate document count) after sealed query filters."},
     "candidate_universe_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "exclusion_reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "source_fact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
