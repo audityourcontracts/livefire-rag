@@ -1,5 +1,9 @@
 # Standalone evaluation plan
 
+This document summarizes the gates. The normative implementation programme,
+fixture ladder, benchmark construction, report artifacts, and provisional
+promotion thresholds are in `docs/test-program.md`.
+
 Evaluation runs through the CLI and provider without the Livefire runner.
 Labels and expected findings live only in the evaluation harness.
 

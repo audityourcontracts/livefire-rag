@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evaluation-run-report.v1.schema.json",
+  "title": "Livefire RAG evaluation and conformance report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_id", "report_version", "subject", "suite", "harness", "environment", "dispositions", "summary", "suite_results", "quality", "repeatability", "performance", "audit_artifacts", "violations", "waivers", "result_receipt"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evaluation-report/1"},
+    "report_id": {"type": "string", "minLength": 1},
+    "report_version": {"type": "string", "minLength": 1},
+    "subject": {
+      "type": "object",
+      "additionalProperties": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+      "minProperties": 1
+    },
+    "suite": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "harness": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "environment": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+    "dispositions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conformance", "quality", "operations"],
+      "properties": {
+        "conformance": {"enum": ["pass", "fail", "incomplete"]},
+        "quality": {"enum": ["promoted", "rejected", "informational", "incomplete"]},
+        "operations": {"enum": ["qualified", "unqualified", "informational", "incomplete"]}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_total", "passed", "failed", "skipped", "temporal_leakage_violations", "unresolved_pointers", "filter_violations", "execution_attempts", "repeatability_mismatches", "quality_gate_failures", "performance_gate_failures"],
+      "properties": {
+        "required_total": {"type": "integer", "minimum": 0},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "temporal_leakage_violations": {"type": "integer", "minimum": 0},
+        "unresolved_pointers": {"type": "integer", "minimum": 0},
+        "filter_violations": {"type": "integer", "minimum": 0},
+        "execution_attempts": {"type": "integer", "minimum": 0},
+        "repeatability_mismatches": {"type": "integer", "minimum": 0},
+        "quality_gate_failures": {"type": "integer", "minimum": 0},
+        "performance_gate_failures": {"type": "integer", "minimum": 0}
+      }
+    },
+    "suite_results": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/result_section"}},
+    "quality": {"$ref": "#/$defs/result_section"},
+    "repeatability": {"$ref": "#/$defs/result_section"},
+    "performance": {"$ref": "#/$defs/result_section"},
+    "audit_artifacts": {"type": "array", "items": {"$ref": "#/$defs/audit_artifact"}},
+    "violations": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "waivers": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "result_receipt": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+  },
+  "$defs": {
+    "result_section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "results"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["pass", "fail", "incomplete", "informational"]},
+        "results": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "metrics": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "raw_samples": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "duration_ms": {"type": "integer", "minimum": 0}
+      }
+    },
+    "audit_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "artifact", "classification", "retention_policy"],
+      "properties": {
+        "role": {"type": "string", "minLength": 1},
+        "artifact": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "classification": {"type": "string", "minLength": 1},
+        "tenant_scope_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "retention_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "redaction_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "summary", "evidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}},
+        "authority": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+      }
+    }
+  }
+}

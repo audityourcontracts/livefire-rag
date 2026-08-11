@@ -4,9 +4,12 @@
 
 1. Implement the `livefire-sdk` source-snapshot reader and canonical command
    record schema.
-2. Build an OCSF/OpenBOTS adapter fixture with command, principal, host, parent,
+2. Run the source-fidelity audit against pinned OpenBOTS raw bytes and the latest
+   complete admitted OCSF snapshot (initially M21), including commands preserved
+   only in unmapped/native fields and across process/event-log classes.
+3. Build an OCSF/OpenBOTS adapter fixture with command, principal, host, parent,
    process, cloud-action, and source-pointer coverage.
-3. Verify and seal the snapshot; prove the builder runs with no source adapter or
+4. Verify and seal the snapshot; prove the builder runs with no source adapter or
    credentials present.
 
 Exit gate: all records and pointers validate and snapshot accounting closes.
@@ -65,3 +68,13 @@ No Livefire repository change is part of these milestones.
    scanner over the same index pack.
 
 Each item is independently gated and cannot change v1 tool semantics.
+
+## Cross-cutting evaluation and reporting
+
+Implement the L0-L3 deterministic fixture ladder before the full model bake-off.
+Then seal the intent-grouped evaluation suite and emit
+`livefire.rag.evaluation-report/1` for every model/projection candidate. Keep
+conformance, held-out quality, and operational qualification as separate
+dispositions. A candidate cannot be promoted with any temporal leakage,
+unresolved pointer, wrong filter, distance-oracle disagreement, execution
+attempt, or required skipped test, regardless of quality score.

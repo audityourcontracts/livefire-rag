@@ -14,6 +14,10 @@
   conformance identity.
 - `command-index-manifest.v1`: canonical Parquet objects, lineage, policies,
   coverage, and engine-independent query contract.
+- `evaluation-suite-manifest.v1`: sealed corpus, split, catalogue, qrel, metric,
+  and gate identities for repeatable experiments.
+- `evaluation-run-report.v1`: independent conformance, quality, operational,
+  audit-artifact, violation, waiver, and receipt reporting.
 - `cli-outliers.input.v1`: principal/population top-N anomaly request.
 - `cli-search.input.v1`: semantic query with closed filters.
 - `cli-similar.input.v1`: indexed-command similarity request.

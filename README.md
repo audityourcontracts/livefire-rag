@@ -57,7 +57,9 @@ See [`docs/architecture.md`](docs/architecture.md),
 [`docs/command-index.md`](docs/command-index.md),
 [`docs/physical-formats.md`](docs/physical-formats.md),
 [`docs/model-selection.md`](docs/model-selection.md), and
-[`docs/implementation-plan.md`](docs/implementation-plan.md).
+[`docs/implementation-plan.md`](docs/implementation-plan.md). The complete
+source-fidelity, conformance, quality, performance, and reporting program is in
+[`docs/test-program.md`](docs/test-program.md).
 
 ## Repository status
 
