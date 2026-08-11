@@ -1,0 +1,1026 @@
+{
+  "schema_version": "livefire.rag.evidence-query-authoring-worklist/1",
+  "suite_contract": "livefire-23-cloud-53-bots-v1",
+  "status": "awaiting_independent_authoring",
+  "coverage_plan_sha256": "4a1c5a5d4d06c5f16f9914ec55ee51b1e79fd8221326e943141dc0d16c74df5b",
+  "policy": {
+    "required_surfaces": [
+      "analyst_question",
+      "terse_soc",
+      "entity_light_paraphrase"
+    ],
+    "answer_values_visible_to_author": false,
+    "candidate_rankings_visible_to_author": false,
+    "forbidden_literal_classes": [
+      "event_id",
+      "exact_timestamp",
+      "principal_or_host",
+      "resource_identifier",
+      "hash",
+      "answer_only_command_fragment",
+      "evaluator_conclusion"
+    ],
+    "activation_requirements": [
+      "query_text_lock",
+      "leakage_audit",
+      "candidate_universe",
+      "qrel_adjudication",
+      "hard_negative_adjudication"
+    ]
+  },
+  "summary": {
+    "eligible_atoms": 33,
+    "required_surfaces": 99,
+    "by_cohort": {
+      "bots_native": 20,
+      "cloud": 13
+    },
+    "by_assist_mode": {
+      "direct_single": 23,
+      "exact_metadata": 6,
+      "retrieve_then_compute": 4
+    }
+  },
+  "atoms": [
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-acl-event",
+      "question_id": "cloud-chain-001",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "root-authentication",
+      "scope_ids": [
+        "cloud-control-plane",
+        "object-storage"
+      ],
+      "assist_mode": "exact_metadata",
+      "safe_summary": "Public ACL change event",
+      "answer_free_atom_sha256": "2586e92a9fc7f8dcbcb302184f6dfd93f12bcf6bdd6165c9a696b88e9ee6cc8a",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-bucket",
+      "question_id": "cloud-chain-002",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "root-authentication",
+      "scope_ids": [
+        "object-storage"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Exposed storage resource",
+      "answer_free_atom_sha256": "a4569537d88c860c5d9dd9376636f961c9b98b4327ff82a1ae3f8939b27f3edd",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-actor-auth",
+      "question_id": "cloud-chain-003",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "root-authentication",
+      "scope_ids": [
+        "cloud-control-plane"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Direct IAM-user console session authentication",
+      "answer_free_atom_sha256": "3b7742deaff5351b909b4e5cb48f1c2e572be6abefbb79e6f844b1e06406e513",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-public-grants",
+      "question_id": "cloud-chain-004",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "root-authentication",
+      "scope_ids": [
+        "cloud-control-plane",
+        "object-storage"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Public principal received read and write grants",
+      "answer_free_atom_sha256": "a244b4e0338611c31b95d04f894ed8edb98ac8bd0433dc3f31359947a3c7183e",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-marker-upload",
+      "question_id": "cloud-chain-006",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "public-exploitation",
+      "scope_ids": [
+        "object-storage"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Anonymous warning marker upload",
+      "answer_free_atom_sha256": "f815cd8afd7dd2d281095d3c3d7e559177b463e001daebea15647b64b54c54d7",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-archive-overwrite",
+      "question_id": "cloud-chain-007",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "public-exploitation",
+      "scope_ids": [
+        "object-storage"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Anonymous application-archive overwrite",
+      "answer_free_atom_sha256": "3237bf8a16140066cb0577f585312b3a289669706cec2deea4d5290edb756532",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-instance-termination",
+      "question_id": "cloud-chain-008",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "deployment-propagation",
+      "scope_ids": [
+        "cloud-control-plane",
+        "deployment"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Console user terminated running Auto Scaling members",
+      "answer_free_atom_sha256": "b0daa3a6acc41eda1cb502e78b5a3b06dfa50483e2f266ba3b27f4390ce08cbb",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-instance-launch",
+      "question_id": "cloud-chain-009",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "deployment-propagation",
+      "scope_ids": [
+        "deployment"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Auto Scaling launched a replacement web instance",
+      "answer_free_atom_sha256": "9b1fdc1df351590b1ef86497b28c021baaf1efeb0718b96e95b8976917b98370",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-target-registration",
+      "question_id": "cloud-chain-010",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "deployment-propagation",
+      "scope_ids": [
+        "deployment",
+        "service-delivery"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "New instance entered the web target group",
+      "answer_free_atom_sha256": "93a7927b895aa0eea1de840830afb1516f0b5c725ad1b8c9739ce3d8cdfb0ef4",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-role-download",
+      "question_id": "cloud-chain-011",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "deployment-propagation",
+      "scope_ids": [
+        "object-storage",
+        "deployment"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Instance role downloaded the overwritten archive",
+      "answer_free_atom_sha256": "81a0026ead597321620cff5b79dc36ecd080912a670467f708babc0357c3d400",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-acl-removal",
+      "question_id": "cloud-chain-022",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "remediation",
+      "scope_ids": [
+        "cloud-control-plane",
+        "remediation"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Public ACL grants were removed",
+      "answer_free_atom_sha256": "7e24710676b200531b93b01c80ae63d16277066a4f91b0a9f622290e9df7c4b6",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-clean-archive",
+      "question_id": "cloud-chain-024",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "remediation",
+      "scope_ids": [
+        "object-storage",
+        "remediation"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "A smaller clean archive replaced the malicious artifact",
+      "answer_free_atom_sha256": "bb48f34661c01f5a0ae15170ccf1cd4257a1c20ced6a1d4372931fa700f79f72",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-clean-download",
+      "question_id": "cloud-chain-025",
+      "domain": "public-bucket-browser-mining",
+      "cohort": "cloud",
+      "incident_id": "public-bucket-browser-mining",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "phase_id": "remediation",
+      "scope_ids": [
+        "deployment",
+        "remediation"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "Replacement instances downloaded the clean archive",
+      "answer_free_atom_sha256": "eaf76a20bd370e0c0472034e8789f5c08b44617994b88c77c721f7136155d230",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q200",
+      "question_id": "200",
+      "domain": "cloud-orientation",
+      "cohort": "bots_native",
+      "incident_id": "cloud-orientation",
+      "resampling_cluster_id": "incident:cloud-orientation",
+      "phase_id": null,
+      "scope_ids": [
+        "cloud-control-plane"
+      ],
+      "assist_mode": "retrieve_then_compute",
+      "safe_summary": "iam users",
+      "answer_free_atom_sha256": "19321cce5e68ecc4bae6fa4f3bb2786de64436910074875e538fdcebeef1ae4b",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q203",
+      "question_id": "203",
+      "domain": "public-cloud-storage-exposure",
+      "cohort": "bots_native",
+      "incident_id": "public-cloud-storage-exposure",
+      "resampling_cluster_id": "incident:public-cloud-storage-exposure",
+      "phase_id": null,
+      "scope_ids": [
+        "object-storage",
+        "cloud-control-plane",
+        "cross-source-correlation"
+      ],
+      "assist_mode": "exact_metadata",
+      "safe_summary": "public acl event",
+      "answer_free_atom_sha256": "6808a373a3a014dba35537bddc203684577e09bb9edd4808e4071ecb486584b1",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q204",
+      "question_id": "204",
+      "domain": "public-cloud-storage-exposure",
+      "cohort": "bots_native",
+      "incident_id": "public-cloud-storage-exposure",
+      "resampling_cluster_id": "incident:public-cloud-storage-exposure",
+      "phase_id": null,
+      "scope_ids": [
+        "object-storage"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "public bucket",
+      "answer_free_atom_sha256": "74bd79729bf640e4c6ce2ec3ba69fd4465f7786577c742e53c343555bf1fd6a3",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q205",
+      "question_id": "205",
+      "domain": "public-cloud-storage-exposure",
+      "cohort": "bots_native",
+      "incident_id": "public-cloud-storage-exposure",
+      "resampling_cluster_id": "incident:public-cloud-storage-exposure",
+      "phase_id": null,
+      "scope_ids": [
+        "object-storage"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "public text upload",
+      "answer_free_atom_sha256": "699bd750e612d7a13cf7a0366dc698dbc59a17bf578d3ab423b99b9903c42280",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q206",
+      "question_id": "206",
+      "domain": "public-cloud-storage-exposure",
+      "cohort": "bots_native",
+      "incident_id": "public-cloud-storage-exposure",
+      "resampling_cluster_id": "incident:public-cloud-storage-exposure",
+      "phase_id": null,
+      "scope_ids": [
+        "object-storage",
+        "collection-exfiltration"
+      ],
+      "assist_mode": "exact_metadata",
+      "safe_summary": "public archive size",
+      "answer_free_atom_sha256": "8dccaea752d7e2eba161b7a10aec647d42787764bf353d5335382f5b10a8a37b",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q218",
+      "question_id": "218",
+      "domain": "cloud-credential-leakage-and-misuse",
+      "cohort": "bots_native",
+      "incident_id": "cloud-credential-leakage-and-misuse",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "phase_id": null,
+      "scope_ids": [
+        "cloud-control-plane",
+        "authentication",
+        "cross-source-correlation"
+      ],
+      "assist_mode": "retrieve_then_compute",
+      "safe_summary": "iam key most errors",
+      "answer_free_atom_sha256": "5fa19da84d2d4d764f40ab505201da51226dd9ba490d50e136abeab51baa90be",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q221",
+      "question_id": "221",
+      "domain": "cloud-credential-leakage-and-misuse",
+      "cohort": "bots_native",
+      "incident_id": "cloud-credential-leakage-and-misuse",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "phase_id": null,
+      "scope_ids": [
+        "cloud-control-plane",
+        "authentication"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "unauthorized key resource",
+      "answer_free_atom_sha256": "c64afb8b40656294eff38bda3944ba5ba25b0bc5b76ce954c52ede46b3aa547e",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q222",
+      "question_id": "222",
+      "domain": "cloud-credential-leakage-and-misuse",
+      "cohort": "bots_native",
+      "incident_id": "cloud-credential-leakage-and-misuse",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "phase_id": null,
+      "scope_ids": [
+        "cloud-control-plane"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "describe account user agent",
+      "answer_free_atom_sha256": "c2cb5976f439c1b82d0ec9d2f88532dabf7d0676982eea922939678b659a0b3e",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q300",
+      "question_id": "300",
+      "domain": "phishing-account-takeover-and-endpoint-compromise",
+      "cohort": "bots_native",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "phase_id": null,
+      "scope_ids": [
+        "authentication",
+        "network-c2",
+        "cross-source-correlation"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "onedrive user agent",
+      "answer_free_atom_sha256": "2b5b3283cfd7254594796a351c58e5cdcebd4b105985e087586064dae3b37034",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q303",
+      "question_id": "303",
+      "domain": "phishing-account-takeover-and-endpoint-compromise",
+      "cohort": "bots_native",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "phase_id": null,
+      "scope_ids": [
+        "authentication",
+        "endpoint-execution"
+      ],
+      "assist_mode": "exact_metadata",
+      "safe_summary": "root created password",
+      "answer_free_atom_sha256": "fa24cfc5a6173ed0253e20da19ddeededf561400f209e310d0b28b6c525fb28d",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q304",
+      "question_id": "304",
+      "domain": "phishing-account-takeover-and-endpoint-compromise",
+      "cohort": "bots_native",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "phase_id": null,
+      "scope_ids": [
+        "endpoint-execution",
+        "lateral-movement"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "compromised endpoint user",
+      "answer_free_atom_sha256": "2bff7b8ca3f7354499406de2835e25afa3df8026444345ba9e9a6391cad0d732",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q306",
+      "question_id": "306",
+      "domain": "phishing-account-takeover-and-endpoint-compromise",
+      "cohort": "bots_native",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "phase_id": null,
+      "scope_ids": [
+        "collection-exfiltration"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "mail search string",
+      "answer_free_atom_sha256": "ce1693acf6b0055d2a68f1fc85496e0e5fd86215cf3a08590a2f737bf9a03704",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q307",
+      "question_id": "307",
+      "domain": "phishing-account-takeover-and-endpoint-compromise",
+      "cohort": "bots_native",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "phase_id": null,
+      "scope_ids": [
+        "endpoint-execution"
+      ],
+      "assist_mode": "exact_metadata",
+      "safe_summary": "scanner md5",
+      "answer_free_atom_sha256": "75490e29000537531ef061478662bf713e4ac8658e4e0f4ae28671682874982a",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q309",
+      "question_id": "309",
+      "domain": "phishing-account-takeover-and-endpoint-compromise",
+      "cohort": "bots_native",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "phase_id": null,
+      "scope_ids": [
+        "authentication",
+        "cross-source-correlation"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "disabled account",
+      "answer_free_atom_sha256": "038f61ecba440f22be4a61b79850fe723c791cdb9f5b134fe6aed9c2ac48e6dd",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q312",
+      "question_id": "312",
+      "domain": "phishing-account-takeover-and-endpoint-compromise",
+      "cohort": "bots_native",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "phase_id": null,
+      "scope_ids": [
+        "network-c2",
+        "collection-exfiltration",
+        "cross-source-correlation"
+      ],
+      "assist_mode": "retrieve_then_compute",
+      "safe_summary": "malicious link unique ips",
+      "answer_free_atom_sha256": "d9b5f2cec75c24cc36df5c15b9198ad57854452a53494b591fcc15c4c6ad11c9",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q319",
+      "question_id": "319",
+      "domain": "identity-abuse-and-command-and-control",
+      "cohort": "bots_native",
+      "incident_id": "identity-abuse-and-command-and-control",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "phase_id": null,
+      "scope_ids": [
+        "authentication"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "bcc rule name",
+      "answer_free_atom_sha256": "77d687873e7bab086582f586d729d3139d979f01f3941d8f5d9a03185d0cc00a",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q320",
+      "question_id": "320",
+      "domain": "identity-abuse-and-command-and-control",
+      "cohort": "bots_native",
+      "incident_id": "identity-abuse-and-command-and-control",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "phase_id": null,
+      "scope_ids": [
+        "authentication"
+      ],
+      "assist_mode": "exact_metadata",
+      "safe_summary": "created user password",
+      "answer_free_atom_sha256": "c0774b334960db2e43cc72dae57c8bb8f0175c506b279581d62811a3ac21862f",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q322",
+      "question_id": "322",
+      "domain": "identity-abuse-and-command-and-control",
+      "cohort": "bots_native",
+      "incident_id": "identity-abuse-and-command-and-control",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "phase_id": null,
+      "scope_ids": [
+        "network-c2"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "c2 url path",
+      "answer_free_atom_sha256": "e10f784dcdc4707b60a6a7e7a8f3cd42e20350475ab6fd4a2ab0f8d40611e45b",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q323",
+      "question_id": "323",
+      "domain": "identity-abuse-and-command-and-control",
+      "cohort": "bots_native",
+      "incident_id": "identity-abuse-and-command-and-control",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "phase_id": null,
+      "scope_ids": [
+        "network-c2",
+        "endpoint-execution",
+        "cross-source-correlation"
+      ],
+      "assist_mode": "retrieve_then_compute",
+      "safe_summary": "c2 endpoint hosts",
+      "answer_free_atom_sha256": "cd9b16ccbbb9de5d275d98e11c0c60dbdc24e926988ae09b8c474b0810fd44ae",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q328",
+      "question_id": "328",
+      "domain": "linux-exploitation-and-privilege-escalation",
+      "cohort": "bots_native",
+      "incident_id": "linux-exploitation-and-privilege-escalation",
+      "resampling_cluster_id": "incident:linux-exploitation-and-privilege-escalation",
+      "phase_id": null,
+      "scope_ids": [
+        "endpoint-execution"
+      ],
+      "assist_mode": "direct_single",
+      "safe_summary": "privesc file line2",
+      "answer_free_atom_sha256": "6d1785991b4eb9bfd3e98f0a5e3d5f0d65ddafc430768376292289914cf6aed3",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    }
+  ]
+}

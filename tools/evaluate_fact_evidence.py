@@ -39,6 +39,11 @@ TERMINAL_ELIGIBILITY = {
     "not_retrieval_testable",
 }
 ELIGIBLE_INVENTORY = {"eligible_native", "eligible_external"}
+REQUIRED_REAL_QUERY_SURFACES = {
+    "analyst_question",
+    "terse_soc",
+    "entity_light_paraphrase",
+}
 
 
 class EvaluationError(ValueError):
@@ -369,6 +374,13 @@ def validate_inventory_queries(
         surface_names = [row.get("surface", row["query_id"]) for row in surfaces]
         if len(surface_names) != len(set(surface_names)):
             raise EvaluationError(f"eligible fact {fact_id} has duplicate query surfaces")
+        if inventory.get("suite_contract") == "livefire-23-cloud-53-bots-v1":
+            actual_surfaces = set(surface_names)
+            if actual_surfaces != REQUIRED_REAL_QUERY_SURFACES:
+                raise EvaluationError(
+                    f"eligible fact {fact_id} must have exactly the real-suite surfaces "
+                    f"{sorted(REQUIRED_REAL_QUERY_SURFACES)}; found {sorted(actual_surfaces)}"
+                )
         clusters = {
             str(row.get("resampling_cluster_id", row.get("incident_id", fact_id)))
             for row in surfaces

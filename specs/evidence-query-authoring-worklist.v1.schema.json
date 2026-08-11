@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-query-authoring-worklist.v1.schema.json",
+  "title": "Blinded evidence-query authoring worklist v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite_contract", "status", "coverage_plan_sha256", "policy", "summary", "atoms"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-query-authoring-worklist/1"},
+    "suite_contract": {"const": "livefire-23-cloud-53-bots-v1"},
+    "status": {"const": "awaiting_independent_authoring"},
+    "coverage_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_surfaces", "answer_values_visible_to_author", "candidate_rankings_visible_to_author", "forbidden_literal_classes", "activation_requirements"],
+      "properties": {
+        "required_surfaces": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"enum": ["analyst_question", "terse_soc", "entity_light_paraphrase"]}
+        },
+        "answer_values_visible_to_author": {"const": false},
+        "candidate_rankings_visible_to_author": {"const": false},
+        "forbidden_literal_classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "activation_requirements": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eligible_atoms", "required_surfaces", "by_cohort", "by_assist_mode"],
+      "properties": {
+        "eligible_atoms": {"type": "integer", "minimum": 1},
+        "required_surfaces": {"type": "integer", "minimum": 3},
+        "by_cohort": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "by_assist_mode": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    },
+    "atoms": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["benchmark_id", "atom_id", "question_id", "domain", "cohort", "incident_id", "resampling_cluster_id", "scope_ids", "assist_mode", "safe_summary", "answer_free_atom_sha256", "required_surfaces", "authoring_status", "next_receipts"],
+        "properties": {
+          "benchmark_id": {"type": "string", "minLength": 1},
+          "atom_id": {"type": "string", "minLength": 1},
+          "question_id": {"type": "string", "minLength": 1},
+          "domain": {"type": "string", "minLength": 1},
+          "cohort": {"enum": ["cloud", "bots_native", "external"]},
+          "incident_id": {"type": "string", "minLength": 1},
+          "resampling_cluster_id": {"type": "string", "minLength": 1},
+          "phase_id": {"type": ["string", "null"]},
+          "scope_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+          "assist_mode": {"enum": ["direct_single", "direct_multi", "retrieve_then_compute", "exact_metadata"]},
+          "safe_summary": {"type": "string", "minLength": 1},
+          "answer_free_atom_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "required_surfaces": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {"enum": ["analyst_question", "terse_soc", "entity_light_paraphrase"]}
+          },
+          "authoring_status": {"const": "pending_blinded_author"},
+          "next_receipts": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"enum": ["query_text_lock", "leakage_audit", "candidate_universe", "qrel_adjudication", "hard_negative_adjudication"]}
+          }
+        }
+      }
+    }
+  },
+  "$comment": "This is a preparation artifact, not an evaluator query catalogue. Query rows become active only after independent authoring, leakage review, index sealing, and candidate-universe receipt creation."
+}

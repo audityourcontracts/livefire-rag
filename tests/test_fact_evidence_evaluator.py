@@ -259,6 +259,38 @@ class FactEvidenceEvaluatorTest(unittest.TestCase):
         with self.assertRaises(module.EvaluationError):
             module.validate_benchmark_rows(queries, qrels, negatives)
 
+    def test_real_suite_requires_the_exact_three_query_surfaces(self) -> None:
+        module = self.load_module()
+        inventory = {
+            "suite_contract": "livefire-23-cloud-53-bots-v1",
+            "atoms": [
+                {
+                    "atom_id": "fact",
+                    "eligibility": "eligible_native",
+                    "cohort": "cloud",
+                    "resampling_cluster_id": "cluster",
+                    "incident_id": "incident",
+                }
+            ],
+        }
+        queries = [
+            {
+                "query_id": f"q{index}",
+                "fact_id": "fact",
+                "eligibility": "eligible",
+                "status": "active",
+                "surface": surface,
+                "cohort": "cloud",
+                "resampling_cluster_id": "cluster",
+                "incident_id": "incident",
+            }
+            for index, surface in enumerate(
+                ["analyst_question", "terse_soc", "canonical_fact"], 1
+            )
+        ]
+        with self.assertRaises(module.EvaluationError):
+            module.validate_inventory_queries(inventory, queries, 3)
+
     def test_strict_ranking_rejects_string_correctness_flags(self) -> None:
         module = self.load_module()
         row = {

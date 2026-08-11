@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -82,12 +83,49 @@ def main() -> int:
         raise ValueError("coverage plan benchmark cohorts do not reconcile to 76")
     if sum(plan["summary"]["by_preliminary_eligibility"].values()) != 76:
         raise ValueError("coverage plan eligibility classes do not reconcile to 76")
+    actual_plan_classes = Counter(atom["preliminary_eligibility"] for atom in plan["atoms"])
+    declared_plan_classes = plan["summary"]["by_preliminary_eligibility"]
+    if any(actual_plan_classes.get(name, 0) != count for name, count in declared_plan_classes.items()):
+        raise ValueError("coverage plan eligibility summary does not match its atoms")
+    if plan["summary"]["by_preliminary_eligibility"].get("needs_review") != 0:
+        raise ValueError("coverage plan must close every needs_review atom before real-suite preparation")
+
+    real_fixture_dir = root / "fixtures/fact-evidence-real"
+    real_ledger = load_json(real_fixture_dir / "eligibility-ledger.json")
+    Draft202012Validator(ledger_schema, registry=registry).validate(real_ledger)
+    worklist_schema = schemas[(root / "specs/evidence-query-authoring-worklist.v1.schema.json").resolve()]
+    real_worklist = load_json(real_fixture_dir / "query-authoring-worklist.json")
+    Draft202012Validator(worklist_schema, registry=registry).validate(real_worklist)
+    plan_ids = {atom["atom_id"] for atom in plan["atoms"]}
+    ledger_ids = {atom["atom_id"] for atom in real_ledger["atoms"]}
+    if ledger_ids != plan_ids:
+        raise ValueError("real eligibility ledger atom IDs do not match the coverage plan")
+    terminal_counts = Counter(atom["eligibility"] for atom in real_ledger["atoms"])
+    expected_terminal_counts = {
+        "eligible_native": 33,
+        "external_source_unbound": 10,
+        "outside_index_domain": 33,
+    }
+    if dict(terminal_counts) != expected_terminal_counts:
+        raise ValueError(
+            f"unexpected real-suite terminal eligibility counts: {dict(terminal_counts)}"
+        )
+    eligible_ids = {
+        atom["atom_id"]
+        for atom in real_ledger["atoms"]
+        if atom["eligibility"] in {"eligible_native", "eligible_external"}
+    }
+    worklist_ids = {atom["atom_id"] for atom in real_worklist["atoms"]}
+    if worklist_ids != eligible_ids:
+        raise ValueError("query-authoring worklist must contain exactly the eligible ledger atoms")
+    if real_worklist["summary"]["required_surfaces"] != len(eligible_ids) * 3:
+        raise ValueError("query-authoring worklist surface count does not reconcile")
 
     if args.report:
         comparison = schemas[(root / "specs/evidence-benchmark-comparison.v1.schema.json").resolve()]
         Draft202012Validator(comparison, registry=registry).validate(load_json(args.report))
 
-    print(f"validated {len(schemas)} schemas, the eligibility ledger, 6 fixture sets, and the 76-atom coverage plan")
+    print(f"validated {len(schemas)} schemas, synthetic fixtures, and the closed 76-atom real-suite preparation artifacts")
     if args.report:
         print(f"validated comparison report: {args.report}")
     return 0

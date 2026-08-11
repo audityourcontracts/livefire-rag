@@ -16,3 +16,11 @@ qrels, matched hard negatives, a weak baseline, an improved candidate, and
 promotion gates. Its sealed eligibility ledger and independently counted
 candidate-universe receipts exercise denominator and top-N closure. It is not a
 quality benchmark and does not contain BOTS answer material.
+
+`fact-evidence-real/` contains answer-free preparation artifacts for the real
+23-cloud/53-BOTS suite. The eligibility ledger closes all 76 atoms against the
+current index domain. The query-authoring worklist contains only evaluator-safe
+summaries and requires three independently authored surfaces for each eligible
+atom. It is deliberately not an active query catalogue: query text, candidate
+universe receipts, qrels, and hard negatives are created only after blinded
+authoring and index sealing.

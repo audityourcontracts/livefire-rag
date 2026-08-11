@@ -1,0 +1,750 @@
+{
+  "schema_version": "livefire.rag.evidence-eligibility-ledger/1",
+  "suite_contract": "livefire-23-cloud-53-bots-v1",
+  "summary": {
+    "total_atoms": 76,
+    "by_benchmark": {
+      "botsv3-cloud-incident-chain": 23,
+      "botsv3-hunt-evidence": 53
+    }
+  },
+  "atoms": [
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-acl-event",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-bucket",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-actor-auth",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-public-grants",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-config-noncompliant",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-marker-upload",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-archive-overwrite",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-instance-termination",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-instance-launch",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-target-registration",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-role-download",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-cloud-init-consumption",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-apache-ready",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-first-routed-request",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-bstoll-endpoint",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-chrome-coinhive",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-mining-network",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-endpoint-detection",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-btun-blocked",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-acl-removal",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-config-restored",
+      "eligibility": "outside_index_domain",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-clean-archive",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-cloud-incident-chain",
+      "atom_id": "chain-clean-download",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "incident:public-bucket-browser-mining",
+      "incident_id": "public-bucket-browser-mining"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q200",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:cloud-orientation",
+      "incident_id": "cloud-orientation"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q202",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:cloud-orientation",
+      "incident_id": "cloud-orientation",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q203",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:public-cloud-storage-exposure",
+      "incident_id": "public-cloud-storage-exposure"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q204",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:public-cloud-storage-exposure",
+      "incident_id": "public-cloud-storage-exposure"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q205",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:public-cloud-storage-exposure",
+      "incident_id": "public-cloud-storage-exposure"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q206",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:public-cloud-storage-exposure",
+      "incident_id": "public-cloud-storage-exposure"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q208",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q209",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q210",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q211",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q212",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q213",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q214",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q215",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q216",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:endpoint-cryptomining",
+      "incident_id": "endpoint-cryptomining",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q218",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "incident_id": "cloud-credential-leakage-and-misuse"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q219",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "incident_id": "cloud-credential-leakage-and-misuse",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q220",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "incident_id": "cloud-credential-leakage-and-misuse",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q221",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "incident_id": "cloud-credential-leakage-and-misuse"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q222",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "incident_id": "cloud-credential-leakage-and-misuse"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q223",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:cloud-credential-leakage-and-misuse",
+      "incident_id": "cloud-credential-leakage-and-misuse",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q224",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:web-defacement",
+      "incident_id": "web-defacement",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q225",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:web-defacement",
+      "incident_id": "web-defacement",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q300",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q301",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q302",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q303",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q304",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q305",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q306",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q307",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q308",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q309",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q310",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q311",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q312",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:phishing-account-takeover-and-endpoint-compromise",
+      "incident_id": "phishing-account-takeover-and-endpoint-compromise"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q314",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:attack-tool-staging-and-execution",
+      "incident_id": "attack-tool-staging-and-execution",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q315",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:attack-tool-staging-and-execution",
+      "incident_id": "attack-tool-staging-and-execution",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q316",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:attack-tool-staging-and-execution",
+      "incident_id": "attack-tool-staging-and-execution",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q317",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:attack-tool-staging-and-execution",
+      "incident_id": "attack-tool-staging-and-execution",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q318",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "incident_id": "identity-abuse-and-command-and-control",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q319",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "incident_id": "identity-abuse-and-command-and-control"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q320",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "incident_id": "identity-abuse-and-command-and-control"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q321",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "incident_id": "identity-abuse-and-command-and-control",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q322",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "incident_id": "identity-abuse-and-command-and-control"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q323",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "incident_id": "identity-abuse-and-command-and-control"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q324",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "incident_id": "identity-abuse-and-command-and-control",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q325",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:identity-abuse-and-command-and-control",
+      "incident_id": "identity-abuse-and-command-and-control",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q328",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:linux-exploitation-and-privilege-escalation",
+      "incident_id": "linux-exploitation-and-privilege-escalation"
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q330",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:linux-exploitation-and-privilege-escalation",
+      "incident_id": "linux-exploitation-and-privilege-escalation",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q331",
+      "eligibility": "outside_index_domain",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "incident:linux-exploitation-and-privilege-escalation",
+      "incident_id": "linux-exploitation-and-privilege-escalation",
+      "reason_codes": [
+        "outside_command_script_cloud_action_domain"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q332",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:linux-exploitation-and-privilege-escalation",
+      "incident_id": "linux-exploitation-and-privilege-escalation",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q333",
+      "eligibility": "external_source_unbound",
+      "cohort": "external",
+      "resampling_cluster_id": "incident:linux-exploitation-and-privilege-escalation",
+      "incident_id": "linux-exploitation-and-privilege-escalation",
+      "reason_codes": [
+        "external_snapshot_unbound"
+      ]
+    }
+  ]
+}
