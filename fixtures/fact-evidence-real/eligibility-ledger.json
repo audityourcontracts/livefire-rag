@@ -588,13 +588,10 @@
     {
       "benchmark_id": "botsv3-hunt-evidence",
       "atom_id": "botsv3-q315",
-      "eligibility": "outside_index_domain",
+      "eligibility": "eligible_native",
       "cohort": "bots_native",
       "resampling_cluster_id": "incident:attack-tool-staging-and-execution",
-      "incident_id": "attack-tool-staging-and-execution",
-      "reason_codes": [
-        "outside_command_script_cloud_action_domain"
-      ]
+      "incident_id": "attack-tool-staging-and-execution"
     },
     {
       "benchmark_id": "botsv3-hunt-evidence",

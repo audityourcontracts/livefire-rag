@@ -2,7 +2,7 @@
   "schema_version": "livefire.rag.evidence-query-authoring-worklist/1",
   "suite_contract": "livefire-23-cloud-53-bots-v1",
   "status": "awaiting_independent_authoring",
-  "coverage_plan_sha256": "4a1c5a5d4d06c5f16f9914ec55ee51b1e79fd8221326e943141dc0d16c74df5b",
+  "coverage_plan_sha256": "c398334a713c3063de4bee10600f87b36e4be731cfc182c19ba466909aa34a0f",
   "policy": {
     "required_surfaces": [
       "analyst_question",
@@ -29,16 +29,16 @@
     ]
   },
   "summary": {
-    "eligible_atoms": 33,
-    "required_surfaces": 99,
+    "eligible_atoms": 34,
+    "required_surfaces": 102,
     "by_cohort": {
-      "bots_native": 20,
+      "bots_native": 21,
       "cloud": 13
     },
     "by_assist_mode": {
       "direct_single": 23,
       "exact_metadata": 6,
-      "retrieve_then_compute": 4
+      "retrieve_then_compute": 5
     }
   },
   "atoms": [
@@ -861,6 +861,36 @@
       "assist_mode": "retrieve_then_compute",
       "safe_summary": "malicious link unique ips",
       "answer_free_atom_sha256": "d9b5f2cec75c24cc36df5c15b9198ad57854452a53494b591fcc15c4c6ad11c9",
+      "required_surfaces": [
+        "analyst_question",
+        "terse_soc",
+        "entity_light_paraphrase"
+      ],
+      "authoring_status": "pending_blinded_author",
+      "next_receipts": [
+        "query_text_lock",
+        "leakage_audit",
+        "candidate_universe",
+        "qrel_adjudication",
+        "hard_negative_adjudication"
+      ]
+    },
+    {
+      "benchmark_id": "botsv3-hunt-evidence",
+      "atom_id": "botsv3-q315",
+      "question_id": "315",
+      "domain": "attack-tool-staging-and-execution",
+      "cohort": "bots_native",
+      "incident_id": "attack-tool-staging-and-execution",
+      "resampling_cluster_id": "incident:attack-tool-staging-and-execution",
+      "phase_id": null,
+      "scope_ids": [
+        "endpoint-execution",
+        "collection-exfiltration"
+      ],
+      "assist_mode": "retrieve_then_compute",
+      "safe_summary": "streamed tmp files",
+      "answer_free_atom_sha256": "afdc2dfd03a5cd1e8b34fedb8ebf0b59706356566d0e11f0f54353ca5ce24fec",
       "required_surfaces": [
         "analyst_question",
         "terse_soc",

@@ -102,9 +102,9 @@ def main() -> int:
         raise ValueError("real eligibility ledger atom IDs do not match the coverage plan")
     terminal_counts = Counter(atom["eligibility"] for atom in real_ledger["atoms"])
     expected_terminal_counts = {
-        "eligible_native": 33,
+        "eligible_native": 34,
         "external_source_unbound": 10,
-        "outside_index_domain": 33,
+        "outside_index_domain": 32,
     }
     if dict(terminal_counts) != expected_terminal_counts:
         raise ValueError(

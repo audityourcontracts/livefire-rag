@@ -40,10 +40,10 @@
     "by_preliminary_eligibility": {
       "direct_single": 23,
       "direct_multi": 0,
-      "retrieve_then_compute": 4,
+      "retrieve_then_compute": 5,
       "exact_metadata": 6,
       "external_enrichment": 10,
-      "outside_current_index": 33,
+      "outside_current_index": 32,
       "needs_review": 0
     }
   },
@@ -109,7 +109,7 @@
     {"benchmark_id":"botsv3-hunt-evidence","domain":"phishing-account-takeover-and-endpoint-compromise","atom_id":"botsv3-q311","question_id":"311","title":"embedded executable","scopes":["endpoint-execution"],"phase_id":null,"external_enrichment":false,"preliminary_eligibility":"outside_current_index","rationale":"The authoritative source contains the executable in Sysmon and related telemetry, but the current sealed command/script/cloud-action corpus contains no matching command document."},
     {"benchmark_id":"botsv3-hunt-evidence","domain":"phishing-account-takeover-and-endpoint-compromise","atom_id":"botsv3-q312","question_id":"312","title":"malicious link unique ips","scopes":["network-c2","collection-exfiltration","cross-source-correlation"],"phase_id":null,"external_enrichment":false,"preliminary_eligibility":"retrieve_then_compute","rationale":"SaaS link-use actions can retrieve candidates, but the unique-client count requires exact aggregation."},
     {"benchmark_id":"botsv3-hunt-evidence","domain":"attack-tool-staging-and-execution","atom_id":"botsv3-q314","question_id":"314","title":"attack tools port","scopes":["network-c2","endpoint-execution"],"phase_id":null,"external_enrichment":false,"preliminary_eligibility":"outside_current_index","rationale":"The destination port is taken from HTTP telemetry rather than the PowerShell command itself."},
-    {"benchmark_id":"botsv3-hunt-evidence","domain":"attack-tool-staging-and-execution","atom_id":"botsv3-q315","question_id":"315","title":"streamed tmp files","scopes":["endpoint-execution","collection-exfiltration"],"phase_id":null,"external_enrichment":false,"preliminary_eligibility":"outside_current_index","rationale":"The authoritative source carries the complete file evidence across Windows Security and osquery telemetry, while the current sealed corpus lacks a command document containing the required file evidence."},
+    {"benchmark_id":"botsv3-hunt-evidence","domain":"attack-tool-staging-and-execution","atom_id":"botsv3-q315","question_id":"315","title":"streamed tmp files","scopes":["endpoint-execution","collection-exfiltration"],"phase_id":null,"external_enrichment":false,"preliminary_eligibility":"retrieve_then_compute","rationale":"Windows Security process-creation records contain the complete command lines that write the target paths. Their absence from the prototype corpus is an adapter omission; retrieval should surface the commands and authoritative hydration should compute the exact distinct path set."},
     {"benchmark_id":"botsv3-hunt-evidence","domain":"attack-tool-staging-and-execution","atom_id":"botsv3-q316","question_id":"316","title":"attack tools file","scopes":["web-exploitation","endpoint-execution"],"phase_id":null,"external_enrichment":false,"preliminary_eligibility":"outside_current_index","rationale":"The file target is extracted from an HTTP transfer event."},
     {"benchmark_id":"botsv3-hunt-evidence","domain":"attack-tool-staging-and-execution","atom_id":"botsv3-q317","question_id":"317","title":"first uploaded executable","scopes":["web-exploitation","endpoint-execution"],"phase_id":null,"external_enrichment":false,"preliminary_eligibility":"outside_current_index","rationale":"The fact is the first matching file-creation event, not a command document."},
     {"benchmark_id":"botsv3-hunt-evidence","domain":"identity-abuse-and-command-and-control","atom_id":"botsv3-q318","question_id":"318","title":"password spray country","scopes":["authentication","network-c2","cross-source-correlation"],"phase_id":null,"external_enrichment":true,"preliminary_eligibility":"external_enrichment","rationale":"Authentication logs identify the source client, while country resolution is external enrichment."},

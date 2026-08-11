@@ -98,8 +98,8 @@ could assist before adjudication. Sealing translates that planning class into
 the normative source/index eligibility disposition; it does not let the model
 choose its denominator after rankings are visible.
 
-The current answer-free planning review is closed at 33 `eligible_native`
-atoms, 10 `external_source_unbound` atoms, and 33 `outside_index_domain`
+The current answer-free planning review is closed at 34 `eligible_native`
+atoms, 10 `external_source_unbound` atoms, and 32 `outside_index_domain`
 atoms. The tracked real-suite eligibility ledger is the normative denominator
 input; the preliminary plan is retained as review provenance. The companion
 query-authoring worklist requests 99 surfaces for the 33 eligible atoms but
