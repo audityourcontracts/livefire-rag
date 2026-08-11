@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-candidate-universe-row.v1.schema.json",
+  "title": "Independently computed query candidate-universe row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "query_id", "index", "filter_sha256", "eligible_document_count", "expected_top_k_cardinality", "computation_policy", "receipt_sha256"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-candidate-universe-row/1"},
+    "query_id": {"type": "string", "minLength": 1},
+    "index": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "filter_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "eligible_document_count": {"type": "integer", "minimum": 0},
+    "expected_top_k_cardinality": {"type": "integer", "minimum": 0, "maximum": 20},
+    "computation_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "$comment": "Admission requires expected_top_k_cardinality = min(20, eligible_document_count), one row per active query, query receipt digest agreement, and one identical index reference across the suite."
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-eligibility-ledger.v1.schema.json",
+  "title": "Sealed fact-to-evidence eligibility ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite_contract", "summary", "atoms"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-eligibility-ledger/1"},
+    "suite_contract": {"enum": ["generic", "synthetic", "livefire-23-cloud-53-bots-v1"]},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_atoms", "by_benchmark"],
+      "properties": {
+        "total_atoms": {"type": "integer", "minimum": 1},
+        "by_benchmark": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "atoms": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/atom"}
+    }
+  },
+  "$defs": {
+    "atom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["benchmark_id", "atom_id", "eligibility", "cohort", "resampling_cluster_id", "incident_id"],
+      "properties": {
+        "benchmark_id": {"type": "string", "minLength": 1},
+        "atom_id": {"type": "string", "minLength": 1},
+        "eligibility": {"enum": ["eligible_native", "eligible_external", "external_source_unbound", "outside_index_domain", "not_retrieval_testable"]},
+        "cohort": {"enum": ["cloud", "bots_native", "external"]},
+        "resampling_cluster_id": {"type": "string", "minLength": 1},
+        "incident_id": {"type": "string", "minLength": 1},
+        "reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"eligibility": {"enum": ["external_source_unbound", "outside_index_domain", "not_retrieval_testable"]}}},
+          "then": {"required": ["reason_codes"]}
+        }
+      ]
+    }
+  },
+  "$comment": "Admission additionally enforces unique atom IDs, summary arithmetic, incident-to-cluster consistency, and for livefire-23-cloud-53-bots-v1 exactly 23 cloud plus 53 BOTS atoms including 10 external atoms."
+}

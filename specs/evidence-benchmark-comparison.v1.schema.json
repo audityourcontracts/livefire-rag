@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-benchmark-comparison.v1.schema.json",
+  "title": "Compact fact-to-evidence benchmark comparison v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "primary_metric", "scoring_contract", "candidate_score_contract", "baseline_score_contract", "candidate", "promotion", "gates", "inputs"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-benchmark-comparison/1"},
+    "primary_metric": {"type": "string", "pattern": "^macro_ndcg_at_[1-9][0-9]*$"},
+    "scoring_contract": {"const": "declared_per_ranking_input"},
+    "candidate_score_contract": {"$ref": "#/$defs/score_contract"},
+    "baseline_score_contract": {"anyOf": [{"$ref": "#/$defs/score_contract"}, {"type": "null"}]},
+    "candidate": {"$ref": "#/$defs/evaluation"},
+    "baseline": {"anyOf": [{"$ref": "#/$defs/evaluation"}, {"type": "null"}]},
+    "comparison": {"anyOf": [{"$ref": "#/$defs/comparison"}, {"type": "null"}]},
+    "promotion": {"$ref": "#/$defs/promotion"},
+    "gates": {"$ref": "#/$defs/gates"},
+    "inputs": {
+      "type": "object",
+      "minProperties": 4,
+      "patternProperties": {"^.+$": {"$ref": "#/$defs/input"}},
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage", "correctness", "macro", "per_cohort", "per_fact", "per_query", "uncertainty"],
+      "properties": {
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["facts_total", "queries_total", "eligible_query_surfaces", "eligible_facts", "mapped_facts", "evaluated_facts", "evaluated_query_surfaces", "successful_query_surfaces", "query_surfaces_with_declared_hard_negatives", "eligible_mapping_rate", "eligible_evaluation_rate", "eligible_query_execution_rate", "hard_negative_declaration_rate"],
+          "properties": {
+            "facts_total": {"type": "integer", "minimum": 0},
+            "queries_total": {"type": "integer", "minimum": 0},
+            "eligible_query_surfaces": {"type": "integer", "minimum": 0},
+            "eligible_facts": {"type": "integer", "minimum": 0},
+            "mapped_facts": {"type": "integer", "minimum": 0},
+            "evaluated_facts": {"type": "integer", "minimum": 0},
+            "evaluated_query_surfaces": {"type": "integer", "minimum": 0},
+            "successful_query_surfaces": {"type": "integer", "minimum": 0},
+            "query_surfaces_with_declared_hard_negatives": {"type": "integer", "minimum": 0},
+            "eligible_mapping_rate": {"type": "number", "minimum": 0, "maximum": 1},
+            "eligible_evaluation_rate": {"type": "number", "minimum": 0, "maximum": 1},
+            "eligible_query_execution_rate": {"type": "number", "minimum": 0, "maximum": 1},
+            "hard_negative_declaration_rate": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "correctness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unresolved_pointers", "filter_violations"],
+          "properties": {
+            "unresolved_pointers": {"type": "integer", "minimum": 0},
+            "filter_violations": {"type": "integer", "minimum": 0}
+          }
+        },
+        "macro": {"$ref": "#/$defs/macro"},
+        "per_cohort": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^(?:cloud|bots_native|external|unclassified)$": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["facts", "resampling_clusters", "inference_status", "uncertainty"],
+              "properties": {
+                "facts": {"type": "integer", "minimum": 1},
+                "resampling_clusters": {"type": "integer", "minimum": 1},
+                "inference_status": {"enum": ["inferential", "descriptive"]},
+                "uncertainty": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "patternProperties": {
+                    "^(?:(?:ndcg|recall)_at_[1-9][0-9]*|cohort_covered_at_k)$": {"$ref": "#/$defs/uncertainty"}
+                  }
+                }
+              },
+              "patternProperties": {"^(?:ndcg|recall|cohort_coverage)_at_[1-9][0-9]*$": {"type": "number", "minimum": 0, "maximum": 1}}
+            }
+          }
+        },
+        "per_fact": {"type": "array", "items": {"$ref": "#/$defs/per_fact"}},
+        "per_query": {"type": "array", "items": {"$ref": "#/$defs/per_query"}},
+        "uncertainty": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^(?:(?:ndcg|recall|mrr)_at_[1-9][0-9]*|cohort_covered_at_k|hard_negative_triplet_accuracy|hard_negative_triplet_coverage|median_hard_negative_margin)$": {"$ref": "#/$defs/uncertainty"}
+          }
+        }
+      }
+    },
+    "macro": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 6,
+      "required": ["hard_negative_triplet_accuracy", "hard_negative_triplet_coverage", "median_hard_negative_margin"],
+      "properties": {
+        "hard_negative_triplet_accuracy": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "hard_negative_triplet_coverage": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "median_hard_negative_margin": {"type": ["number", "null"]}
+      },
+      "patternProperties": {
+        "^(?:ndcg|recall|mrr|cohort_coverage)_at_[1-9][0-9]*$": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "per_fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 9,
+      "required": ["fact_id", "domain", "cohort", "resampling_cluster_id", "query_surfaces", "cohort_covered_at_k", "hard_negative_triplet_accuracy", "hard_negative_triplet_coverage", "median_hard_negative_margin"],
+      "properties": {
+        "fact_id": {"type": "string", "minLength": 1},
+        "domain": {"type": ["string", "null"]},
+        "cohort": {"type": ["string", "null"]},
+        "resampling_cluster_id": {"type": "string", "minLength": 1},
+        "query_surfaces": {"type": "integer", "minimum": 1},
+        "cohort_covered_at_k": {"type": "boolean"},
+        "hard_negative_triplet_accuracy": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "hard_negative_triplet_coverage": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "median_hard_negative_margin": {"type": ["number", "null"]}
+      },
+      "patternProperties": {
+        "^(?:ndcg|recall|mrr)_at_[1-9][0-9]*$": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "per_query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query_id", "fact_id", "domain", "cohort", "resampling_cluster_id", "eligibility", "status", "relevant_documents"],
+      "properties": {
+        "query_id": {"type": "string", "minLength": 1},
+        "fact_id": {"type": "string", "minLength": 1},
+        "domain": {"type": ["string", "null"]},
+        "cohort": {"type": ["string", "null"]},
+        "resampling_cluster_id": {"type": "string", "minLength": 1},
+        "eligibility": {"type": "string", "minLength": 1},
+        "status": {"enum": ["evaluated", "failed", "excluded", "not_evaluable"]},
+        "failure_reason": {"enum": ["missing_relevant_qrels", "missing_ranking"]},
+        "relevant_documents": {"type": "integer", "minimum": 0},
+        "first_relevant_rank": {"type": ["integer", "null"], "minimum": 1},
+        "hard_negatives_in_top_k": {"type": "integer", "minimum": 0},
+        "best_hard_negative_rank": {"type": ["integer", "null"], "minimum": 1},
+        "hard_negative_triplet_accuracy": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "hard_negative_triplet_coverage": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "median_hard_negative_margin": {"type": ["number", "null"]}
+      },
+      "patternProperties": {
+        "^(?:ndcg|recall|mrr)_at_[1-9][0-9]*$": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["evaluated", "failed"]}}},
+          "then": {"required": ["first_relevant_rank", "hard_negatives_in_top_k", "best_hard_negative_rank", "hard_negative_triplet_accuracy", "hard_negative_triplet_coverage", "median_hard_negative_margin"], "minProperties": 15}
+        },
+        {
+          "if": {"properties": {"status": {"const": "failed"}}},
+          "then": {"required": ["failure_reason"]}
+        }
+      ]
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 5,
+      "properties": {
+        "cohort_covered_at_k": {"$ref": "#/$defs/bootstrap_delta"},
+        "hard_negative_triplet_accuracy": {"$ref": "#/$defs/bootstrap_delta"},
+        "hard_negative_triplet_coverage": {"$ref": "#/$defs/bootstrap_delta"},
+        "median_hard_negative_margin": {"$ref": "#/$defs/point_delta"}
+      },
+      "patternProperties": {
+        "^(?:ndcg|recall|mrr)_at_[1-9][0-9]*$": {"$ref": "#/$defs/bootstrap_delta"}
+      }
+    },
+    "bootstrap_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paired_facts", "delta", "ci95"],
+      "properties": {
+        "paired_facts": {"type": "integer", "minimum": 0},
+        "delta": {"type": "number"},
+        "ci95": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+        "bootstrap_samples": {"type": "integer", "minimum": 1},
+        "resampling_unit": {"const": "cluster"},
+        "seed": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [
+        {"if": {"properties": {"paired_facts": {"minimum": 1}}}, "then": {"required": ["bootstrap_samples", "seed"]}}
+      ]
+    },
+    "point_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate", "baseline", "delta"],
+      "properties": {
+        "candidate": {"type": ["number", "null"]},
+        "baseline": {"type": ["number", "null"]},
+        "delta": {"type": ["number", "null"]}
+      }
+    },
+    "score_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score_kind", "score_direction"],
+      "properties": {
+        "score_kind": {"enum": ["cosine_distance", "bm25", "exact_field_score", "reranker_score", "native_similarity", "native_score", "rank_only"]},
+        "score_direction": {"enum": ["lower_is_better", "higher_is_better", "lower_rank_is_better"]}
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ci95", "bootstrap_samples", "resampling_unit", "seed", "resampling_clusters"],
+      "properties": {
+        "ci95": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+        "bootstrap_samples": {"type": "integer", "minimum": 1},
+        "resampling_unit": {"const": "cluster"},
+        "seed": {"type": "integer", "minimum": 0},
+        "resampling_clusters": {"type": "integer", "minimum": 1}
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checks"],
+      "properties": {
+        "status": {"enum": ["pass", "fail"]},
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "passed", "observed", "required"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1},
+              "passed": {"type": "boolean"},
+              "observed": {"type": ["number", "boolean", "null"]},
+              "required": {"type": ["number", "boolean", "string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["require_zero_correctness_errors", "minimum_query_surfaces_per_fact", "minimum_eligible_evaluation_rate", "minimum_eligible_query_execution_rate", "minimum_hard_negative_declaration_rate", "minimum_macro_ndcg", "minimum_macro_recall", "minimum_cohort_coverage", "minimum_each_cohort_coverage", "minimum_hard_negative_triplet_accuracy", "minimum_hard_negative_triplet_coverage", "minimum_hard_negative_margin_ci_lower", "primary_ndcg_non_inferiority_margin", "minimum_primary_ndcg_point_delta", "recall_non_regression_margin", "hard_negative_non_regression_margin", "cohort_coverage_non_regression_margin"],
+      "properties": {
+        "require_zero_correctness_errors": {"type": "boolean"},
+        "minimum_query_surfaces_per_fact": {"type": "integer", "minimum": 1},
+        "minimum_eligible_evaluation_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_eligible_query_execution_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_hard_negative_declaration_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_macro_ndcg": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_macro_recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_cohort_coverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_each_cohort_coverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_hard_negative_triplet_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_hard_negative_triplet_coverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_hard_negative_margin_ci_lower": {"type": "number"},
+        "primary_ndcg_non_inferiority_margin": {"type": "number"},
+        "minimum_primary_ndcg_point_delta": {"type": "number"},
+        "recall_non_regression_margin": {"type": "number"},
+        "hard_negative_non_regression_margin": {"type": "number"},
+        "cohort_coverage_non_regression_margin": {"type": "number"}
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"baseline": {"type": "null"}}},
+      "then": {"properties": {"comparison": {"type": "null"}, "baseline_score_contract": {"type": "null"}}},
+      "else": {"properties": {"comparison": {"$ref": "#/$defs/comparison"}, "baseline_score_contract": {"$ref": "#/$defs/score_contract"}}}
+    },
+    {
+      "if": {"properties": {"promotion": {"properties": {"status": {"const": "pass"}}}}},
+      "then": {"properties": {"baseline": {"$ref": "#/$defs/evaluation"}, "comparison": {"$ref": "#/$defs/comparison"}, "baseline_score_contract": {"$ref": "#/$defs/score_contract"}, "promotion": {"properties": {"checks": {"items": {"properties": {"passed": {"const": true}}}}}}}}
+    }
+  ]
+}

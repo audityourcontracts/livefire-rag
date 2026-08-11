@@ -18,6 +18,20 @@
   and gate identities for repeatable experiments.
 - `evaluation-run-report.v1`: independent conformance, quality, operational,
   audit-artifact, violation, waiver, and receipt reporting.
+- `evidence-benchmark-manifest.v1`, `evidence-query-row.v1`,
+  `evidence-qrel-row.v1`, and `evidence-hard-negative-row.v1`: evaluator-only,
+  post-index fact-to-evidence queries, judgments, and vector-blind controls.
+- `evidence-eligibility-ledger.v1`: closed terminal source/index disposition,
+  cohort, incident, and resampling-cluster binding for every declared fact atom.
+- `evidence-candidate-universe-row.v1`: independently counted filtered candidate
+  universe and expected top-20 cardinality receipt for each active query.
+- `evidence-benchmark-run.v1`: retrieval, geometry, leakage, repeatability, and
+  promotion reporting for a sealed evidence benchmark overlay.
+- `evidence-benchmark-comparison.v1`: compact deterministic candidate/baseline
+  comparison emitted by the standalone fact-to-evidence evaluator.
+- `evidence-ranking-row.v1`: ranked provider output consumed by the
+  fact-to-evidence evaluator, with an explicit cosine/native score contract and
+  pointer/filter correctness flags.
 - `cli-outliers.input.v1`: principal/population top-N anomaly request.
 - `cli-search.input.v1`: semantic query with closed filters.
 - `cli-similar.input.v1`: indexed-command similarity request.

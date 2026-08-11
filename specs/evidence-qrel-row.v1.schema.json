@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-qrel-row.v1.schema.json",
+  "title": "Evaluator-only fact-to-evidence qrel row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "qrel_id", "query_id", "fact_id", "command_id", "projection_sha256", "source_pointer", "relation", "relevance_grade", "eligibility", "status", "judgment_method", "judgment_sha256"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-qrel-row/1"},
+    "qrel_id": {"type": "string", "minLength": 1},
+    "query_id": {"type": "string", "minLength": 1},
+    "fact_id": {"type": "string", "minLength": 1},
+    "command_id": {"type": "string", "minLength": 1},
+    "projection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "duplicate_group_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"},
+    "relation": {"enum": ["direct_support", "corroborating", "contextual", "contradictory"]},
+    "relevance_grade": {"type": "integer", "minimum": 0, "maximum": 3},
+    "eligibility": {"enum": ["eligible", "duplicate_projection", "outside_index_domain", "unresolved_pointer", "excluded"]},
+    "status": {"enum": ["adjudicated", "provisional", "excluded"]},
+    "judgment_method": {"enum": ["exact_source_pointer", "deterministic_predicate", "double_review", "adjudicated_review"]},
+    "judgment_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  },
+  "allOf": [
+    {"if": {"properties": {"relation": {"const": "direct_support"}}}, "then": {"properties": {"relevance_grade": {"const": 3}}}},
+    {"if": {"properties": {"relation": {"const": "corroborating"}}}, "then": {"properties": {"relevance_grade": {"const": 2}}}},
+    {"if": {"properties": {"relation": {"const": "contextual"}}}, "then": {"properties": {"relevance_grade": {"const": 1}}}},
+    {"if": {"properties": {"relation": {"const": "contradictory"}}}, "then": {"properties": {"relevance_grade": {"const": 0}}}},
+    {"if": {"properties": {"status": {"const": "adjudicated"}}}, "then": {"properties": {"eligibility": {"enum": ["eligible", "duplicate_projection"]}}}},
+    {"if": {"properties": {"status": {"const": "excluded"}}}, "then": {"required": ["reason_codes"]}}
+  ]
+}

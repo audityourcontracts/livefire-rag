@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-ranking-row.v1.schema.json",
+  "title": "Fact-to-evidence retrieval ranking row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "system_id",
+    "query_id",
+    "command_id",
+    "rank",
+    "score_kind",
+    "score_direction",
+    "pointer_resolved",
+    "filter_compliant"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-ranking-row/1"},
+    "system_id": {"type": "string", "minLength": 1},
+    "query_id": {"type": "string", "minLength": 1},
+    "command_id": {"type": "string", "minLength": 1},
+    "projection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rank": {"type": "integer", "minimum": 1},
+    "score_kind": {"enum": ["cosine_distance", "bm25", "exact_field_score", "reranker_score", "native_similarity"]},
+    "score_direction": {"enum": ["lower_is_better", "higher_is_better"]},
+    "distance_millionths": {"type": "integer", "minimum": 0, "maximum": 2000000},
+    "score": {"type": "number"},
+    "pointer_resolved": {"type": "boolean"},
+    "filter_compliant": {"type": "boolean"},
+    "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"},
+    "result_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"score_kind": {"const": "cosine_distance"}}},
+      "then": {
+        "required": ["distance_millionths"],
+        "properties": {"score_direction": {"const": "lower_is_better"}},
+        "not": {"required": ["score"]}
+      },
+      "else": {
+        "required": ["score"],
+        "not": {"required": ["distance_millionths"]}
+      }
+    }
+  ],
+  "$comment": "Admission additionally requires unique (system_id, query_id, command_id), one score contract per file, contiguous ranks per system/query, score/rank agreement, and stable command-id tie breaking for equal scores."
+}

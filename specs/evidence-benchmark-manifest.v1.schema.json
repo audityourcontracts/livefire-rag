@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-benchmark-manifest.v1.schema.json",
+  "title": "Evaluator-only fact-to-evidence benchmark manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "benchmark_id", "benchmark_version", "purpose", "status", "subject", "source_benchmarks", "row_schemas", "catalogues", "policies", "splits", "coverage", "metrics", "promotion_gates", "receipts", "objects_lock"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-benchmark/1"},
+    "benchmark_id": {"type": "string", "minLength": 1},
+    "benchmark_version": {"type": "string", "minLength": 1},
+    "purpose": {"const": "evaluator_only_fact_to_existing_evidence"},
+    "status": {"enum": ["development", "sealed", "retired"]},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["native_dataset", "source_snapshots", "command_snapshot", "command_index", "embedding_profile", "embedding_purpose", "projection_policy"],
+      "properties": {
+        "native_dataset": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "source_snapshots": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}},
+        "command_snapshot": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "command_index": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "embedding_profile": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "embedding_purpose": {"const": "semantic_search"},
+        "projection_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+      }
+    },
+    "source_benchmarks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["domain", "id", "version", "manifest", "expected_scored_facts"],
+        "properties": {
+          "domain": {"type": "string", "minLength": 1},
+          "id": {"type": "string", "minLength": 1},
+          "version": {"type": "string", "minLength": 1},
+          "manifest": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+          "expected_scored_facts": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "row_schemas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eligibility_ledger", "candidate_universe", "query", "qrel", "hard_negative", "ranking"],
+      "properties": {
+        "eligibility_ledger": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "candidate_universe": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "query": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "qrel": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "hard_negative": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "ranking": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+      }
+    },
+    "catalogues": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["queries", "qrels", "hard_negatives", "eligibility_ledger", "candidate_universes", "duplicate_groups"],
+      "properties": {
+        "queries": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "qrels": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "hard_negatives": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "eligibility_ledger": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "candidate_universes": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "duplicate_groups": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact_mapping", "eligibility", "query_authoring", "qrel_judgment", "negative_selection", "duplicate_grouping", "leakage_prevention", "metric", "promotion"],
+      "properties": {
+        "fact_mapping": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "eligibility": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "query_authoring": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "qrel_judgment": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "negative_selection": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "duplicate_grouping": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "leakage_prevention": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "metric": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "promotion": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+      }
+    },
+    "splits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "seed", "development", "validation", "test", "test_sealed"],
+      "properties": {
+        "unit": {"enum": ["fact_group", "incident"]},
+        "seed": {"type": "integer", "minimum": 0},
+        "development": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "validation": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "test": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "test_sealed": {"const": true}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["facts_total", "facts_eligible_native", "facts_eligible_external", "facts_external_source_unbound", "facts_outside_index_domain", "facts_not_retrieval_testable", "queries_total", "active_queries", "adjudicated_qrels", "adjudicated_hard_negatives"],
+      "properties": {
+        "facts_total": {"type": "integer", "minimum": 0},
+        "facts_eligible_native": {"type": "integer", "minimum": 0},
+        "facts_eligible_external": {"type": "integer", "minimum": 0},
+        "facts_external_source_unbound": {"type": "integer", "minimum": 0},
+        "facts_outside_index_domain": {"type": "integer", "minimum": 0},
+        "facts_not_retrieval_testable": {"type": "integer", "minimum": 0},
+        "queries_total": {"type": "integer", "minimum": 0},
+        "active_queries": {"type": "integer", "minimum": 0},
+        "adjudicated_qrels": {"type": "integer", "minimum": 0},
+        "adjudicated_hard_negatives": {"type": "integer", "minimum": 0}
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["mapping_coverage", "recall_at_1", "recall_at_5", "recall_at_10", "recall_at_20", "mrr_at_20", "ndcg_at_20", "matched_triplet_accuracy", "matched_distance_margin", "same_fact_distance", "positive_control_distance", "knn_fact_enrichment", "matched_pair_auroc", "matched_pair_average_precision", "control_balance"]}
+    },
+    "promotion_gates": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "receipts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_seal", "mapping_adjudication", "test_seal", "leakage_audit"],
+      "properties": {
+        "index_seal": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "mapping_adjudication": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "test_seal": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "leakage_audit": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    },
+    "objects_lock": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "sealed"}}}, "then": {"properties": {"splits": {"properties": {"test_sealed": {"const": true}}}}}}
+  ],
+  "$comment": "Admission verifies coverage closure, unique query/qrel/negative IDs, query and command referential integrity, qrel grade semantics, control vector-blindness, and that the benchmark seal post-dates the bound index seal."
+}

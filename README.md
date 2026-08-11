@@ -46,6 +46,8 @@ livefire-rag inspect --index INDEX
 livefire-rag outliers --index INDEX --request REQUEST
 livefire-rag search --index INDEX --request REQUEST
 livefire-rag evaluate --index INDEX --suite SUITE
+livefire-rag evaluate-facts --queries QUERIES --qrels QRELS \
+  --candidate RANKINGS --baseline BASELINE --out REPORT
 livefire-rag provider --index INDEX
 ```
 
@@ -61,8 +63,44 @@ See [`docs/architecture.md`](docs/architecture.md),
 source-fidelity, conformance, quality, performance, and reporting program is in
 [`docs/test-program.md`](docs/test-program.md).
 
+The evaluator-only 23-cloud/53-BOTS fact-to-evidence benchmark is specified in
+[`docs/fact-evidence-benchmark.md`](docs/fact-evidence-benchmark.md). Its metric
+calculator is runnable today without a model or Livefire checkout:
+
+```sh
+python3 tools/evaluate_fact_evidence.py \
+  --inventory fixtures/fact-evidence-synthetic/inventory.json \
+  --queries fixtures/fact-evidence-synthetic/queries.jsonl \
+  --candidate-universes fixtures/fact-evidence-synthetic/candidate-universes.jsonl \
+  --qrels fixtures/fact-evidence-synthetic/qrels.jsonl \
+  --hard-negatives fixtures/fact-evidence-synthetic/hard-negatives.jsonl \
+  --candidate fixtures/fact-evidence-synthetic/candidate-rankings.jsonl \
+  --baseline fixtures/fact-evidence-synthetic/baseline-rankings.jsonl \
+  --gates fixtures/fact-evidence-synthetic/gates.json \
+  --out reports/fact-evidence-synthetic/report.json
+```
+
+Macro nDCG@20 is the primary selection metric. Recall@20, eligible-fact
+coverage, hard-negative discrimination, and pointer/filter correctness are
+required gates. Ranking inputs declare their score kind and direction, so dense
+cosine, BM25, exact-field, and reranker systems share rank-based metrics while
+raw hard-negative margins remain comparable only within one score family. This
+command produces a local comparison and gate report; formal promotion also
+requires the sealed leakage, control, repeatability, and statistical receipts
+specified by the benchmark contract.
+
+Run the evaluator tests and validate every schema/fixture against the adjacent
+private SDK checkout with:
+
+```sh
+python3 -m unittest discover -s tests -v
+uv run --with jsonschema python tools/validate_evidence_fixtures.py \
+  --sdk-specs ../livefire-sdk/specs \
+  --report reports/fact-evidence-synthetic/report.json
+```
+
 ## Repository status
 
-This is a local, private-by-default specification repository. It has no remote
-configured. No model weights, credentials, source telemetry, or built indexes
-are tracked.
+This is a private specification and implementation repository. Its GitHub
+remote is private. No model weights, credentials, source telemetry, or built
+indexes are tracked.

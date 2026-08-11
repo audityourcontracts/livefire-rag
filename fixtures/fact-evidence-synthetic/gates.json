@@ -1,0 +1,19 @@
+{
+  "require_zero_correctness_errors": true,
+  "minimum_query_surfaces_per_fact": 1,
+  "minimum_eligible_evaluation_rate": 1.0,
+  "minimum_eligible_query_execution_rate": 1.0,
+  "minimum_hard_negative_declaration_rate": 1.0,
+  "minimum_macro_ndcg": 0.70,
+  "minimum_macro_recall": 0.85,
+  "minimum_cohort_coverage": 0.90,
+  "minimum_each_cohort_coverage": 0.80,
+  "minimum_hard_negative_triplet_accuracy": 0.90,
+  "minimum_hard_negative_triplet_coverage": 1.0,
+  "minimum_hard_negative_margin_ci_lower": 0.0,
+  "primary_ndcg_non_inferiority_margin": -0.01,
+  "minimum_primary_ndcg_point_delta": 0.0,
+  "recall_non_regression_margin": -0.01,
+  "hard_negative_non_regression_margin": -0.01,
+  "cohort_coverage_non_regression_margin": 0.0
+}

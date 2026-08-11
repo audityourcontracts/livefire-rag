@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-hard-negative-row.v1.schema.json",
+  "title": "Evaluator-only matched evidence hard-negative row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "negative_id", "query_id", "fact_id", "positive_command_id", "positive_projection_sha256", "negative_command_id", "negative_projection_sha256", "negative_class", "control_tier", "eligibility", "status", "selection_mode", "matching_policy", "stratum_sha256", "matching_features_sha256", "selection_seed", "selection_rank", "judgment_sha256"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-hard-negative-row/1"},
+    "negative_id": {"type": "string", "minLength": 1},
+    "query_id": {"type": "string", "minLength": 1},
+    "fact_id": {"type": "string", "minLength": 1},
+    "positive_command_id": {"type": "string", "minLength": 1},
+    "positive_projection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "negative_command_id": {"type": "string", "minLength": 1},
+    "negative_projection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "negative_source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"},
+    "negative_class": {"enum": ["same_executable_different_action", "same_action_wrong_target", "same_action_opposite_state", "same_action_opposite_outcome", "same_action_missing_stage", "same_target_benign_action", "token_overlap_non_execution", "same_wrapper_different_payload", "benign_encoded_administration", "same_process_wrong_ancestry", "cloud_read_vs_write", "path_or_resource_collision", "context_matched_background", "stratified_population"]},
+    "control_tier": {"enum": ["hard_semantic", "context_matched", "background"]},
+    "eligibility": {"enum": ["eligible", "hidden_positive", "duplicate_positive", "unresolved_pointer", "unmatched", "excluded"]},
+    "status": {"enum": ["adjudicated", "provisional", "rejected"]},
+    "selection_mode": {"const": "metadata_only_vector_blind"},
+    "matching_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "stratum_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "matching_features_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "matched_fields": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["observation_kind", "source_family", "shell_family", "cloud_service", "result_status", "time_bucket", "principal_availability", "host_availability", "token_length_decile", "projection_coverage", "dedup_frequency_decile"]}},
+    "selection_seed": {"type": "integer", "minimum": 0},
+    "selection_rank": {"type": "integer", "minimum": 1},
+    "sampling_weight_millionths": {"type": "integer", "minimum": 1},
+    "judgment_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "adjudicated"}}}, "then": {"properties": {"eligibility": {"const": "eligible"}}, "required": ["negative_source_pointer", "matched_fields", "sampling_weight_millionths"]}},
+    {"if": {"properties": {"status": {"const": "rejected"}}}, "then": {"required": ["reason_codes"]}}
+  ],
+  "$comment": "Admission additionally rejects equal positive/negative command IDs and projection digests; draft 2020-12 has no portable cross-field inequality assertion."
+}

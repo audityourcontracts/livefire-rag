@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-benchmark-run.v1.schema.json",
+  "title": "Evaluator-only fact-to-evidence benchmark run v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "status", "started_at", "completed_at", "benchmark", "command_index", "embedding_profile", "harness", "environment", "inputs_sha256", "coverage", "metrics", "controls", "leakage", "repeatability", "artifacts", "violations", "promotion"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-benchmark-run/1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["succeeded", "failed", "incomplete"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "benchmark": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "command_index": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "embedding_profile": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "harness": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "environment": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+    "inputs_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["facts_total", "facts_eligible_native", "facts_eligible_external", "facts_external_source_unbound", "facts_outside_index_domain", "facts_not_retrieval_testable", "facts_mapped", "facts_with_multiple_documents", "queries_active", "queries_scored", "qrels_adjudicated", "hard_negatives_adjudicated", "unresolved_command_ids", "unresolved_source_pointers"],
+      "properties": {
+        "facts_total": {"type": "integer", "minimum": 0},
+        "facts_eligible_native": {"type": "integer", "minimum": 0},
+        "facts_eligible_external": {"type": "integer", "minimum": 0},
+        "facts_external_source_unbound": {"type": "integer", "minimum": 0},
+        "facts_outside_index_domain": {"type": "integer", "minimum": 0},
+        "facts_not_retrieval_testable": {"type": "integer", "minimum": 0},
+        "facts_mapped": {"type": "integer", "minimum": 0},
+        "facts_with_multiple_documents": {"type": "integer", "minimum": 0},
+        "queries_active": {"type": "integer", "minimum": 0},
+        "queries_scored": {"type": "integer", "minimum": 0},
+        "qrels_adjudicated": {"type": "integer", "minimum": 0},
+        "hard_negatives_adjudicated": {"type": "integer", "minimum": 0},
+        "unresolved_command_ids": {"type": "integer", "minimum": 0},
+        "unresolved_source_pointers": {"type": "integer", "minimum": 0}
+      }
+    },
+    "metrics": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/metric_result"}},
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "selection_mode", "anchors", "admitted_controls", "rejected_hidden_positives", "unmatched_anchors", "balance"],
+      "properties": {
+        "status": {"enum": ["pass", "fail", "incomplete"]},
+        "selection_mode": {"const": "metadata_only_vector_blind"},
+        "anchors": {"type": "integer", "minimum": 0},
+        "admitted_controls": {"type": "integer", "minimum": 0},
+        "rejected_hidden_positives": {"type": "integer", "minimum": 0},
+        "unmatched_anchors": {"type": "integer", "minimum": 0},
+        "balance": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    },
+    "leakage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "index_sealed_before_labels", "benchmark_unavailable_to_builder", "controls_selected_without_vectors", "test_labels_sealed", "violations", "audit"],
+      "properties": {
+        "status": {"enum": ["pass", "fail", "incomplete"]},
+        "index_sealed_before_labels": {"type": "boolean"},
+        "benchmark_unavailable_to_builder": {"type": "boolean"},
+        "controls_selected_without_vectors": {"type": "boolean"},
+        "test_labels_sealed": {"type": "boolean"},
+        "violations": {"type": "integer", "minimum": 0},
+        "audit": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    },
+    "repeatability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "repetitions", "ranking_digest_mismatches", "metric_digest_mismatches", "results"],
+      "properties": {
+        "status": {"enum": ["pass", "fail", "incomplete"]},
+        "repetitions": {"type": "integer", "minimum": 1},
+        "ranking_digest_mismatches": {"type": "integer", "minimum": 0},
+        "metric_digest_mismatches": {"type": "integer", "minimum": 0},
+        "results": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_manifest", "rankings", "distances", "per_query_metrics", "geometry_metrics", "control_balance", "failures", "report_json", "report_markdown", "result_receipt"],
+      "properties": {
+        "run_manifest": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "rankings": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "distances": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "per_query_metrics": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "geometry_metrics": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "control_balance": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "bootstrap_samples": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "permutation_results": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "visualizations": {"type": "array", "uniqueItems": true, "items": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}},
+        "failures": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "report_json": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "report_markdown": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "result_receipt": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    },
+    "violations": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "gates", "decision_receipt"],
+      "properties": {
+        "decision": {"enum": ["promoted", "rejected", "informational", "incomplete"]},
+        "gates": {"$ref": "#/$defs/required_gate_results"},
+        "decision_receipt": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    }
+  },
+  "$defs": {
+    "metric_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric_id", "status", "unit", "population", "sample_count", "result"],
+      "properties": {
+        "metric_id": {"enum": ["mapping_coverage", "recall_at_1", "recall_at_5", "recall_at_10", "recall_at_20", "mrr_at_20", "ndcg_at_20", "matched_triplet_accuracy", "matched_distance_margin", "same_fact_distance", "positive_control_distance", "knn_fact_enrichment", "matched_pair_auroc", "matched_pair_average_precision", "control_balance"]},
+        "status": {"enum": ["available", "unavailable", "invalid"]},
+        "unit": {"enum": ["proportion", "cosine_distance", "cosine_distance_millionths", "count", "standardized_difference"]},
+        "population": {"type": "string", "minLength": 1},
+        "sample_count": {"type": "integer", "minimum": 0},
+        "value": {"type": "number"},
+        "confidence_interval_95": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lower", "upper", "method", "resamples", "resampling_unit"],
+          "properties": {
+            "lower": {"type": "number"},
+            "upper": {"type": "number"},
+            "method": {"enum": ["paired_bootstrap", "cluster_bootstrap", "matched_permutation", "exact"]},
+            "resamples": {"type": "integer", "minimum": 0},
+            "resampling_unit": {"enum": ["query", "fact", "incident", "cluster", "matched_set"]}
+          }
+        },
+        "result": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "available"}}}, "then": {"required": ["value"]}},
+        {"if": {"properties": {"status": {"enum": ["unavailable", "invalid"]}}}, "then": {"required": ["reason_codes"], "not": {"required": ["value"]}}}
+      ]
+    },
+    "gate_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "required", "status", "evidence"],
+      "properties": {
+        "gate_id": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"},
+        "status": {"enum": ["pass", "fail", "skipped", "incomplete"]},
+        "evidence": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"enum": ["fail", "skipped", "incomplete"]}}}, "then": {"required": ["reason_codes"]}}
+      ]
+    },
+    "required_gate_results": {
+      "type": "array",
+      "minItems": 15,
+      "items": {"$ref": "#/$defs/gate_result"},
+      "allOf": [
+        {"contains": {"properties": {"gate_id": {"const": "zero_correctness_errors"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "closed_eligibility_ledger"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "complete_query_execution"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "complete_hard_negative_declarations"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "macro_ndcg_at_20"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "macro_recall_at_20"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "cohort_coverage_at_20"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "per_cohort_coverage_at_20"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "hard_negative_triplet_accuracy"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "hard_negative_triplet_coverage"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "positive_hard_negative_margin"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "primary_ndcg_non_inferiority"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "matched_controls"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "leakage_controls"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "repeatability"}, "required": {"const": true}}, "required": ["gate_id", "required"]}, "minContains": 1, "maxContains": 1}
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "summary", "evidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "severity": {"enum": ["error", "warning", "informational"]},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"promotion": {"properties": {"decision": {"const": "promoted"}}}}},
+      "then": {
+        "properties": {
+          "status": {"const": "succeeded"},
+          "controls": {"properties": {"status": {"const": "pass"}, "anchors": {"minimum": 1}, "admitted_controls": {"minimum": 1}}},
+          "leakage": {"properties": {"status": {"const": "pass"}}},
+          "repeatability": {"properties": {"status": {"const": "pass"}, "repetitions": {"minimum": 3}}},
+          "violations": {
+            "not": {"contains": {"properties": {"severity": {"const": "error"}}, "required": ["severity"]}}
+          },
+          "promotion": {
+            "properties": {
+              "gates": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "required": {"const": true},
+                      "status": {"enum": ["fail", "skipped", "incomplete"]}
+                    },
+                    "required": ["required", "status"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {"if": {"properties": {"leakage": {"properties": {"status": {"const": "fail"}}}}}, "then": {"properties": {"promotion": {"properties": {"decision": {"enum": ["rejected", "incomplete"]}}}}}},
+    {"if": {"properties": {"status": {"enum": ["failed", "incomplete"]}}}, "then": {"properties": {"promotion": {"properties": {"decision": {"enum": ["rejected", "informational", "incomplete"]}}}}}},
+    {"if": {"properties": {"leakage": {"properties": {"status": {"const": "pass"}}}}}, "then": {"properties": {"leakage": {"properties": {"index_sealed_before_labels": {"const": true}, "benchmark_unavailable_to_builder": {"const": true}, "controls_selected_without_vectors": {"const": true}, "test_labels_sealed": {"const": true}, "violations": {"const": 0}}}}}},
+    {"if": {"properties": {"repeatability": {"properties": {"status": {"const": "pass"}}}}}, "then": {"properties": {"repeatability": {"properties": {"ranking_digest_mismatches": {"const": 0}, "metric_digest_mismatches": {"const": 0}}}}}}
+  ],
+  "$comment": "Admission additionally checks coverage arithmetic, metric/gate uniqueness, confidence interval ordering, metric bounds by unit, and prohibits promotion when any required gate fails or is skipped."
+}

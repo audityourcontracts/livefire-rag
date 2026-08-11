@@ -1,0 +1,54 @@
+{
+  "schema_version": "livefire.rag.evidence-eligibility-ledger/1",
+  "suite_contract": "synthetic",
+  "summary": {
+    "total_atoms": 5,
+    "by_benchmark": {
+      "synthetic-cloud": 2,
+      "synthetic-bots": 3
+    }
+  },
+  "atoms": [
+    {
+      "benchmark_id": "synthetic-cloud",
+      "atom_id": "cloud-public-acl",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "cloud-chain",
+      "incident_id": "synthetic-cloud-incident"
+    },
+    {
+      "benchmark_id": "synthetic-cloud",
+      "atom_id": "cloud-access-key",
+      "eligibility": "eligible_native",
+      "cohort": "cloud",
+      "resampling_cluster_id": "cloud-chain",
+      "incident_id": "synthetic-cloud-incident"
+    },
+    {
+      "benchmark_id": "synthetic-bots",
+      "atom_id": "bots-download-execute",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "bots-command-chain",
+      "incident_id": "synthetic-bots-command-incident"
+    },
+    {
+      "benchmark_id": "synthetic-bots",
+      "atom_id": "bots-runinstances-failures",
+      "eligibility": "eligible_native",
+      "cohort": "bots_native",
+      "resampling_cluster_id": "bots-cloud-chain",
+      "incident_id": "synthetic-bots-cloud-incident"
+    },
+    {
+      "benchmark_id": "synthetic-bots",
+      "atom_id": "bots-external-cve",
+      "eligibility": "external_source_unbound",
+      "reason_codes": ["external_snapshot_unbound"],
+      "cohort": "external",
+      "resampling_cluster_id": "bots-external-chain",
+      "incident_id": "synthetic-bots-external-incident"
+    }
+  ]
+}
