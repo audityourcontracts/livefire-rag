@@ -1,5 +1,36 @@
 # Implementation plan
 
+## Milestone 0: scenario-blind generic evidence projection
+
+1. Admit a completed normalized snapshot from its immutable build receipt.
+2. Verify every typed-relation Parquet digest and row count before scanning.
+3. Project the closed typed relation set with one versioned generic policy.
+4. Emit one exact source-pointer occurrence and terminal disposition per row.
+5. Separate semantic-group documents from complete occurrence membership.
+6. Seal canonical JSONL objects, closure report, object lock, and self-digesting
+   projection-pack manifest.
+
+Exit gate: source and disposition counts are equal, no row is unaccounted or
+multiply dispositioned, all pointers are exact Parquet-row locators, every pack
+row validates offline, and a clean rebuild is byte-identical. This milestone is
+implemented by `build-evidence-projection`; it deliberately ends before model
+embedding or SDK tool admission.
+
+## Milestone 0.5: generic derivations and evidence-index promotion
+
+1. Materialize fixed-policy metric windows rather than embedding context-free
+   raw scalar samples.
+2. Materialize versioned state transitions, network windows, and stable entity
+   consolidations where their typed keys are available.
+3. Convert the projection pack to canonical Parquet, embed every searchable
+   document, and produce the final evidence-index manifest.
+4. Package `evidence.search` through the SDK provider lifecycle and validate
+   its outputs, filters, misses, pointers, and binding lock.
+
+Exit gate: all derived memberships reconcile to source occurrences, embeddings
+cover every and only searchable document, and standalone SDK invocation works
+without a Livefire checkout.
+
 ## Milestone 1: immutable command snapshot
 
 1. Implement the `livefire-sdk` source-snapshot reader and canonical command

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-common.v1.schema.json",
+  "title": "Livefire generic evidence index shared definitions v1",
+  "$defs": {
+    "document_kind": {
+      "enum": [
+        "activity",
+        "state",
+        "state_transition",
+        "metric_window",
+        "network_window",
+        "entity",
+        "detection",
+        "structured_only"
+      ]
+    },
+    "terminal_disposition": {
+      "enum": [
+        "direct_semantic_document",
+        "semantic_group_occurrence",
+        "derived_document_input",
+        "structured_only_occurrence",
+        "rejected"
+      ]
+    },
+    "relation_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "relation"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1, "maxLength": 256},
+        "relation": {"type": "string", "minLength": 1, "maxLength": 512},
+        "schema_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "ocsf_category_uid": {"type": "integer", "minimum": 0},
+        "ocsf_category_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "ocsf_class_uid": {"type": "integer", "minimum": 0},
+        "ocsf_class_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "ocsf_activity_id": {"type": "integer", "minimum": 0},
+        "ocsf_activity_name": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "time_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end_exclusive"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end_exclusive": {"type": "string", "format": "date-time"}
+      }
+    },
+    "facet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "values"],
+      "properties": {
+        "name": {
+          "enum": ["activity", "actor", "action", "target", "outcome", "state", "context"]
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+        }
+      }
+    },
+    "typed_scalar": {
+      "type": ["string", "number", "boolean"],
+      "maxLength": 1024,
+      "description": "A value-exact scalar copied from typed JSON. It is never redacted, normalized, coerced, or truncated."
+    },
+    "exact_attribute": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A bounded indexed attribute whose value exactly equals the parsed typed-JSON scalar at path. Omitted fields require source-pointer hydration.",
+      "required": ["namespace", "path", "value"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1, "maxLength": 256},
+        "path": {
+          "type": "string",
+          "pattern": "^/",
+          "maxLength": 1024,
+          "description": "RFC 6901 JSON Pointer into the parsed typed event."
+        },
+        "value": {"$ref": "#/$defs/typed_scalar"}
+      }
+    },
+    "exact_attribute_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "selected_count",
+        "scalars_scanned",
+        "known_omitted_scalar_count",
+        "omitted_subtree_count",
+        "omission_counts",
+        "scan_truncated",
+        "source_hydration_required",
+        "limits"
+      ],
+      "properties": {
+        "contract": {"const": "bounded_value_exact_typed_json_scalar_subset"},
+        "selected_count": {"type": "integer", "minimum": 0},
+        "scalars_scanned": {"type": "integer", "minimum": 0},
+        "known_omitted_scalar_count": {"type": "integer", "minimum": 0},
+        "omitted_subtree_count": {"type": "integer", "minimum": 0},
+        "omission_counts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason", "count"],
+            "properties": {
+              "reason": {
+                "enum": [
+                  "attribute_limit",
+                  "free_text_field",
+                  "non_finite_number",
+                  "non_jcs_safe_integer",
+                  "null_value",
+                  "oversize_path",
+                  "oversize_string",
+                  "secret_field",
+                  "unsafe_credential_value",
+                  "unsupported_scalar_type"
+                ]
+              },
+              "count": {"type": "integer", "minimum": 1}
+            }
+          }
+        },
+        "scan_truncated": {"type": "boolean"},
+        "source_hydration_required": {"type": "boolean"},
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_attributes",
+            "max_scalars_scanned",
+            "max_list_items",
+            "max_string_utf8_bytes",
+            "max_path_chars"
+          ],
+          "properties": {
+            "max_attributes": {"const": 256},
+            "max_scalars_scanned": {"const": 512},
+            "max_list_items": {"const": 64},
+            "max_string_utf8_bytes": {"const": 1024},
+            "max_path_chars": {"const": 1024}
+          }
+        }
+      }
+    }
+  }
+}

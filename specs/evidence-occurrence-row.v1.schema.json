@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-occurrence-row.v1.schema.json",
+  "title": "Livefire generic evidence occurrence and terminal-disposition row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "occurrence_id",
+    "relation_identity",
+    "source_pointer",
+    "projection_policy",
+    "terminal_disposition",
+    "document_ids",
+    "reason_codes",
+    "exact_attributes",
+    "exact_attribute_projection"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-occurrence-row/1"},
+    "occurrence_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "event_time": {"type": "string", "format": "date-time"},
+    "relation_identity": {"$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/relation_identity"},
+    "source_pointer": {"$ref": "https://livefire.dev/sdk/source-record-pointer.v1.schema.json"},
+    "projection_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "terminal_disposition": {"$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/terminal_disposition"},
+    "document_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 512}
+    },
+    "semantic_group_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "reason_codes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256}
+    },
+    "exact_attributes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/exact_attribute"}
+    },
+    "exact_attribute_projection": {
+      "$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/exact_attribute_projection"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "terminal_disposition": {
+            "enum": ["direct_semantic_document", "semantic_group_occurrence", "derived_document_input"]
+          }
+        },
+        "required": ["terminal_disposition"]
+      },
+      "then": {"properties": {"document_ids": {"minItems": 1}}}
+    },
+    {
+      "if": {
+        "properties": {"terminal_disposition": {"enum": ["structured_only_occurrence", "rejected"]}},
+        "required": ["terminal_disposition"]
+      },
+      "then": {
+        "properties": {
+          "document_ids": {"maxItems": 0},
+          "reason_codes": {"minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"terminal_disposition": {"const": "semantic_group_occurrence"}},
+        "required": ["terminal_disposition"]
+      },
+      "then": {"required": ["semantic_group_id"]},
+      "else": {"not": {"required": ["semantic_group_id"]}}
+    }
+  ]
+}

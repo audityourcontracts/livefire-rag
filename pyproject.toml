@@ -24,9 +24,21 @@ livefire-rag = "livefire_rag.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/livefire_rag"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"specs/evidence-common.v1.schema.json" = "livefire_rag/evidence_specs/evidence-common.v1.schema.json"
+"specs/evidence-coverage-report.v1.schema.json" = "livefire_rag/evidence_specs/evidence-coverage-report.v1.schema.json"
+"specs/evidence-document.v1.schema.json" = "livefire_rag/evidence_specs/evidence-document.v1.schema.json"
+"specs/evidence-index-manifest.v1.schema.json" = "livefire_rag/evidence_specs/evidence-index-manifest.v1.schema.json"
+"specs/evidence-occurrence-row.v1.schema.json" = "livefire_rag/evidence_specs/evidence-occurrence-row.v1.schema.json"
+"specs/evidence-projection-pack.v1.schema.json" = "livefire_rag/evidence_specs/evidence-projection-pack.v1.schema.json"
+"specs/evidence-search.input.v1.schema.json" = "livefire_rag/evidence_specs/evidence-search.input.v1.schema.json"
+"specs/evidence-search.output.v1.schema.json" = "livefire_rag/evidence_specs/evidence-search.output.v1.schema.json"
+"specs/evidence-projection-policy.v1.json" = "livefire_rag/evidence_specs/evidence-projection-policy.v1.json"
+"specs/typed-parquet-record-profile.v1.json" = "livefire_rag/evidence_specs/typed-parquet-record-profile.v1.json"
+
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",
   "/fixtures/semantic-index",
-  "/specs/semantic-result.v1.schema.json",
+  "/specs",
 ]

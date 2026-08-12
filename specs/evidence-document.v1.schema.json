@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-document.v1.schema.json",
+  "title": "Livefire generic evidence document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_id",
+    "document_sha256",
+    "document_kind",
+    "representation",
+    "searchable",
+    "projection_policy",
+    "relation_identities",
+    "occurrence_count"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-document/1"},
+    "document_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "document_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "document_kind": {"$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/document_kind"},
+    "representation": {"enum": ["direct", "semantic_group", "derived", "structured_only"]},
+    "searchable": {"type": "boolean"},
+    "projection_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "derivation_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "relation_identities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/relation_identity"}
+    },
+    "time_range": {"$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/time_range"},
+    "semantic_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "facets"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 1048576},
+        "facets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/facet"}
+        }
+      }
+    },
+    "semantic_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group_id", "group_key_sha256"],
+      "properties": {
+        "group_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "group_key_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "occurrence_count": {"type": "integer", "minimum": 1},
+    "exact_attributes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "https://livefire.dev/rag/evidence-common.v1.schema.json#/$defs/exact_attribute"}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"representation": {"const": "semantic_group"}}, "required": ["representation"]},
+      "then": {"required": ["semantic_group", "semantic_projection"], "properties": {"searchable": {"const": true}}},
+      "else": {"not": {"required": ["semantic_group"]}}
+    },
+    {
+      "if": {"properties": {"representation": {"const": "derived"}}, "required": ["representation"]},
+      "then": {"required": ["derivation_policy", "semantic_projection"], "properties": {"searchable": {"const": true}}},
+      "else": {"not": {"required": ["derivation_policy"]}}
+    },
+    {
+      "if": {"properties": {"representation": {"const": "direct"}}, "required": ["representation"]},
+      "then": {"required": ["semantic_projection"], "properties": {"searchable": {"const": true}}}
+    },
+    {
+      "if": {
+        "anyOf": [
+          {"properties": {"representation": {"const": "structured_only"}}, "required": ["representation"]},
+          {"properties": {"document_kind": {"const": "structured_only"}}, "required": ["document_kind"]}
+        ]
+      },
+      "then": {
+        "properties": {
+          "representation": {"const": "structured_only"},
+          "document_kind": {"const": "structured_only"},
+          "searchable": {"const": false}
+        },
+        "not": {"required": ["semantic_projection"]}
+      }
+    }
+  ]
+}

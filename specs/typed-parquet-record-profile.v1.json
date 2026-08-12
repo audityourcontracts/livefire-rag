@@ -1,0 +1,6 @@
+{
+  "schema_version": "livefire.rag.typed-parquet-record-profile/1",
+  "record_digest": "sha256_of_exact_stored_typed_event_json_utf8_or_jcs_value",
+  "locator": "parquet_row",
+  "row_ordinal": "zero_based_within_row_group"
+}

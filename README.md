@@ -49,16 +49,34 @@ livefire-rag similar --index INDEX --request REQUEST
 livefire-rag provider
 livefire-rag package-bundle --index INDEX --sdk-specs SDK_SPECS --out BUNDLE
 livefire-rag demo-provider-poc --index INDEX --suite SUITE --out RESULTS
+livefire-rag build-evidence-projection --snapshot-root SNAPSHOT --snapshot-id ID \
+  --index-id ID [--index-uri URI] --out PACK
+livefire-rag verify-evidence-projection --pack PACK --snapshot-root SNAPSHOT \
+  --sdk-specs SDK_SPECS
+livefire-rag inspect-evidence-projection --pack PACK --snapshot-root SNAPSHOT \
+  --sdk-specs SDK_SPECS
 ```
 
 The immutable POC pack contains canonical `documents.jsonl`, row-major
 little-endian float32 L2 vectors, an object lock, and a content-addressed
 manifest. Exact search accumulates in float64 and breaks equal distances by
 ascending command ID. The SDK provider implements the complete JSONL lifecycle
-and returns typed pointer or miss results. Remaining planned production work
-includes admitted source-snapshot building, `cli.outliers`, `cli.explain`, and
-the canonical Parquet profile. The fact-evidence evaluator remains the separate
-`tools/evaluate_fact_evidence.py` command documented below.
+and returns typed pointer or miss results.
+
+The generic evidence projection command admits every typed relation from a
+completed normalized-snapshot build receipt, verifies each Parquet object and
+row count, and emits one terminal occurrence for every source row. It is a
+pre-embedding projection pack, not yet a searchable SDK index. Remaining
+planned production work includes promotion of those generic documents into the
+canonical Parquet/embedding index, deterministic metric/state/network derived
+windows, `cli.outliers`, and `cli.explain`. The fact-evidence evaluator remains
+the separate `tools/evaluate_fact_evidence.py` command documented below.
+
+Generic RAG schemas plus the projection policy and typed-Parquet pointer profile
+are included in the wheel and discovered automatically by projection-pack
+verification. SDK schemas remain a caller-selected host input (`--sdk-specs`);
+the generic verifier loads only evidence schemas and their transitive SDK
+dependencies, never scenario benchmark contracts.
 
 The fixture builder, immutable-index verifier, provider, bundle packager, and
 SDK replay are testable without a Livefire checkout. The one-off prototype
@@ -84,6 +102,13 @@ See [`docs/architecture.md`](docs/architecture.md),
 [`docs/implementation-plan.md`](docs/implementation-plan.md). The complete
 source-fidelity, conformance, quality, performance, and reporting program is in
 [`docs/test-program.md`](docs/test-program.md).
+
+The scenario-blind evidence indexing boundary, closure rules, document
+families, and promotion contract are specified in
+[`docs/generic-evidence-index.md`](docs/generic-evidence-index.md).
+The first complete 13.9-million-row M21 projection build and its closure,
+artifact, verification, and performance results are recorded in
+[`docs/generic-evidence-m21-v1-build-report.md`](docs/generic-evidence-m21-v1-build-report.md).
 
 The evaluator-only 23-cloud/53-BOTS fact-to-evidence benchmark is specified in
 [`docs/fact-evidence-benchmark.md`](docs/fact-evidence-benchmark.md). Its metric
