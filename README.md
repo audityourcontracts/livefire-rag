@@ -174,6 +174,9 @@ families, and promotion contract are specified in
 [`docs/generic-evidence-index.md`](docs/generic-evidence-index.md).
 The many-to-many derivation boundary and its scenario-blind policies are in
 [`docs/evidence-derivation-overlay.md`](docs/evidence-derivation-overlay.md).
+The Rust-first fast experimental workflow and its future `livefire-ocsf`
+adapter are specified in
+[`docs/rust-experimental-rag-spec.md`](docs/rust-experimental-rag-spec.md).
 The first complete 13.9-million-row M21 projection build and its closure,
 artifact, verification, and performance results are recorded in
 [`docs/generic-evidence-m21-v1-build-report.md`](docs/generic-evidence-m21-v1-build-report.md).

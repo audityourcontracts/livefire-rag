@@ -1,5 +1,18 @@
 # Implementation plan
 
+## Current priority: Rust experimental loop
+
+The immediate implementation plan is now the Rust-first fast path in
+[`rust-experimental-rag-spec.md`](rust-experimental-rag-spec.md). The Python
+generic-evidence implementation below remains the golden semantic and contract
+oracle. Its full replay, promotion, admission, and packaging mechanisms are not
+the default path for new retrieval experiments.
+
+Do not begin another full-corpus build until the extracted `livefire-ocsf` E6
+snapshot reconciliation closes. Rust adapter, projection, embedding, index,
+query, SDK-provider, and Python-analysis work may proceed against fixtures and
+the accepted snapshot format in the meantime.
+
 ## Milestone 0: scenario-blind generic evidence projection
 
 1. Admit a completed normalized snapshot from its immutable build receipt.
