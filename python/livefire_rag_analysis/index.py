@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sqlite3
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
+import rfc8785
 
 
 MAGIC = b"LFRAGV1\0"
@@ -18,7 +20,7 @@ HEADER_BYTES = 64
 VERSION = 1
 DTYPE_F32_LE = 1
 _HEADER = struct.Struct("<8sIHBBQII32s")
-_INDEX_SCHEMA = "livefire.rag.fast-index/1"
+_INDEX_SCHEMA = "livefire.rag.fast-index/2"
 
 
 class FastIndexError(RuntimeError):
@@ -149,6 +151,19 @@ class FastIndex:
         occurrences_path = _safe_child(root, occurrences_spec["path"], "occurrences")
         vectors_path = _safe_child(root, vectors_spec["path"], "vectors")
         lexical_path = _safe_child(root, manifest["lexical"]["path"], "lexical")
+        occurrence_lookup_path = _safe_child(
+            root, manifest["occurrence_lookup"]["path"], "occurrence_lookup"
+        )
+
+        for path, spec, what in (
+            (documents_path, documents_spec, "documents"),
+            (occurrences_path, occurrences_spec, "occurrences"),
+            (vectors_path, vectors_spec, "vectors"),
+            (lexical_path, manifest["lexical"], "lexical"),
+            (occurrence_lookup_path, manifest["occurrence_lookup"], "occurrence_lookup"),
+        ):
+            _validate_artifact(path, spec, what)
+        _validate_component_identity(manifest)
 
         header = VectorHeader.read(vectors_path)
         _validate_vector_bindings(manifest, header)
@@ -169,6 +184,7 @@ class FastIndex:
         _validate_occurrence_closure(
             occurrences_path, metadata, manifest["source"]
         )
+        _validate_occurrence_lookup(occurrence_lookup_path, manifest)
         _validate_lexical_association(lexical_path, document_ids)
 
         vectors = np.memmap(
@@ -201,8 +217,9 @@ class FastIndex:
 
 def _validate_manifest(manifest: Any) -> None:
     required = {
-        "schema_version", "source", "build_scope", "complete", "embedding_profile",
-        "documents", "occurrences", "vectors", "lexical",
+        "schema_version", "component_sha256", "source", "build_scope", "complete",
+        "embedding_profile", "documents", "occurrences", "vectors", "lexical",
+        "occurrence_lookup",
     }
     if not isinstance(manifest, dict) or set(manifest) != required:
         raise FastIndexError("index.json has unknown or missing fields")
@@ -242,20 +259,34 @@ def _validate_manifest(manifest: Any) -> None:
     ):
         raise FastIndexError("index.json embedding profile is invalid")
     documents = _closed_object(
-        manifest["documents"], {"path", "rows", "order_sha256"}, "documents"
+        manifest["documents"],
+        {"path", "rows", "bytes", "sha256", "order_sha256"},
+        "documents",
     )
     occurrences = _closed_object(
-        manifest["occurrences"], {"path", "rows", "order_sha256"}, "occurrences"
+        manifest["occurrences"],
+        {"path", "rows", "bytes", "sha256", "order_sha256"},
+        "occurrences",
     )
     if occurrences["order_sha256"] is not None:
         raise FastIndexError("index.json occurrences order digest must be null in format v1")
     _closed_object(
         manifest["vectors"],
-        {"path", "count", "dimensions", "dtype", "header_bytes", "document_order_sha256"},
+        {
+            "path", "count", "bytes", "sha256", "dimensions", "dtype",
+            "header_bytes", "document_order_sha256",
+        },
         "vectors",
     )
     lexical = _closed_object(
-        manifest["lexical"], {"path", "document_count", "tokenizer", "k1", "b"}, "lexical"
+        manifest["lexical"],
+        {"path", "document_count", "bytes", "sha256", "tokenizer", "k1", "b"},
+        "lexical",
+    )
+    lookup = _closed_object(
+        manifest["occurrence_lookup"],
+        {"path", "rows", "bytes", "sha256", "schema"},
+        "occurrence_lookup",
     )
     if (
         lexical["tokenizer"] != "ascii_camel_lower_v1"
@@ -266,20 +297,57 @@ def _validate_manifest(manifest: Any) -> None:
     ):
         raise FastIndexError("index.json lexical tokenizer is unsupported")
     for digest in (
+        manifest["component_sha256"],
         manifest["source"]["snapshot_sha256"], manifest["source"]["mapping_sha256"],
         profile["sha256"], documents["order_sha256"],
         manifest["vectors"]["document_order_sha256"],
+        documents["sha256"], occurrences["sha256"], manifest["vectors"]["sha256"],
+        lexical["sha256"], lookup["sha256"],
     ):
         if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise FastIndexError("index.json contains an invalid SHA-256")
     counts = (
         manifest["documents"]["rows"], manifest["occurrences"]["rows"],
-        manifest["vectors"]["count"], lexical["document_count"],
+        manifest["vectors"]["count"], lexical["document_count"], lookup["rows"],
     )
     if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts):
         raise FastIndexError("index.json contains an invalid row count")
     if counts[0] < 1 or counts[0] != counts[2] or counts[0] != counts[3]:
         raise FastIndexError("index.json document counts do not agree")
+    if counts[1] < 1 or counts[1] != counts[4] or lookup["schema"] != "sqlite-occurrence-lookup-v1":
+        raise FastIndexError("index.json occurrence lookup binding is invalid")
+    for spec in (documents, occurrences, manifest["vectors"], lexical, lookup):
+        if not isinstance(spec["bytes"], int) or isinstance(spec["bytes"], bool) or spec["bytes"] < 1:
+            raise FastIndexError("index.json contains an invalid artifact byte count")
+
+
+def _validate_component_identity(manifest: dict[str, Any]) -> None:
+    material = {
+        name: manifest[name]
+        for name in (
+            "schema_version", "source", "build_scope", "complete", "documents",
+            "occurrences", "vectors", "lexical", "occurrence_lookup", "embedding_profile",
+        )
+    }
+    try:
+        digest = hashlib.sha256(rfc8785.dumps(material)).hexdigest()
+    except (ValueError, TypeError) as error:
+        raise FastIndexError("index.json component identity is not canonicalizable") from error
+    if digest != manifest["component_sha256"]:
+        raise FastIndexError("index.json component identity mismatch")
+
+
+def _validate_artifact(path: Path, spec: Mapping[str, Any], what: str) -> None:
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError as error:
+        raise FastIndexError(f"{what} artifact is unreadable") from error
+    if size != spec["bytes"] or digest.hexdigest() != spec["sha256"]:
+        raise FastIndexError(f"{what} artifact content digest mismatch")
 
 
 def _validate_vector_bindings(manifest: dict[str, Any], header: VectorHeader) -> None:
@@ -367,6 +435,47 @@ def _validate_occurrence_closure(
         or any(expected[document_id] != count for document_id, count in actual.items())
     ):
         raise FastIndexError("occurrence source/document closure is invalid")
+
+
+def _validate_occurrence_lookup(path: Path, manifest: dict[str, Any]) -> None:
+    try:
+        uri = f"file:{path.as_posix()}?mode=ro&immutable=1"
+        connection = sqlite3.connect(uri, uri=True)
+        try:
+            metadata = dict(connection.execute("SELECT key, value FROM metadata"))
+            rows = int(connection.execute("SELECT count(*) FROM occurrences").fetchone()[0])
+            unique = int(
+                connection.execute("SELECT count(DISTINCT occurrence_id) FROM occurrences")
+                .fetchone()[0]
+            )
+            invalid = int(
+                connection.execute(
+                    """SELECT count(*) FROM occurrences
+                       WHERE event_id = '' OR support_ref = ''
+                          OR snapshot_sha256 <> ? OR mapping_sha256 <> ?""",
+                    (
+                        manifest["source"]["snapshot_sha256"],
+                        manifest["source"]["mapping_sha256"],
+                    ),
+                ).fetchone()[0]
+            )
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+        raise FastIndexError("occurrence lookup is unreadable") from error
+    expected = manifest["occurrences"]["rows"]
+    if (
+        metadata != {
+            "schema": "sqlite-occurrence-lookup-v1",
+            "rows": str(expected),
+            "snapshot_sha256": manifest["source"]["snapshot_sha256"],
+            "mapping_sha256": manifest["source"]["mapping_sha256"],
+        }
+        or rows != expected
+        or unique != expected
+        or invalid != 0
+    ):
+        raise FastIndexError("occurrence lookup closure is invalid")
 
 
 def _validate_lexical_association(path: Path, document_ids: list[str]) -> None:

@@ -66,6 +66,17 @@ pub struct ProjectionOutput {
     pub occurrence: ProjectedOccurrence,
 }
 
+/// The identity-bearing portion of projection needed during document census.
+/// It deliberately excludes exact occurrence attributes, which are materialized
+/// only after a representative builder has selected a document.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectedDocumentSummary {
+    pub document: Option<ProjectedDocument>,
+    pub event_time: Option<String>,
+    pub event_time_availability: EventTimeAvailability,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectedDocument {
@@ -182,6 +193,19 @@ pub enum ProjectionError {
     InvalidJson(#[from] serde_json::Error),
 }
 
+struct ProjectionCore {
+    typed_event: Value,
+    parse_error: bool,
+    document_kind: DocumentKind,
+    semantic_group_id: String,
+    semantic_group_sha256: String,
+    terminal_disposition: TerminalDisposition,
+    disposition_reason: &'static str,
+    document: Option<ProjectedDocument>,
+    event_time: Option<String>,
+    event_time_availability: EventTimeAvailability,
+}
+
 #[derive(Clone, Debug)]
 struct Leaf {
     path: String,
@@ -228,32 +252,69 @@ static MAC_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b").unwrap());
 
 pub fn project(input: ProjectionInput<'_>) -> Result<ProjectionOutput, ProjectionError> {
+    let core = project_core(input.relation_name, input.typed_event_json, input.context);
+    let (exact_attributes, mut exact_projection) = exact_attribute_subset(&core.typed_event);
+    if core.parse_error {
+        exact_projection.source_hydration_required = true;
+    }
+    let occurrence = ProjectedOccurrence {
+        schema_version: PROJECTION_SCHEMA_VERSION.to_owned(),
+        event_id: input.event_id.to_owned(),
+        support_ref: input.support_ref.to_owned(),
+        relation_name: input.relation_name.to_owned(),
+        document_kind: core.document_kind,
+        terminal_disposition: core.terminal_disposition,
+        disposition_reason: core.disposition_reason.to_owned(),
+        semantic_group_id: core.semantic_group_id,
+        semantic_group_sha256: core.semantic_group_sha256,
+        event_time: core.event_time,
+        event_time_availability: core.event_time_availability,
+        exact_attributes,
+        exact_attribute_projection: exact_projection,
+        snapshot: input.context.snapshot.clone(),
+        mapping_pack: input.context.mapping_pack.clone(),
+    };
+    Ok(ProjectionOutput {
+        document: core.document,
+        occurrence,
+    })
+}
+
+/// Project only document identity/content and event-time accounting. This uses
+/// the same core as [`project`] and therefore cannot drift from occurrence
+/// projection, but avoids walking and allocating exact attributes.
+pub fn project_document_summary(
+    relation_name: &str,
+    typed_event_json: &str,
+    context: &ProjectionContext,
+) -> Result<ProjectedDocumentSummary, ProjectionError> {
+    let core = project_core(relation_name, typed_event_json, context);
+    Ok(ProjectedDocumentSummary {
+        document: core.document,
+        event_time: core.event_time,
+        event_time_availability: core.event_time_availability,
+    })
+}
+
+fn project_core(
+    relation_name: &str,
+    typed_event_json: &str,
+    context: &ProjectionContext,
+) -> ProjectionCore {
     // Projection is total over source rows. Malformed or non-object typed JSON
     // becomes a structured-only occurrence which the authoritative source can
     // still hydrate; it must not disappear because parsing failed.
-    let parsed: Option<Value> = serde_json::from_str(input.typed_event_json).ok();
-    let typed_event = parsed.as_ref().and_then(Value::as_object);
-    let parse_error = typed_event.is_none();
-    let empty = Map::new();
-    let object = typed_event.unwrap_or(&empty);
+    let parsed: Option<Value> = serde_json::from_str(typed_event_json).ok();
+    let parse_error = parsed.as_ref().and_then(Value::as_object).is_none();
+    let typed_event = parsed
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let leaves = flattened_leaves(&typed_event);
 
-    let mut flatten_state = FlattenState::default();
-    let mut leaves = Vec::new();
-    flatten_value(
-        &Value::Object(object.clone()),
-        "",
-        &mut leaves,
-        &mut flatten_state,
-    );
-    leaves.sort_by_key(|leaf| (leaf_priority(&leaf.path), leaf.path.clone()));
-    if leaves.len() > MAX_LEAVES {
-        leaves.truncate(MAX_LEAVES);
-    }
-
-    let document_kind = relation_kind(input.relation_name);
+    let document_kind = relation_kind(relation_name);
     let known_relation = document_kind.is_some();
     let document_kind = document_kind.unwrap_or(DocumentKind::StructuredOnly);
-    let derivation_only = input.relation_name == "ocsf_ext_livefire_system_metric";
+    let derivation_only = relation_name == "ocsf_ext_livefire_system_metric";
     let searchable = known_relation && !derivation_only && !parse_error;
 
     let semantic_leaves = semantic_entries(&leaves);
@@ -263,12 +324,11 @@ pub fn project(input: ProjectionInput<'_>) -> Result<ProjectionOutput, Projectio
         context: facet_text(&semantic_leaves, Role::Context),
         outcome: facet_text(&semantic_leaves, Role::Outcome),
     };
-    let semantic_text =
-        compose_semantic_text(document_kind, input.relation_name, &facets, parse_error);
+    let semantic_text = compose_semantic_text(document_kind, relation_name, &facets, parse_error);
 
     let group_material = json!({
         "schema_version": PROJECTION_SCHEMA_VERSION,
-        "relation_name": input.relation_name,
+        "relation_name": relation_name,
         "document_kind": document_kind.label(),
         "action_text": facets.action,
         "target_text": facets.target,
@@ -282,10 +342,6 @@ pub fn project(input: ProjectionInput<'_>) -> Result<ProjectionOutput, Projectio
     let semantic_group_sha256 = digest_value(&group_material);
     let semantic_group_id = format!("sha256:{semantic_group_sha256}");
 
-    let (exact_attributes, mut exact_projection) = exact_attribute_subset(object);
-    if parse_error {
-        exact_projection.source_hydration_required = true;
-    }
     let (event_time, event_time_availability) = event_time(&leaves);
     let (terminal_disposition, disposition_reason) = if parse_error {
         (
@@ -309,36 +365,54 @@ pub fn project(input: ProjectionInput<'_>) -> Result<ProjectionOutput, Projectio
         )
     };
 
-    let occurrence = ProjectedOccurrence {
-        schema_version: PROJECTION_SCHEMA_VERSION.to_owned(),
-        event_id: input.event_id.to_owned(),
-        support_ref: input.support_ref.to_owned(),
-        relation_name: input.relation_name.to_owned(),
-        document_kind,
-        terminal_disposition,
-        disposition_reason: disposition_reason.to_owned(),
-        semantic_group_id: semantic_group_id.clone(),
-        semantic_group_sha256: semantic_group_sha256.clone(),
-        event_time,
-        event_time_availability,
-        exact_attributes,
-        exact_attribute_projection: exact_projection,
-        snapshot: input.context.snapshot.clone(),
-        mapping_pack: input.context.mapping_pack.clone(),
-    };
     let document = searchable.then(|| ProjectedDocument {
-        document_id: semantic_group_id,
+        document_id: semantic_group_id.clone(),
         document_kind,
         semantic_text,
         facets,
-        semantic_group_sha256,
-        snapshot: input.context.snapshot.clone(),
-        mapping_pack: input.context.mapping_pack.clone(),
+        semantic_group_sha256: semantic_group_sha256.clone(),
+        snapshot: context.snapshot.clone(),
+        mapping_pack: context.mapping_pack.clone(),
     });
-    Ok(ProjectionOutput {
+    ProjectionCore {
+        typed_event,
+        parse_error,
+        document_kind,
+        semantic_group_id,
+        semantic_group_sha256,
+        terminal_disposition,
+        disposition_reason,
         document,
-        occurrence,
-    })
+        event_time,
+        event_time_availability,
+    }
+}
+
+/// Extract the normalized event-time state using the exact same bounded leaf
+/// ordering as [`project`] without constructing semantic facets, exact
+/// attributes, or content hashes. Builders use this for structurally
+/// non-searchable metric rows so complete source accounting does not pay the
+/// full semantic-projection cost.
+#[must_use]
+pub fn project_event_time(typed_event_json: &str) -> (Option<String>, EventTimeAvailability) {
+    let parsed: Option<Value> = serde_json::from_str(typed_event_json).ok();
+    let empty = Value::Object(Map::new());
+    let typed_event = parsed
+        .as_ref()
+        .filter(|value| value.is_object())
+        .unwrap_or(&empty);
+    event_time(&flattened_leaves(typed_event))
+}
+
+fn flattened_leaves(typed_event: &Value) -> Vec<Leaf> {
+    let mut flatten_state = FlattenState::default();
+    let mut leaves = Vec::new();
+    flatten_value(typed_event, "", &mut leaves, &mut flatten_state);
+    leaves.sort_by_key(|leaf| (leaf_priority(&leaf.path), leaf.path.clone()));
+    if leaves.len() > MAX_LEAVES {
+        leaves.truncate(MAX_LEAVES);
+    }
+    leaves
 }
 
 pub fn relation_kind(relation: &str) -> Option<DocumentKind> {
@@ -606,16 +680,14 @@ fn numeric_semantic_value(path: &str, number: &serde_json::Number) -> String {
     format!("<quantity:{sign}1e{}>", value.abs().log10().floor() as i32)
 }
 
-fn exact_attribute_subset(
-    root: &Map<String, Value>,
-) -> (Vec<ExactAttribute>, ExactAttributeProjection) {
+fn exact_attribute_subset(root: &Value) -> (Vec<ExactAttribute>, ExactAttributeProjection) {
     let mut attributes = Vec::new();
     let mut omissions = BTreeMap::<String, usize>::new();
     let mut scanned = 0_usize;
     let mut truncated = false;
     let mut omitted_subtrees = 0_usize;
     exact_visit(
-        &Value::Object(root.clone()),
+        root,
         "",
         "",
         &mut attributes,

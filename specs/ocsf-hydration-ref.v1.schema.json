@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/ocsf-hydration-ref.v1.schema.json",
+  "title": "OCSF authoritative hydration handoff v1",
+  "description": "A candidate handoff to the authoritative OCSF hydrate_event_envelopes operation. It is not an SDK source-record-pointer and is not verifier-eligible evidence before hydration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "snapshot", "mapping", "relation", "event_id", "support_ref"],
+  "properties": {
+    "schema_version": {"const": "livefire.ocsf-hydration-ref/1"},
+    "snapshot": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "mapping": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "relation": {"type": "string", "minLength": 1},
+    "event_id": {"type": "string", "minLength": 1},
+    "support_ref": {"type": "string", "minLength": 1}
+  }
+}

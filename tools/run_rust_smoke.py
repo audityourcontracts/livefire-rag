@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import duckdb
 from jsonschema import Draft202012Validator
 
 from livefire_rag.evidence_schema import _offline_registry
@@ -58,132 +59,73 @@ def _provider_smoke(
     executable: Path,
     repository: Path,
     index: Path,
+    embedding_profile: Path,
     embedding_endpoint: str,
     query: str,
     transcript_path: Path,
+    snapshot: Path | None = None,
 ) -> dict[str, Any]:
-    """Exercise the standalone SDK JSONL lifecycle over the generated index."""
+    """Package, admit locally, and invoke the provider through the SDK harness."""
 
-    manifest = json.loads((index / "index.json").read_text(encoding="utf-8"))
-    source_sha256 = manifest["source"]["snapshot_sha256"]
-    lock_sha256 = "d" * 64
-    index_ref = {"id": "smoke.fast-index", "version": "1", "sha256": "c" * 64}
-    source_ref = {"id": "smoke.ocsf-snapshot", "version": "1", "sha256": source_sha256}
-
-    process = subprocess.Popen(
-        [str(executable)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if process.stdin is None or process.stdout is None or process.stderr is None:
-        process.kill()
-        raise RuntimeError("provider process did not expose its JSONL streams")
-    transcript: list[dict[str, Any]] = []
-
-    def exchange(identifier: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        request = {
-            "protocol": "livefire.tool/1",
-            "id": identifier,
-            "method": method,
-            "params": params,
-            "context": {
-                "trace_id": "rust-smoke",
-                "deadline_unix_ms": 9_999_999_999_999,
-            },
-        }
-        process.stdin.write(json.dumps(request, sort_keys=True) + "\n")
-        process.stdin.flush()
-        line = process.stdout.readline()
-        if not line:
-            raise RuntimeError(f"provider exited before responding to {method}")
-        response = json.loads(line)
-        transcript.append({"request": request, "response": response})
-        if response.get("id") != identifier or response.get("protocol") != "livefire.tool/1":
-            raise RuntimeError(f"provider returned an invalid envelope for {method}")
-        if "error" in response:
-            raise RuntimeError(f"provider {method} failed: {response['error']}")
-        return response["result"]
-
-    try:
-        handshake = exchange("1", "handshake", {})
-        provider_ref = handshake["provider"]
-        tool_ref = handshake["tools"][0]
-        opened = exchange(
-            "2",
-            "open",
-            {
-                "provider": provider_ref,
-                "tools": [tool_ref],
-                "indexes": [index_ref],
-                "source_snapshots": [source_ref],
-                "binding_lock_sha256": lock_sha256,
-                "query_time_contract": {"embedding_endpoint": embedding_endpoint},
-                "limits": {
-                    "request_bytes": 1_048_576,
-                    "result_bytes": 1_048_576,
-                    "wall_time_ms": 300_000,
-                    "memory_bytes": 1_073_741_824,
-                    "max_candidates": 20,
-                },
-                "mounts": [
-                    {
-                        "logical_name": "evidence-index",
-                        "role": "index",
-                        "component": index_ref,
-                        "access": "read_only",
-                        "process_path": str(index),
-                    }
-                ],
-            },
-        )
-        session_id = opened["session_id"]
-        called = exchange(
-            "3",
-            "call",
-            {
-                "session_id": session_id,
-                "tool": tool_ref,
-                "arguments": {
-                    "schema_version": "livefire.rag.fast-search.input/1",
-                    "query": query,
-                    "mode": "lexical",
-                    "top_n": 3,
-                },
-            },
-        )
-        health = exchange("4", "health", {"session_id": session_id})
-        closed = exchange("5", "close", {"session_id": session_id})
-    finally:
-        process.stdin.close()
-        stderr = process.stderr.read()
-        status = process.wait(timeout=10)
-        transcript_path.write_text(
-            "".join(json.dumps(row, sort_keys=True) + "\n" for row in transcript),
-            encoding="utf-8",
-        )
-        if status != 0:
-            raise RuntimeError(f"provider exited with status {status}: {stderr}")
-
-    output = called["output"]
+    sdk = repository.parent / "livefire-sdk"
+    registry, schemas = _offline_registry(repository / "specs", sdk / "specs")
+    Draft202012Validator(
+        schemas["fast-index-manifest.v2.schema.json"], registry=registry
+    ).validate(json.loads((index / "index.json").read_text(encoding="utf-8")))
+    Draft202012Validator(
+        schemas["fast-build-report.v1.schema.json"], registry=registry
+    ).validate(json.loads((index / "build-report.json").read_text(encoding="utf-8")))
+    bundle = transcript_path.parent / "provider-bundle"
+    loadout = transcript_path.parent / "provider-loadout"
+    _run([str(repository / "target/debug/rag-package-tool"), "--provider", str(executable), "--sdk-specs", str(sdk / "specs"), "--out", str(bundle)], cwd=repository)
+    _run([str(repository / "target/debug/rag-prepare-local-tool"), "--index", str(index), "--bundle", str(bundle), "--embedding-profile", str(embedding_profile), "--source-receipt", str(snapshot / "build-receipt.json") if snapshot else "", "--embedding-endpoint", embedding_endpoint, "--query", query, "--out", str(loadout)], cwd=repository)
+    _run(["cargo", "run", "-q", "--manifest-path", str(sdk / "Cargo.toml"), "-p", "livefire-sdk", "--", "--specs", str(sdk / "specs"), "validate-bundle", "--manifest", str(bundle / "plugin.json"), "--root", str(bundle)], cwd=repository)
+    for schema, document in [("index-manifest.v1", index / "sdk-index-manifest.json"), ("index-admission-receipt.v1", loadout / "index-admission-receipt.json"), ("tool-binding-lock.v1", loadout / "tool-binding-lock.json")]:
+        _run(["cargo", "run", "-q", "--manifest-path", str(sdk / "Cargo.toml"), "-p", "livefire-sdk", "--", "--specs", str(sdk / "specs"), "validate", "--schema", schema, str(document)], cwd=repository)
+    wire = _run(["cargo", "run", "-q", "--manifest-path", str(sdk / "Cargo.toml"), "-p", "livefire-sdk", "--", "--specs", str(sdk / "specs"), "invoke", "--program", str(bundle / "bin/rag-provider"), "--requests", str(loadout / "requests.jsonl")], cwd=repository)
+    transcript_path.write_text(wire, encoding="utf-8")
+    responses = [json.loads(line) for line in wire.splitlines()]
+    if any("error" in response for response in responses):
+        raise RuntimeError("SDK provider lifecycle returned an error")
+    output = responses[2]["result"]["output"]
     if output.get("kind") != "pointer" or not output.get("candidates"):
         raise RuntimeError("provider lexical smoke did not return a candidate pointer")
-    registry, schemas = _offline_registry(
-        repository / "specs", repository.parent / "livefire-sdk" / "specs"
-    )
     Draft202012Validator(
         schemas["fast-evidence-search.output.v1.schema.json"], registry=registry
     ).validate(output)
-    if health.get("status") != "ready" or closed.get("closed") is not True:
+    if responses[3]["result"].get("status") != "ready" or responses[4]["result"].get("closed") is not True:
         raise RuntimeError("provider health/close lifecycle did not complete")
+    hydration_refs = [ref for candidate in output["candidates"] for ref in candidate["evidence"]]
+    if any(ref.get("schema_version") != "livefire.ocsf-hydration-ref/1" for ref in hydration_refs):
+        raise RuntimeError("provider returned a non-hydration candidate reference")
+    if snapshot is None:
+        raise RuntimeError("synthetic source snapshot is required for hydration closure validation")
+    receipt = json.loads((snapshot / "build-receipt.json").read_text(encoding="utf-8"))
+    source_component = receipt["runnable_snapshot"]["component"]
+    mapping_component = receipt["runnable_snapshot"]["mapping_pack"]
+    by_relation: dict[str, set[tuple[str, str]]] = {}
+    for ref in hydration_refs:
+        relation = ref["relation"]
+        if relation not in by_relation:
+            rows = duckdb.sql(
+                "SELECT event_id, support_ref FROM read_parquet(?)",
+                params=[str(snapshot / "semantic" / f"{relation}.parquet")],
+            ).fetchall()
+            by_relation[relation] = set(rows)
+        if ref["snapshot"] != source_component or ref["mapping"] != mapping_component or (ref["event_id"], ref["support_ref"]) not in by_relation[relation]:
+            raise RuntimeError("provider hydration reference is outside the authoritative synthetic source closure")
+    hydration_requests = [{"operation":"hydrate_event_envelopes","contract_version":1,"arguments":{"event_ids":[ref["event_id"] for ref in hydration_refs[position:position+20]]}} for position in range(0,len(hydration_refs),20)]
+    (transcript_path.parent / "ocsf-hydration-requests.jsonl").write_text("".join(json.dumps(row,sort_keys=True)+"\n" for row in hydration_requests),encoding="utf-8")
     return {
-        "scope": "direct_jsonl_lifecycle_not_sdk_admission",
-        "requests": len(transcript),
-        "tool": tool_ref,
+        "scope": "sdk_validated_local_test_admission_not_production",
+        "requests": len(responses),
+        "tool": responses[0]["result"]["tools"][0],
         "result_kind": output["kind"],
         "returned_candidates": len(output["candidates"]),
         "output_schema_validated": True,
+        "hydration_refs": len(hydration_refs),
+        "hydration_reference_closure_validated": True,
+        "hydration_requests": "ocsf-hydration-requests.jsonl",
         "transcript": transcript_path.name,
     }
 
@@ -264,6 +206,7 @@ def main() -> int:
         "occurrences.parquet",
         "vectors.f32",
         "lexical/index.json",
+        "occurrence-index.sqlite3",
     ]
     if any(_sha256(index / name) != _sha256(cached_index / name) for name in comparable):
         raise RuntimeError("cached rebuild changed a stable index artifact")
@@ -318,9 +261,11 @@ def main() -> int:
         repository / "target/debug/rag-provider",
         repository,
         index,
+        profile_path,
         arguments.embedding_endpoint,
         "encoded PowerShell command",
         work / "provider-wire.jsonl",
+        snapshot,
     )
     report = {
         "schema_version": "livefire.rag.rust-smoke-report/1",

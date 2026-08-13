@@ -37,6 +37,11 @@ GENERIC_EVIDENCE_SCHEMA_NAMES = (
     "evidence-search.output.v1.schema.json",
     "fast-evidence-search.input.v1.schema.json",
     "fast-evidence-search.output.v1.schema.json",
+    "ocsf-hydration-ref.v1.schema.json",
+    "fast-index-manifest.v2.schema.json",
+    "fast-document-row.v1.schema.json",
+    "fast-occurrence-row.v1.schema.json",
+    "fast-build-report.v1.schema.json",
 )
 
 

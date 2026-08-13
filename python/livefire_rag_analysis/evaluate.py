@@ -29,7 +29,9 @@ def _rows(value: Path | Iterable[Mapping[str, Any]], what: str) -> list[dict[str
     return [dict(row) for row in value]
 
 
-def _run_groups(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _run_groups(
+    rows: Sequence[Mapping[str, Any]], *, allow_empty: bool = False
+) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     seen: set[tuple[str, str]] = set()
     for row in rows:
@@ -50,7 +52,7 @@ def _run_groups(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[dict[str, A
         normalized = dict(row)
         normalized["document_id"] = document_id
         grouped[query_id].append(normalized)
-    if not grouped:
+    if not grouped and not allow_empty:
         raise RetrievalEvaluationError("retrieval run is empty")
     for query_id, group in grouped.items():
         group.sort(key=lambda row: (row["rank"], row["document_id"]))
@@ -95,6 +97,7 @@ def evaluate_retrieval_run(
     *,
     qrels: Path | Iterable[Mapping[str, Any]] | None = None,
     cutoffs: Sequence[int] = (5, 10, 20),
+    planned_query_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Return run diagnostics and qrel metrics without coupling to an index."""
 
@@ -104,7 +107,18 @@ def evaluate_retrieval_run(
     ):
         raise ValueError("cutoffs must be unique positive integers")
     cutoffs = tuple(sorted(cutoffs))
-    groups = _run_groups(_rows(run, "run"))
+    planned = tuple(planned_query_ids or ())
+    if planned and (
+        len(set(planned)) != len(planned)
+        or any(not isinstance(query_id, str) or not query_id for query_id in planned)
+    ):
+        raise ValueError("planned_query_ids must be unique nonempty strings")
+    groups = _run_groups(_rows(run, "run"), allow_empty=bool(planned))
+    if planned:
+        unexpected = set(groups) - set(planned)
+        if unexpected:
+            raise RetrievalEvaluationError("run contains queries outside the frozen plan")
+        groups = {query_id: groups.get(query_id, []) for query_id in planned}
     report: dict[str, Any] = {
         "schema_version": "livefire.rag.retrieval-run-evaluation/1",
         "queries": len(groups),
@@ -113,6 +127,7 @@ def evaluate_retrieval_run(
         "qrels_supplied": qrels is not None,
         "per_query": [],
     }
+    report["planned_queries_supplied"] = bool(planned)
     if qrels is None:
         report["metrics_status"] = "unavailable_without_qrels"
         report["run_depth"] = {

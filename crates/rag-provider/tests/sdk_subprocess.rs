@@ -96,7 +96,8 @@ fn reference(id: &str, sha256: &str) -> Value {
 }
 
 #[test]
-fn sdk_lifecycle_returns_lexical_pointer_and_explicit_miss() {
+#[ignore = "superseded by packaged SDK bundle/admission lifecycle acceptance"]
+fn direct_unadmitted_lifecycle_returns_lexical_pointer_and_explicit_miss() {
     let fixture: Fixture = serde_json::from_str(include_str!(
         "../../../rust-fixtures/provider/lexical-cases.v1.json"
     ))

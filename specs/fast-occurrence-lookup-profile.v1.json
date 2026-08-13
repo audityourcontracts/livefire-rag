@@ -1,0 +1,1 @@
+{"schema_version":"livefire.rag.fast-occurrence-lookup-profile/1","media_type":"application/vnd.sqlite3","schema":"sqlite-occurrence-lookup-v1","purpose":"bounded document-to-occurrence hydration handoff lookup"}

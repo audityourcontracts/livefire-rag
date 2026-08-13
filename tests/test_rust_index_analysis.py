@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import struct
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
+import rfc8785
 
 from livefire_rag_analysis import (
     FastIndex,
@@ -76,8 +78,62 @@ def _fixture(root: Path) -> Path:
     )
     (index / "vectors.f32").write_bytes(header + vectors.tobytes(order="C"))
     digest = "a" * 64
+    lexical_path = index / "lexical/index.json"
+    lexical_path.write_text(
+        json.dumps({
+            "document_count": 4,
+            "documents": [{"document_id": document_id} for document_id in document_ids],
+        }) + "\n",
+        encoding="utf-8",
+    )
+    lookup_path = index / "occurrence-index.sqlite3"
+    lookup = sqlite3.connect(lookup_path)
+    try:
+        lookup.executescript(
+            """CREATE TABLE occurrences (
+                 occurrence_id TEXT PRIMARY KEY NOT NULL,
+                 document_id TEXT NOT NULL,
+                 event_time_ms INTEGER,
+                 relation TEXT NOT NULL,
+                 snapshot_sha256 TEXT NOT NULL,
+                 mapping_sha256 TEXT NOT NULL,
+                 event_id TEXT NOT NULL,
+                 support_ref TEXT NOT NULL
+               ) WITHOUT ROWID;
+               CREATE TABLE metadata(
+                 key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL
+               ) WITHOUT ROWID;"""
+        )
+        lookup.executemany(
+            "INSERT INTO occurrences VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    f"occ-{ordinal}", document_id, None, relations[ordinal],
+                    "a" * 64, "b" * 64, f"evt-{ordinal}", f"sup-{ordinal}",
+                )
+                for ordinal, document_id in enumerate(document_ids)
+            ],
+        )
+        lookup.executemany(
+            "INSERT INTO metadata VALUES (?, ?)",
+            [
+                ("schema", "sqlite-occurrence-lookup-v1"),
+                ("rows", "4"),
+                ("snapshot_sha256", "a" * 64),
+                ("mapping_sha256", "b" * 64),
+            ],
+        )
+        lookup.commit()
+    finally:
+        lookup.close()
+
+    def artifact(path: Path) -> dict[str, object]:
+        raw = path.read_bytes()
+        return {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
     manifest = {
-        "schema_version": "livefire.rag.fast-index/1",
+        "schema_version": "livefire.rag.fast-index/2",
+        "component_sha256": "",
         "source": {"snapshot_sha256": digest, "mapping_sha256": "b" * 64},
         "build_scope": "sample",
         "complete": False,
@@ -92,16 +148,19 @@ def _fixture(root: Path) -> Path:
         "documents": {
             "path": "documents.parquet",
             "rows": 4,
+            **artifact(index / "documents.parquet"),
             "order_sha256": order_sha,
         },
         "occurrences": {
             "path": "occurrences.parquet",
             "rows": 4,
+            **artifact(index / "occurrences.parquet"),
             "order_sha256": None,
         },
         "vectors": {
             "path": "vectors.f32",
             "count": 4,
+            **artifact(index / "vectors.f32"),
             "dimensions": 3,
             "dtype": "f32le",
             "header_bytes": 64,
@@ -110,18 +169,20 @@ def _fixture(root: Path) -> Path:
         "lexical": {
             "path": "lexical/index.json",
             "document_count": 4,
+            **artifact(lexical_path),
             "tokenizer": "ascii_camel_lower_v1",
             "k1": 1.2,
             "b": 0.75,
         },
+        "occurrence_lookup": {
+            "path": "occurrence-index.sqlite3",
+            "rows": 4,
+            **artifact(lookup_path),
+            "schema": "sqlite-occurrence-lookup-v1",
+        },
     }
-    (index / "lexical/index.json").write_text(
-        json.dumps({
-            "document_count": 4,
-            "documents": [{"document_id": document_id} for document_id in document_ids],
-        }) + "\n",
-        encoding="utf-8",
-    )
+    material = {key: value for key, value in manifest.items() if key != "component_sha256"}
+    manifest["component_sha256"] = hashlib.sha256(rfc8785.dumps(material)).hexdigest()
     (index / "index.json").write_text(json.dumps(manifest), encoding="utf-8")
     return index
 
@@ -144,14 +205,14 @@ class RustIndexAnalysisTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text())
             manifest["documents"]["order_sha256"] = hashlib.sha256(b"wrong").hexdigest()
             manifest_path.write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(FastIndexError, "order digest"):
+            with self.assertRaisesRegex(FastIndexError, "component identity"):
                 FastIndex.open(index)
 
         with tempfile.TemporaryDirectory() as directory:
             index = _fixture(Path(directory))
             with (index / "vectors.f32").open("ab") as handle:
                 handle.write(b"\0")
-            with self.assertRaisesRegex(FastIndexError, "length mismatch"):
+            with self.assertRaisesRegex(FastIndexError, "artifact content digest"):
                 FastIndex.open(index)
 
     def test_pca_report_marks_original_space_outliers_and_writes_png(self) -> None:
@@ -191,6 +252,18 @@ class RustIndexAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(report["macro"]["reciprocal_rank"], 1.0)
         self.assertLess(report["per_query"][0]["ndcg@1"], 1.0)
         self.assertEqual(report["per_query"][1]["ndcg@1"], 1.0)
+
+        missing_run = [row for row in run if row["query_id"] == "q1"]
+        zero_hit = evaluate_retrieval_run(
+            missing_run,
+            qrels=qrels,
+            cutoffs=(1, 2),
+            planned_query_ids=("q1", "q2"),
+        )
+        self.assertEqual(zero_hit["queries"], 2)
+        self.assertEqual(zero_hit["per_query"][1]["query_id"], "q2")
+        self.assertEqual(zero_hit["per_query"][1]["reciprocal_rank"], 0.0)
+        self.assertEqual(zero_hit["per_query"][1]["recall@2"], 0.0)
 
 
 if __name__ == "__main__":

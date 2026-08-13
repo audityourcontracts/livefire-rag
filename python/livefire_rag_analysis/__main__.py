@@ -27,6 +27,11 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--qrels", type=Path)
     evaluate.add_argument("--out", type=Path)
     evaluate.add_argument("--cutoff", action="append", type=int)
+    evaluate.add_argument(
+        "--planned-query-id",
+        action="append",
+        help="frozen query ID; repeat to score zero-hit queries as empty rankings",
+    )
     return parser
 
 
@@ -57,6 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.run,
             qrels=arguments.qrels,
             cutoffs=arguments.cutoff or (5, 10, 20),
+            planned_query_ids=arguments.planned_query_id,
         )
         if arguments.out is not None:
             if arguments.out.exists():

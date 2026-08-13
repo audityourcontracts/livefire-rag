@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::{self, File},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
 };
 
@@ -8,19 +9,19 @@ use arrow_array::{Array, RecordBatch, StringArray};
 use chrono::DateTime;
 use clap::{Parser, Subcommand, ValueEnum};
 use rag_embedding::{
-    EmbeddingCache, EmbeddingInput, LmStudioEmbedder, embed_resumable, parse_embedding_profile,
+    EmbeddingCache, EmbeddingInput, LmStudioEmbedder, ensure_cached, parse_embedding_profile,
     try_compose_query,
 };
 use rag_index::{
-    BuildScope, FastDocument, FastIndex, FastOccurrence, SearchFilters, SearchMode, SourceBinding,
-    document_order_sha256, write_fast_index,
+    BuildScope, FastDocument, FastIndex, FastOccurrence, IndexError, SearchFilters, SearchMode,
+    SourceBinding, document_order_sha256, write_fast_index_streaming,
 };
 use rag_ocsf::{LocalSnapshotReader, SnapshotReader};
 use rag_projection::{
     ComponentRef, EventTimeAvailability, ProjectedDocument, ProjectionContext, ProjectionInput,
-    project,
+    project, project_document_summary, project_event_time,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[derive(Parser)]
@@ -45,10 +46,11 @@ enum Command {
         resume: PathBuf,
         #[arg(long, default_value_t = 16)]
         embedding_batch_size: usize,
-        /// Retain the deterministic hash-min sample of at most COUNT documents.
-        /// Every occurrence of a selected document is retained.
-        #[arg(long, value_name = "COUNT", value_parser = positive_usize)]
-        sample_documents: Option<usize>,
+        /// Build the fixed scenario-blind representative sample: census at
+        /// <=1000, then a 2000-document snapshot-bound hash-min cap per larger
+        /// searchable relation (effective full retention through 2000).
+        #[arg(long)]
+        representative_sample: bool,
     },
     Query {
         #[arg(long)]
@@ -64,18 +66,54 @@ enum Command {
         #[arg(long)]
         relation: Vec<String>,
     },
+    /// Execute a frozen JSONL query plan while opening and hashing the index
+    /// only once. Results are emitted as JSONL in request order.
+    BatchQuery {
+        #[arg(long)]
+        index: PathBuf,
+        #[arg(long)]
+        requests: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:1234")]
+        embedding_endpoint: String,
+    },
     Inspect {
         #[arg(long)]
         index: PathBuf,
     },
 }
 
-#[derive(Clone, Copy, ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, ValueEnum, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum Mode {
     Dense,
     Lexical,
     #[default]
     Fused,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchQueryRequest {
+    query_id: String,
+    query: String,
+    mode: Mode,
+    top_n: usize,
+    #[serde(default)]
+    relations: Vec<String>,
+}
+
+impl BatchQueryRequest {
+    fn validate(&self) -> Result<()> {
+        if self.query_id.is_empty()
+            || self.query.is_empty()
+            || self.top_n == 0
+            || self.top_n > 100
+            || self.relations.iter().any(String::is_empty)
+        {
+            return Err(Error::InvalidBatchQuery);
+        }
+        Ok(())
+    }
 }
 impl From<Mode> for SearchMode {
     fn from(value: Mode) -> Self {
@@ -87,31 +125,25 @@ impl From<Mode> for SearchMode {
     }
 }
 
-fn positive_usize(value: &str) -> std::result::Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|_| "expected a positive integer".to_owned())?;
-    if parsed == 0 {
-        return Err("expected a positive integer".to_owned());
-    }
-    Ok(parsed)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildSelection {
     Full,
-    SampleDocuments(usize),
+    Representative,
 }
 
 impl BuildSelection {
-    fn from_limit(limit: Option<usize>) -> Self {
-        limit.map_or(Self::Full, Self::SampleDocuments)
+    fn from_flag(enabled: bool) -> Self {
+        if enabled {
+            Self::Representative
+        } else {
+            Self::Full
+        }
     }
 
     fn scope(self) -> BuildScope {
         match self {
             Self::Full => BuildScope::Full,
-            Self::SampleDocuments(_) => BuildScope::Sample,
+            Self::Representative => BuildScope::Sample,
         }
     }
 }
@@ -141,14 +173,6 @@ impl TimestampAccounting {
         }
     }
 
-    fn merge(&mut self, other: &Self) {
-        self.available += other.available;
-        self.indexed_milliseconds += other.indexed_milliseconds;
-        self.before_unix_epoch += other.before_unix_epoch;
-        self.missing += other.missing;
-        self.present_unparsed += other.present_unparsed;
-    }
-
     fn total(&self) -> u64 {
         self.available + self.missing + self.present_unparsed
     }
@@ -157,7 +181,11 @@ impl TimestampAccounting {
 #[derive(Debug, Serialize)]
 struct SamplingAccounting {
     policy: &'static str,
-    document_limit: Option<usize>,
+    declared_census_at_or_below: Option<usize>,
+    hash_min_cap_above_census_threshold: Option<usize>,
+    effective_full_retention_at_or_below: Option<usize>,
+    max_documents_per_searchable_relation: Option<usize>,
+    source_documents_by_relation: BTreeMap<String, usize>,
     relation_budgets: BTreeMap<String, usize>,
     selected_by_relation: BTreeMap<String, usize>,
     selected_documents: usize,
@@ -167,9 +195,14 @@ struct SamplingAccounting {
 
 #[derive(Debug, Serialize)]
 struct BuildAccounting {
+    coverage_semantics: &'static str,
+    semantic_source_coverage_complete: bool,
     source_rows_scanned: u64,
+    source_rows_by_relation: BTreeMap<String, u64>,
+    materialization_rows_scanned: u64,
     projected_semantic_occurrences: u64,
     structured_only_occurrences: u64,
+    structured_only_by_relation: BTreeMap<String, u64>,
     source_timestamps: TimestampAccounting,
     indexed_timestamps: TimestampAccounting,
     sampling: SamplingAccounting,
@@ -180,17 +213,13 @@ struct SelectedDocument {
     document: FastDocument,
     primary_relation: String,
     relations: BTreeSet<String>,
-    occurrences: Vec<FastOccurrence>,
-    timestamps: TimestampAccounting,
 }
 
-/// One-pass document reservoir. A document's opaque identity receives a
-/// snapshot-bound SHA-256 priority; no semantic value, query, label, or qrel
-/// is inspected. Once full, the greatest retained priority can only decrease.
-/// Therefore a rejected or evicted document can never re-enter later, while
-/// every document that survives to the final sample has been retained since
-/// its first occurrence. This is what permits occurrence closure without a
-/// parent replay.
+/// First-pass document census and relation-stratified hash-min sampler. A
+/// document's opaque identity receives a snapshot-bound SHA-256 priority; no
+/// semantic value, query, label, or qrel is inspected. The second source scan
+/// materializes occurrences only for the final selected document set, so
+/// high-fanout membership is never accumulated during sampling.
 #[derive(Debug)]
 struct DocumentCollector {
     selection: BuildSelection,
@@ -199,25 +228,28 @@ struct DocumentCollector {
     /// Ordered by `(priority SHA-256, document ID)` so the greatest item is
     /// the deterministic eviction candidate.
     priorities: BTreeMap<String, BTreeSet<(String, String)>>,
-    relation_budgets: BTreeMap<String, usize>,
+    seen_by_relation: BTreeMap<String, BTreeSet<String>>,
     source_rows_scanned: u64,
+    source_rows_by_relation: BTreeMap<String, u64>,
+    structured_only_by_relation: BTreeMap<String, u64>,
     projected_semantic_occurrences: u64,
     source_timestamps: TimestampAccounting,
 }
 
 impl DocumentCollector {
-    fn new(selection: BuildSelection, snapshot_sha256: &str, _relations: &[String]) -> Self {
-        let relation_budgets = match selection {
-            BuildSelection::Full => BTreeMap::new(),
-            BuildSelection::SampleDocuments(limit) => BTreeMap::from([("*".into(), limit)]),
-        };
+    fn new(selection: BuildSelection, snapshot_sha256: &str, relations: &[String]) -> Self {
         Self {
             selection,
             sample_seed: snapshot_sha256.to_owned(),
             selected: BTreeMap::new(),
             priorities: BTreeMap::new(),
-            relation_budgets,
+            seen_by_relation: relations
+                .iter()
+                .map(|relation| (relation.clone(), BTreeSet::new()))
+                .collect(),
             source_rows_scanned: 0,
+            source_rows_by_relation: BTreeMap::new(),
+            structured_only_by_relation: BTreeMap::new(),
             projected_semantic_occurrences: 0,
             source_timestamps: TimestampAccounting::default(),
         }
@@ -225,21 +257,31 @@ impl DocumentCollector {
 
     fn observe_source_row(
         &mut self,
+        relation: &str,
+        has_semantic_document: bool,
         availability: EventTimeAvailability,
         event_time_ms: Option<u64>,
     ) {
         self.source_rows_scanned += 1;
+        *self
+            .source_rows_by_relation
+            .entry(relation.to_owned())
+            .or_default() += 1;
+        if !has_semantic_document {
+            *self
+                .structured_only_by_relation
+                .entry(relation.to_owned())
+                .or_default() += 1;
+        }
         self.source_timestamps.observe(availability, event_time_ms);
     }
 
-    fn retain(
-        &mut self,
-        document: FastDocument,
-        relation: &str,
-        occurrence: FastOccurrence,
-        availability: EventTimeAvailability,
-    ) -> Result<()> {
+    fn retain(&mut self, document: FastDocument, relation: &str) -> Result<()> {
         self.projected_semantic_occurrences += 1;
+        self.seen_by_relation
+            .entry(relation.to_owned())
+            .or_default()
+            .insert(document.document_id.clone());
         if let Some(selected) = self.selected.get_mut(&document.document_id) {
             if selected.primary_relation != relation {
                 return Err(Error::InconsistentDocument(document.document_id));
@@ -252,17 +294,13 @@ impl DocumentCollector {
                 return Err(Error::InconsistentDocument(document.document_id));
             }
             selected.relations.insert(relation.to_owned());
-            selected
-                .timestamps
-                .observe(availability, occurrence.event_time_ms);
-            selected.occurrences.push(occurrence);
             return Ok(());
         }
 
         let priority = sample_priority(&self.sample_seed, &document.document_id);
-        if let BuildSelection::SampleDocuments(limit) = self.selection {
-            let priorities = self.priorities.entry("*".to_owned()).or_default();
-            if priorities.len() == limit {
+        if let BuildSelection::Representative = self.selection {
+            let priorities = self.priorities.entry(relation.to_owned()).or_default();
+            if priorities.len() == REPRESENTATIVE_RELATION_CAP {
                 let worst = priorities
                     .last()
                     .expect("a full relation sample has a priority")
@@ -279,78 +317,100 @@ impl DocumentCollector {
 
         let mut relations = BTreeSet::new();
         relations.insert(relation.to_owned());
-        let mut timestamps = TimestampAccounting::default();
-        timestamps.observe(availability, occurrence.event_time_ms);
         self.selected.insert(
             document.document_id.clone(),
             SelectedDocument {
                 document,
                 primary_relation: relation.to_owned(),
                 relations,
-                occurrences: vec![occurrence],
-                timestamps,
             },
         );
         Ok(())
     }
 
-    fn finish(self) -> Result<(Vec<FastDocument>, Vec<FastOccurrence>, BuildAccounting)> {
+    fn finish(self) -> Result<(Vec<FastDocument>, FirstPassAccounting)> {
         let mut documents = Vec::with_capacity(self.selected.len());
-        let mut occurrences = Vec::new();
-        let mut indexed_timestamps = TimestampAccounting::default();
         let mut selected_by_relation = BTreeMap::<String, usize>::new();
         for mut selected in self.selected.into_values() {
             *selected_by_relation
                 .entry(selected.primary_relation.clone())
                 .or_default() += 1;
-            selected.document.occurrence_count = selected.occurrences.len() as u64;
             selected.document.relations_json = serde_json::to_string(&selected.relations)?;
-            indexed_timestamps.merge(&selected.timestamps);
             documents.push(selected.document);
-            occurrences.append(&mut selected.occurrences);
         }
         documents.sort_by(|left, right| left.document_id.cmp(&right.document_id));
         for (ordinal, document) in documents.iter_mut().enumerate() {
             document.vector_ordinal = ordinal as u64;
         }
-        occurrences.sort_by(|left, right| left.occurrence_id.cmp(&right.occurrence_id));
-        let selected_document_order_sha256 = document_order_sha256(&documents);
-        let document_limit = match self.selection {
-            BuildSelection::Full => None,
-            BuildSelection::SampleDocuments(limit) => Some(limit),
-        };
-        let accounting = BuildAccounting {
+        let source_documents_by_relation = self
+            .seen_by_relation
+            .into_iter()
+            .map(|(relation, documents)| (relation, documents.len()))
+            .collect::<BTreeMap<_, _>>();
+        let relation_budgets = source_documents_by_relation
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(relation, count)| {
+                let budget = match self.selection {
+                    BuildSelection::Full => *count,
+                    BuildSelection::Representative => (*count).min(REPRESENTATIVE_RELATION_CAP),
+                };
+                (relation.clone(), budget)
+            })
+            .collect::<BTreeMap<_, _>>();
+        if selected_by_relation != relation_budgets {
+            return Err(Error::AccountingClosure(
+                "selected relation counts do not match relation budgets",
+            ));
+        }
+        let structured_only_occurrences = self
+            .structured_only_by_relation
+            .values()
+            .copied()
+            .sum::<u64>();
+        if self.source_rows_scanned
+            != self
+                .projected_semantic_occurrences
+                .checked_add(structured_only_occurrences)
+                .ok_or(Error::CountOverflow)?
+            || self.source_rows_scanned
+                != self.source_rows_by_relation.values().copied().sum::<u64>()
+        {
+            return Err(Error::AccountingClosure(
+                "source rows do not reconcile to semantic and structured-only rows",
+            ));
+        }
+        let accounting = FirstPassAccounting {
             source_rows_scanned: self.source_rows_scanned,
+            source_rows_by_relation: self.source_rows_by_relation,
+            structured_only_by_relation: self.structured_only_by_relation,
             projected_semantic_occurrences: self.projected_semantic_occurrences,
-            structured_only_occurrences: self
-                .source_rows_scanned
-                .saturating_sub(self.projected_semantic_occurrences),
             source_timestamps: self.source_timestamps,
-            indexed_timestamps,
-            sampling: SamplingAccounting {
-                policy: if document_limit.is_some() {
-                    "global_snapshot_bound_sha256_hash_min_v1"
-                } else {
-                    "full"
-                },
-                document_limit,
-                relation_budgets: self.relation_budgets,
-                selected_by_relation,
-                selected_documents: documents.len(),
-                selected_occurrences: occurrences.len(),
-                selected_document_order_sha256,
-            },
+            source_documents_by_relation,
+            relation_budgets,
+            selected_by_relation,
         };
         debug_assert_eq!(
             accounting.source_timestamps.total(),
             self.source_rows_scanned
         );
-        debug_assert_eq!(
-            accounting.indexed_timestamps.total(),
-            occurrences.len() as u64
-        );
-        Ok((documents, occurrences, accounting))
+        Ok((documents, accounting))
     }
+}
+
+const REPRESENTATIVE_RELATION_CENSUS_THRESHOLD: usize = 1_000;
+const REPRESENTATIVE_RELATION_CAP: usize = 2_000;
+
+#[derive(Debug)]
+struct FirstPassAccounting {
+    source_rows_scanned: u64,
+    source_rows_by_relation: BTreeMap<String, u64>,
+    structured_only_by_relation: BTreeMap<String, u64>,
+    projected_semantic_occurrences: u64,
+    source_timestamps: TimestampAccounting,
+    source_documents_by_relation: BTreeMap<String, usize>,
+    relation_budgets: BTreeMap<String, usize>,
+    selected_by_relation: BTreeMap<String, usize>,
 }
 
 fn sample_priority(snapshot_sha256: &str, document_id: &str) -> String {
@@ -382,6 +442,14 @@ enum Error {
     Timestamp(String),
     #[error("document {0} changed content within one source snapshot")]
     InconsistentDocument(String),
+    #[error("selected occurrence materialization did not close")]
+    OccurrenceClosure,
+    #[error("build count overflow")]
+    CountOverflow,
+    #[error("build accounting closure failed: {0}")]
+    AccountingClosure(&'static str),
+    #[error("batch query plan contains an invalid row")]
+    InvalidBatchQuery,
 }
 type Result<T> = std::result::Result<T, Error>;
 
@@ -401,7 +469,7 @@ async fn run() -> Result<()> {
             embedding_endpoint,
             resume,
             embedding_batch_size,
-            sample_documents,
+            representative_sample,
         } => {
             build(
                 &snapshot,
@@ -410,7 +478,7 @@ async fn run() -> Result<()> {
                 &embedding_endpoint,
                 &resume,
                 embedding_batch_size,
-                BuildSelection::from_limit(sample_documents),
+                BuildSelection::from_flag(representative_sample),
             )
             .await
         }
@@ -432,6 +500,11 @@ async fn run() -> Result<()> {
             )
             .await
         }
+        Command::BatchQuery {
+            index,
+            requests,
+            embedding_endpoint,
+        } => batch_query(&index, &requests, &embedding_endpoint).await,
         Command::Inspect { index } => {
             println!(
                 "{}",
@@ -455,14 +528,14 @@ async fn build(
     let identity = reader.identity();
     let context = ProjectionContext {
         snapshot: ComponentRef {
-            id: "livefire-ocsf-snapshot".into(),
-            version: "1".into(),
+            id: identity.snapshot_id.clone(),
+            version: identity.snapshot_version.clone(),
             sha256: identity.snapshot_sha256.to_string(),
             uri: None,
         },
         mapping_pack: ComponentRef {
-            id: "livefire-ocsf-mapping".into(),
-            version: "1".into(),
+            id: identity.mapping_id.clone(),
+            version: identity.mapping_version.clone(),
             sha256: identity.mapping_sha256.to_string(),
             uri: None,
         },
@@ -478,7 +551,65 @@ async fn build(
             project_batch(&batch?, &relation.name, &context, &mut collector)?;
         }
     }
-    let (documents, occurrences, accounting) = collector.finish()?;
+    let (mut documents, first_pass) = collector.finish()?;
+    let spill_parent = out.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(spill_parent)?;
+    let spill = tempfile::Builder::new()
+        .prefix(".rag-selected-occurrences-")
+        .tempfile_in(spill_parent)?;
+    let (selected_occurrences, indexed_timestamps, materialization_rows_scanned) =
+        materialize_selected_occurrences(
+            &reader,
+            &context,
+            &mut documents,
+            spill.path(),
+            selection,
+        )?;
+    let structured_only_occurrences = first_pass.structured_only_by_relation.values().sum();
+    let accounting = BuildAccounting {
+        coverage_semantics: "searchable_projection_only_not_source_row_coverage",
+        semantic_source_coverage_complete: matches!(selection, BuildSelection::Full)
+            && structured_only_occurrences == 0,
+        source_rows_scanned: first_pass.source_rows_scanned,
+        source_rows_by_relation: first_pass.source_rows_by_relation,
+        projected_semantic_occurrences: first_pass.projected_semantic_occurrences,
+        structured_only_occurrences,
+        structured_only_by_relation: first_pass.structured_only_by_relation,
+        source_timestamps: first_pass.source_timestamps,
+        indexed_timestamps,
+        materialization_rows_scanned,
+        sampling: SamplingAccounting {
+            policy: match selection {
+                BuildSelection::Full => "full",
+                BuildSelection::Representative => {
+                    "relation_census_1000_snapshot_bound_sha256_hash_min_cap_2000_v1"
+                }
+            },
+            declared_census_at_or_below: matches!(selection, BuildSelection::Representative)
+                .then_some(REPRESENTATIVE_RELATION_CENSUS_THRESHOLD),
+            hash_min_cap_above_census_threshold: matches!(
+                selection,
+                BuildSelection::Representative
+            )
+            .then_some(REPRESENTATIVE_RELATION_CAP),
+            effective_full_retention_at_or_below: matches!(
+                selection,
+                BuildSelection::Representative
+            )
+            .then_some(REPRESENTATIVE_RELATION_CAP),
+            max_documents_per_searchable_relation: matches!(
+                selection,
+                BuildSelection::Representative
+            )
+            .then_some(REPRESENTATIVE_RELATION_CAP),
+            source_documents_by_relation: first_pass.source_documents_by_relation,
+            relation_budgets: first_pass.relation_budgets,
+            selected_by_relation: first_pass.selected_by_relation,
+            selected_documents: documents.len(),
+            selected_occurrences,
+            selected_document_order_sha256: document_order_sha256(&documents),
+        },
+    };
     let profile = parse_embedding_profile(&fs::read(profile_path)?)?;
     let inputs = documents
         .iter()
@@ -491,15 +622,21 @@ async fn build(
     if let Some(parent) = resume.parent() {
         fs::create_dir_all(parent)?;
     }
-    let cache = EmbeddingCache::open(resume)?;
+    let mut cache = EmbeddingCache::open(resume)?;
     let embedder = LmStudioEmbedder::new(endpoint, &profile.model);
-    let embedded = embed_resumable(&embedder, &cache, &profile, &inputs, batch_size).await?;
-    let cache_hits = embedded.iter().filter(|item| item.from_cache).count();
-    let vectors = embedded
-        .into_iter()
-        .map(|item| item.vector)
-        .collect::<Vec<_>>();
-    let manifest = write_fast_index(
+    let cache_stats = ensure_cached(&embedder, &mut cache, &profile, &inputs, batch_size).await?;
+    let occurrence_file = File::open(spill.path())?;
+    let occurrence_rows = BufReader::new(occurrence_file).lines().map(|line| {
+        let line = line.map_err(IndexError::Io)?;
+        serde_json::from_str::<FastOccurrence>(&line)
+            .map_err(|_| IndexError::Invalid("selected occurrence spill"))
+    });
+    let vector_rows = inputs.iter().map(|input| {
+        cache
+            .vector(&profile, input)
+            .map_err(|_| IndexError::Invalid("embedding cache vector"))
+    });
+    let manifest = write_fast_index_streaming(
         out,
         SourceBinding {
             snapshot_sha256: identity.snapshot_sha256.to_string(),
@@ -507,23 +644,36 @@ async fn build(
         },
         selection.scope(),
         &documents,
-        &occurrences,
-        &vectors,
-        profile,
+        occurrence_rows,
+        vector_rows,
+        profile.clone(),
     )?;
     let report = serde_json::json!({
         "schema_version": "livefire.rag.fast-build-report/1",
-        "index":manifest,
-        "accounting": accounting,
-        "cache_hits":cache_hits,
-        "embedded":documents.len()-cache_hits
+        "source": manifest.source.clone(),
+        "build_scope": manifest.build_scope.clone(),
+        "complete": manifest.complete,
+        "document_count": manifest.documents.rows,
+        "occurrence_count": manifest.occurrences.rows,
+        "vector_count": manifest.vectors.count,
+        "embedding_profile_sha256": manifest.embedding_profile.sha256.clone(),
+        "accounting": &accounting,
+        "cache_hits": cache_stats.cache_hits,
+        "embedded": cache_stats.embedded
     });
     let mut report_bytes = serde_json::to_vec_pretty(&report)?;
     report_bytes.push(b'\n');
     let report_staging = out.join(format!(".build-report.json.tmp-{}", std::process::id()));
     fs::write(&report_staging, report_bytes)?;
     fs::rename(report_staging, out.join("build-report.json"))?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    let output = serde_json::json!({
+        "schema_version": "livefire.rag.fast-build-output/1",
+        "index": manifest,
+        "accounting": accounting,
+        "cache_hits": cache_stats.cache_hits,
+        "embedded": cache_stats.embedded
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -533,52 +683,137 @@ fn project_batch(
     context: &ProjectionContext,
     collector: &mut DocumentCollector,
 ) -> Result<()> {
-    let event_ids = strings(batch, "event_id")?;
     let json = strings(batch, "typed_event_json")?;
-    let support = strings(batch, "support_ref")?;
+    if relation == "ocsf_ext_livefire_system_metric" {
+        for row in 0..batch.num_rows() {
+            let (event_time, availability) = project_event_time(json.value(row));
+            let event_time_ms = parse_event_time_ms(event_time.as_deref(), availability)?;
+            collector.observe_source_row(relation, false, availability, event_time_ms);
+        }
+        return Ok(());
+    }
     for row in 0..batch.num_rows() {
-        let output = project(ProjectionInput {
-            relation_name: relation,
-            event_id: event_ids.value(row),
-            typed_event_json: json.value(row),
-            support_ref: support.value(row),
-            context,
-        })?;
-        let event_time_ms = parse_event_time_ms(
-            output.occurrence.event_time.as_deref(),
-            output.occurrence.event_time_availability,
-        )?;
-        collector.observe_source_row(output.occurrence.event_time_availability, event_time_ms);
+        let output = project_document_summary(relation, json.value(row), context)?;
+        let event_time_ms =
+            parse_event_time_ms(output.event_time.as_deref(), output.event_time_availability)?;
+        collector.observe_source_row(
+            relation,
+            output.document.is_some(),
+            output.event_time_availability,
+            event_time_ms,
+        );
         if let Some(document) = output.document {
             let document_bytes = serde_json::to_vec(&document)?;
             let document_sha256 = format!("{:x}", Sha256::digest(document_bytes));
-            let mut hasher = Sha256::new();
-            hasher.update(context.snapshot.sha256.as_bytes());
-            hasher.update([0]);
-            hasher.update(relation.as_bytes());
-            hasher.update([0]);
-            hasher.update(event_ids.value(row).as_bytes());
-            let occurrence = FastOccurrence {
-                occurrence_id: format!("occ-{:x}", hasher.finalize()),
-                document_id: document.document_id.clone(),
-                event_time_ms,
-                relation: relation.into(),
-                exact_attributes_json: serde_json::to_string(&output.occurrence.exact_attributes)?,
-                snapshot_sha256: context.snapshot.sha256.clone(),
-                mapping_sha256: context.mapping_pack.sha256.clone(),
-                event_id: event_ids.value(row).into(),
-                support_ref: support.value(row).into(),
-            };
             let fast_document = fast_document(document, document_sha256)?;
-            collector.retain(
-                fast_document,
-                relation,
-                occurrence,
-                output.occurrence.event_time_availability,
-            )?;
+            collector.retain(fast_document, relation)?;
         }
     }
     Ok(())
+}
+
+fn materialize_selected_occurrences(
+    reader: &LocalSnapshotReader,
+    context: &ProjectionContext,
+    documents: &mut [FastDocument],
+    spill_path: &Path,
+    selection: BuildSelection,
+) -> Result<(usize, TimestampAccounting, u64)> {
+    let selected = documents
+        .iter()
+        .enumerate()
+        .map(|(index, document)| (document.document_id.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut writer = BufWriter::new(File::create(spill_path)?);
+    let mut timestamps = TimestampAccounting::default();
+    let mut occurrence_count = 0_usize;
+    let mut rows_scanned = 0_u64;
+    for relation in reader.typed_relations() {
+        if relation.name == "ocsf_ext_livefire_system_metric" {
+            continue;
+        }
+        for batch in reader.scan(relation)? {
+            let batch = batch?;
+            rows_scanned = rows_scanned
+                .checked_add(batch.num_rows() as u64)
+                .ok_or(Error::CountOverflow)?;
+            let event_ids = strings(&batch, "event_id")?;
+            let json = strings(&batch, "typed_event_json")?;
+            let support = strings(&batch, "support_ref")?;
+            for row in 0..batch.num_rows() {
+                if matches!(selection, BuildSelection::Representative) {
+                    let summary =
+                        project_document_summary(&relation.name, json.value(row), context)?;
+                    let Some(document) = summary.document else {
+                        continue;
+                    };
+                    if !selected.contains_key(&document.document_id) {
+                        continue;
+                    }
+                }
+                let output = project(ProjectionInput {
+                    relation_name: &relation.name,
+                    event_id: event_ids.value(row),
+                    typed_event_json: json.value(row),
+                    support_ref: support.value(row),
+                    context,
+                })?;
+                let Some(projected_document) = output.document else {
+                    continue;
+                };
+                let Some(index) = selected.get(&projected_document.document_id).copied() else {
+                    continue;
+                };
+                let document_bytes = serde_json::to_vec(&projected_document)?;
+                let document_sha256 = format!("{:x}", Sha256::digest(document_bytes));
+                if documents[index].document_sha256 != document_sha256 {
+                    return Err(Error::InconsistentDocument(projected_document.document_id));
+                }
+                let event_time_ms = parse_event_time_ms(
+                    output.occurrence.event_time.as_deref(),
+                    output.occurrence.event_time_availability,
+                )?;
+                timestamps.observe(output.occurrence.event_time_availability, event_time_ms);
+                let mut hasher = Sha256::new();
+                hasher.update(context.snapshot.sha256.as_bytes());
+                hasher.update([0]);
+                hasher.update(relation.name.as_bytes());
+                hasher.update([0]);
+                hasher.update(event_ids.value(row).as_bytes());
+                let occurrence = FastOccurrence {
+                    occurrence_id: format!("occ-{:x}", hasher.finalize()),
+                    document_id: projected_document.document_id,
+                    event_time_ms,
+                    relation: relation.name.clone(),
+                    exact_attributes_json: serde_json::to_string(
+                        &output.occurrence.exact_attributes,
+                    )?,
+                    snapshot_sha256: context.snapshot.sha256.clone(),
+                    mapping_sha256: context.mapping_pack.sha256.clone(),
+                    event_id: event_ids.value(row).into(),
+                    support_ref: support.value(row).into(),
+                };
+                serde_json::to_writer(&mut writer, &occurrence)?;
+                writer.write_all(b"\n")?;
+                documents[index].occurrence_count = documents[index]
+                    .occurrence_count
+                    .checked_add(1)
+                    .ok_or(Error::CountOverflow)?;
+                occurrence_count = occurrence_count
+                    .checked_add(1)
+                    .ok_or(Error::CountOverflow)?;
+            }
+        }
+    }
+    writer.flush()?;
+    if documents
+        .iter()
+        .any(|document| document.occurrence_count == 0)
+        || timestamps.total() != occurrence_count as u64
+    {
+        return Err(Error::OccurrenceClosure);
+    }
+    Ok((occurrence_count, timestamps, rows_scanned))
 }
 fn strings<'a>(batch: &'a RecordBatch, name: &'static str) -> Result<&'a StringArray> {
     let index = batch
@@ -629,23 +864,8 @@ async fn query(
     relations: Vec<String>,
 ) -> Result<()> {
     let index = FastIndex::open(index_path)?;
-    let search_mode: SearchMode = mode.into();
-    let query_vector = if matches!(search_mode, SearchMode::Dense | SearchMode::Fused) {
-        let embedder = LmStudioEmbedder::new(endpoint, &index.manifest.embedding_profile.model);
-        let composed = try_compose_query(&index.manifest.embedding_profile, text)?;
-        Some(
-            rag_embedding::Embedder::embed(&embedder, &[composed])
-                .await?
-                .remove(0),
-        )
-    } else {
-        None
-    };
-    let filters = SearchFilters {
-        relations: relations.into_iter().collect(),
-        ..Default::default()
-    };
-    let hits = index.search(search_mode, text, query_vector.as_deref(), &filters, top_n)?;
+    let embedder = LmStudioEmbedder::new(endpoint, &index.manifest.embedding_profile.model);
+    let hits = search_index(&index, &embedder, text, mode, top_n, relations).await?;
     #[derive(Serialize)]
     struct Output<'a> {
         schema_version: &'static str,
@@ -660,6 +880,75 @@ async fn query(
             hits: &hits
         })?
     );
+    Ok(())
+}
+
+async fn search_index(
+    index: &FastIndex,
+    embedder: &LmStudioEmbedder,
+    text: &str,
+    mode: Mode,
+    top_n: usize,
+    relations: Vec<String>,
+) -> Result<Vec<rag_index::SearchHit>> {
+    let search_mode: SearchMode = mode.into();
+    let query_vector = if matches!(search_mode, SearchMode::Dense | SearchMode::Fused) {
+        let composed = try_compose_query(&index.manifest.embedding_profile, text)?;
+        Some(
+            rag_embedding::Embedder::embed(embedder, &[composed])
+                .await?
+                .remove(0),
+        )
+    } else {
+        None
+    };
+    let filters = SearchFilters {
+        relations: relations.into_iter().collect(),
+        ..Default::default()
+    };
+    Ok(index.search(search_mode, text, query_vector.as_deref(), &filters, top_n)?)
+}
+
+async fn batch_query(index_path: &Path, requests_path: &Path, endpoint: &str) -> Result<()> {
+    let requests = BufReader::new(File::open(requests_path)?)
+        .lines()
+        .map(|line| {
+            let line = line?;
+            let request = serde_json::from_str::<BatchQueryRequest>(&line)?;
+            request.validate()?;
+            Ok(request)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if requests.is_empty() {
+        return Err(Error::InvalidBatchQuery);
+    }
+    let index = FastIndex::open(index_path)?;
+    let embedder = LmStudioEmbedder::new(endpoint, &index.manifest.embedding_profile.model);
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+    for request in requests {
+        let hits = search_index(
+            &index,
+            &embedder,
+            &request.query,
+            request.mode,
+            request.top_n,
+            request.relations,
+        )
+        .await?;
+        serde_json::to_writer(
+            &mut writer,
+            &serde_json::json!({
+                "schema_version":"livefire.rag.fast-batch-query-result/1",
+                "query_id":request.query_id,
+                "query":request.query,
+                "mode":request.mode,
+                "hits":hits
+            }),
+        )?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
     Ok(())
 }
 
@@ -680,39 +969,22 @@ mod tests {
         }
     }
 
-    fn occurrence(id: &str, sequence: usize) -> FastOccurrence {
-        FastOccurrence {
-            occurrence_id: format!("occ-{id}-{sequence}"),
-            document_id: id.to_owned(),
-            event_time_ms: Some(sequence as u64),
-            relation: "ocsf_process_activity".to_owned(),
-            exact_attributes_json: "[]".to_owned(),
-            snapshot_sha256: "a".repeat(64),
-            mapping_sha256: "b".repeat(64),
-            event_id: format!("evt-{id}-{sequence}"),
-            support_ref: format!("sup-{id}-{sequence}"),
-        }
-    }
-
-    fn collect(
-        order: &[&str],
-        limit: usize,
-    ) -> (Vec<FastDocument>, Vec<FastOccurrence>, BuildAccounting) {
+    fn collect(order: &[&str]) -> (Vec<FastDocument>, FirstPassAccounting) {
         let mut collector = DocumentCollector::new(
-            BuildSelection::SampleDocuments(limit),
+            BuildSelection::Representative,
             &"a".repeat(64),
             &["ocsf_process_activity".to_owned()],
         );
         for sequence in 0..2 {
             for id in order {
-                collector.observe_source_row(EventTimeAvailability::Available, Some(sequence));
+                collector.observe_source_row(
+                    "ocsf_process_activity",
+                    true,
+                    EventTimeAvailability::Available,
+                    Some(sequence),
+                );
                 collector
-                    .retain(
-                        document(id),
-                        "ocsf_process_activity",
-                        occurrence(id, sequence as usize),
-                        EventTimeAvailability::Available,
-                    )
+                    .retain(document(id), "ocsf_process_activity")
                     .expect("collect");
             }
         }
@@ -720,59 +992,72 @@ mod tests {
     }
 
     #[test]
-    fn global_sample_fills_budget_without_allocating_to_empty_relations() {
+    fn representative_sample_censuses_rare_relations_and_caps_large_relations() {
         let relations = [
             "ocsf_network_activity".to_owned(),
             "ocsf_process_activity".to_owned(),
         ];
-        let mut collector = DocumentCollector::new(
-            BuildSelection::SampleDocuments(2),
-            &"a".repeat(64),
-            &relations,
-        );
-        for sequence in 0..10 {
+        let mut collector =
+            DocumentCollector::new(BuildSelection::Representative, &"a".repeat(64), &relations);
+        for sequence in 0..2_500 {
             let id = format!("network-{sequence}");
-            collector.observe_source_row(EventTimeAvailability::Available, Some(sequence));
+            collector.observe_source_row(
+                "ocsf_network_activity",
+                true,
+                EventTimeAvailability::Available,
+                Some(sequence),
+            );
             collector
-                .retain(
-                    document(&id),
-                    "ocsf_network_activity",
-                    occurrence(&id, sequence as usize),
-                    EventTimeAvailability::Available,
-                )
+                .retain(document(&id), "ocsf_network_activity")
                 .unwrap();
         }
-        collector.observe_source_row(EventTimeAvailability::Available, Some(100));
-        collector
-            .retain(
-                document("process-one"),
+        for sequence in 0..3 {
+            let id = format!("process-{sequence}");
+            collector.observe_source_row(
                 "ocsf_process_activity",
-                occurrence("process-one", 100),
+                true,
                 EventTimeAvailability::Available,
-            )
-            .unwrap();
-        let (documents, _, accounting) = collector.finish().unwrap();
-        assert_eq!(documents.len(), 2);
+                Some(sequence),
+            );
+            collector
+                .retain(document(&id), "ocsf_process_activity")
+                .unwrap();
+        }
+        let (documents, accounting) = collector.finish().unwrap();
+        assert_eq!(documents.len(), 2_003);
         assert_eq!(
-            accounting
-                .sampling
-                .selected_by_relation
-                .values()
-                .sum::<usize>(),
-            2
+            accounting.selected_by_relation,
+            BTreeMap::from([
+                ("ocsf_network_activity".into(), 2_000),
+                ("ocsf_process_activity".into(), 3),
+            ])
         );
         assert_eq!(
-            accounting.sampling.relation_budgets,
-            BTreeMap::from([("*".into(), 2)])
+            accounting.relation_budgets,
+            BTreeMap::from([
+                ("ocsf_network_activity".into(), 2_000),
+                ("ocsf_process_activity".into(), 3),
+            ])
+        );
+        assert_eq!(
+            accounting.source_documents_by_relation["ocsf_network_activity"],
+            2_500
+        );
+        assert_eq!(
+            accounting.source_documents_by_relation["ocsf_process_activity"],
+            3
         );
     }
 
     #[test]
-    fn hash_min_sample_is_bounded_deterministic_and_occurrence_complete() {
-        let forward = ["doc-a", "doc-b", "doc-c", "doc-d", "doc-e"];
-        let reverse = ["doc-e", "doc-d", "doc-c", "doc-b", "doc-a"];
-        let (documents, occurrences, accounting) = collect(&forward, 2);
-        let (reverse_documents, reverse_occurrences, _) = collect(&reverse, 2);
+    fn relation_hash_min_sample_is_order_independent() {
+        let forward = (0..2_500).map(|i| format!("doc-{i}")).collect::<Vec<_>>();
+        let mut reverse = forward.clone();
+        reverse.reverse();
+        let forward_refs = forward.iter().map(String::as_str).collect::<Vec<_>>();
+        let reverse_refs = reverse.iter().map(String::as_str).collect::<Vec<_>>();
+        let (documents, accounting) = collect(&forward_refs);
+        let (reverse_documents, _) = collect(&reverse_refs);
 
         let ids = documents
             .iter()
@@ -783,30 +1068,12 @@ mod tests {
             .map(|document| document.document_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, reverse_ids);
-        assert_eq!(documents.len(), 2);
-        assert_eq!(occurrences, reverse_occurrences);
-        assert_eq!(occurrences.len(), 4);
-        assert!(
-            documents
-                .iter()
-                .all(|document| document.occurrence_count == 2)
-        );
-        for document in &documents {
-            assert_eq!(
-                occurrences
-                    .iter()
-                    .filter(|occurrence| occurrence.document_id == document.document_id)
-                    .count(),
-                2
-            );
-        }
-        assert_eq!(accounting.source_rows_scanned, 10);
-        assert_eq!(accounting.projected_semantic_occurrences, 10);
-        assert_eq!(accounting.sampling.document_limit, Some(2));
-        assert_eq!(accounting.sampling.selected_occurrences, 4);
+        assert_eq!(documents.len(), 2_000);
+        assert_eq!(accounting.source_rows_scanned, 5_000);
+        assert_eq!(accounting.projected_semantic_occurrences, 5_000);
         assert_eq!(
-            accounting.sampling.relation_budgets,
-            BTreeMap::from([("*".to_owned(), 2)])
+            accounting.relation_budgets,
+            BTreeMap::from([("ocsf_process_activity".to_owned(), 2_000)])
         );
     }
 
@@ -847,7 +1114,24 @@ mod tests {
     }
 
     #[test]
-    fn cli_requires_an_explicit_positive_sample_document_limit() {
+    fn structured_only_rows_are_terminally_accounted_by_relation() {
+        let relation = "ocsf_ext_livefire_system_metric";
+        let mut collector = DocumentCollector::new(
+            BuildSelection::Representative,
+            &"a".repeat(64),
+            &[relation.to_owned()],
+        );
+        collector.observe_source_row(relation, false, EventTimeAvailability::Missing, None);
+        let (documents, accounting) = collector.finish().expect("finish");
+        assert!(documents.is_empty());
+        assert_eq!(accounting.source_rows_by_relation[relation], 1);
+        assert_eq!(accounting.structured_only_by_relation[relation], 1);
+        assert_eq!(accounting.projected_semantic_occurrences, 0);
+        assert!(accounting.relation_budgets.is_empty());
+    }
+
+    #[test]
+    fn cli_exposes_only_the_fixed_representative_sample_policy() {
         let base = [
             "rag",
             "build",
@@ -864,28 +1148,61 @@ mod tests {
         assert!(matches!(
             full.command,
             Command::Build {
-                sample_documents: None,
+                representative_sample: false,
                 ..
             }
         ));
 
         let mut sampled_args = base.to_vec();
-        sampled_args.extend(["--sample-documents", "37"]);
+        sampled_args.push("--representative-sample");
         let sampled = Cli::try_parse_from(sampled_args).expect("sample CLI");
         assert!(matches!(
             sampled.command,
             Command::Build {
-                sample_documents: Some(37),
+                representative_sample: true,
                 ..
             }
         ));
 
-        let mut zero_args = base.to_vec();
-        zero_args.extend(["--sample-documents", "0"]);
-        assert!(Cli::try_parse_from(zero_args).is_err());
-
         let mut old_args = base.to_vec();
-        old_args.push("--sample");
+        old_args.extend(["--sample-documents", "20000"]);
         assert!(Cli::try_parse_from(old_args).is_err());
+    }
+
+    #[test]
+    fn batch_query_plan_is_closed_and_bounded() {
+        let request: BatchQueryRequest = serde_json::from_value(serde_json::json!({
+            "query_id":"q-1",
+            "query":"encoded interpreter activity",
+            "mode":"fused",
+            "top_n":20,
+            "relations":["ocsf_process_activity"]
+        }))
+        .expect("batch row");
+        request.validate().expect("valid batch row");
+        assert!(
+            serde_json::from_value::<BatchQueryRequest>(serde_json::json!({
+                "query_id":"q-1","query":"x","mode":"lexical","top_n":1,"unknown":true
+            }))
+            .is_err()
+        );
+        let invalid: BatchQueryRequest = serde_json::from_value(serde_json::json!({
+            "query_id":"q-1","query":"x","mode":"dense","top_n":101
+        }))
+        .expect("shape-valid row");
+        assert!(invalid.validate().is_err());
+        assert!(matches!(
+            Cli::try_parse_from([
+                "rag",
+                "batch-query",
+                "--index",
+                "index",
+                "--requests",
+                "queries.jsonl"
+            ])
+            .expect("batch CLI")
+            .command,
+            Command::BatchQuery { .. }
+        ));
     }
 }

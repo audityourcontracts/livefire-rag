@@ -7,7 +7,15 @@ name = "livefire-rag"
 version = "0.1.0"
 description = "Standalone immutable semantic command index and Livefire SDK provider"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Rust",
+]
 dependencies = [
   "jsonschema>=4.23,<5",
   "numpy>=2.1,<3",
@@ -47,6 +55,14 @@ packages = ["src/livefire_rag", "python/livefire_rag_analysis"]
 "specs/evidence-search.output.v1.schema.json" = "livefire_rag/evidence_specs/evidence-search.output.v1.schema.json"
 "specs/fast-evidence-search.input.v1.schema.json" = "livefire_rag/evidence_specs/fast-evidence-search.input.v1.schema.json"
 "specs/fast-evidence-search.output.v1.schema.json" = "livefire_rag/evidence_specs/fast-evidence-search.output.v1.schema.json"
+"specs/ocsf-hydration-ref.v1.schema.json" = "livefire_rag/evidence_specs/ocsf-hydration-ref.v1.schema.json"
+"specs/fast-index-manifest.v2.schema.json" = "livefire_rag/evidence_specs/fast-index-manifest.v2.schema.json"
+"specs/fast-document-row.v1.schema.json" = "livefire_rag/evidence_specs/fast-document-row.v1.schema.json"
+"specs/fast-occurrence-row.v1.schema.json" = "livefire_rag/evidence_specs/fast-occurrence-row.v1.schema.json"
+"specs/fast-build-report.v1.schema.json" = "livefire_rag/evidence_specs/fast-build-report.v1.schema.json"
+"specs/fast-vector-binary-profile.v1.json" = "livefire_rag/evidence_specs/fast-vector-binary-profile.v1.json"
+"specs/fast-lexical-profile.v1.json" = "livefire_rag/evidence_specs/fast-lexical-profile.v1.json"
+"specs/fast-occurrence-lookup-profile.v1.json" = "livefire_rag/evidence_specs/fast-occurrence-lookup-profile.v1.json"
 "specs/evidence-projection-policy.v1.json" = "livefire_rag/evidence_specs/evidence-projection-policy.v1.json"
 "specs/evidence-projection-policy.v2.json" = "livefire_rag/evidence_specs/evidence-projection-policy.v2.json"
 "specs/evidence-derivation-policy.v1.json" = "livefire_rag/evidence_specs/evidence-derivation-policy.v1.json"
@@ -57,5 +73,6 @@ include = [
   "/src",
   "/python/livefire_rag_analysis",
   "/fixtures/semantic-index",
+  "/LICENSE",
   "/specs",
 ]

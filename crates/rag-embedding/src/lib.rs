@@ -7,6 +7,7 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use url::{Host, Url};
 
 #[derive(Debug, Error)]
 pub enum EmbeddingError {
@@ -24,6 +25,59 @@ pub const MAX_QUERY_BYTES: usize = 8_192;
 pub const MAX_QUERY_INSTRUCTION_BYTES: usize = 8_192;
 pub const MAX_QUERY_COMPOSITION_BYTES: usize = 1_024;
 pub const MAX_COMPOSED_QUERY_BYTES: usize = 16_384;
+
+/// Parse and canonicalize the only network endpoint permitted by the local
+/// embedding contract. Keeping this policy beside the HTTP client prevents a
+/// caller from validating one URL interpretation and requesting another.
+pub fn normalize_loopback_http_endpoint(endpoint: &str) -> Result<String> {
+    let parsed =
+        Url::parse(endpoint).map_err(|_| EmbeddingError::Invalid("embedding endpoint URL"))?;
+    if parsed.scheme() != "http"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.path() != "/"
+    {
+        return Err(EmbeddingError::Invalid("embedding endpoint policy"));
+    }
+    let port = explicit_port(endpoint, &parsed)?;
+    let host = match parsed.host() {
+        Some(Host::Domain("localhost")) => "localhost".to_owned(),
+        Some(Host::Ipv4(address)) if address.octets() == [127, 0, 0, 1] => "127.0.0.1".to_owned(),
+        Some(Host::Ipv6(address)) if address.is_loopback() => "[::1]".to_owned(),
+        _ => return Err(EmbeddingError::Invalid("embedding endpoint host")),
+    };
+    Ok(format!("http://{host}:{port}"))
+}
+
+fn explicit_port(endpoint: &str, parsed: &Url) -> Result<u16> {
+    let authority = endpoint
+        .strip_prefix("http://")
+        .and_then(|rest| rest.split('/').next())
+        .ok_or(EmbeddingError::Invalid("embedding endpoint port"))?;
+    let port_text = if authority.starts_with('[') {
+        authority
+            .split_once("]:")
+            .map(|(_, port)| port)
+            .filter(|_| authority.ends_with(|character: char| character.is_ascii_digit()))
+    } else {
+        authority.rsplit_once(':').map(|(_, port)| port)
+    }
+    .ok_or(EmbeddingError::Invalid("embedding endpoint port"))?;
+    if port_text.is_empty() || !port_text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(EmbeddingError::Invalid("embedding endpoint port"));
+    }
+    let port = port_text
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or(EmbeddingError::Invalid("embedding endpoint port"))?;
+    if parsed.port_or_known_default() != Some(port) {
+        return Err(EmbeddingError::Invalid("embedding endpoint port"));
+    }
+    Ok(port)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -198,6 +252,12 @@ pub struct EmbeddedDocument {
     pub from_cache: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingCacheStats {
+    pub cache_hits: usize,
+    pub embedded: usize,
+}
+
 pub trait Embedder: Sync {
     fn embed(&self, texts: &[String]) -> impl Future<Output = Result<Vec<Vec<f32>>>> + Send;
 }
@@ -221,7 +281,7 @@ impl LmStudioEmbedder {
         }
         Ok(Self {
             client: Client::builder().timeout(timeout).build()?,
-            endpoint: endpoint.trim_end_matches('/').to_owned(),
+            endpoint: normalize_loopback_http_endpoint(endpoint)?,
             model: model.to_owned(),
         })
     }
@@ -317,17 +377,90 @@ impl EmbeddingCache {
         ))
     }
 
-    fn put(&self, key: &str, vector: &[f32]) -> Result<()> {
-        let bytes = vector
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect::<Vec<_>>();
-        self.connection.execute(
-            "INSERT OR REPLACE INTO vectors(cache_key, dimensions, vector) VALUES (?1, ?2, ?3)",
-            params![key, vector.len() as i64, bytes],
-        )?;
+    pub fn vector(&self, profile: &EmbeddingProfile, input: &EmbeddingInput) -> Result<Vec<f32>> {
+        let dimensions = usize::try_from(profile.dimensions)
+            .map_err(|_| EmbeddingError::Invalid("profile dimensions"))?;
+        let vector = self
+            .get(&cache_key(profile, input), dimensions)?
+            .ok_or(EmbeddingError::Invalid("missing cached vector"))?;
+        validate_vector(&vector, dimensions, &profile.normalization)?;
+        Ok(vector)
+    }
+
+    fn put_batch(&mut self, rows: &[(String, Vec<f32>)]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        {
+            let mut statement = transaction.prepare(
+                "INSERT OR REPLACE INTO vectors(cache_key, dimensions, vector) VALUES (?1, ?2, ?3)",
+            )?;
+            for (key, vector) in rows {
+                let bytes = vector
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect::<Vec<_>>();
+                statement.execute(params![key, vector.len() as i64, bytes])?;
+            }
+        }
+        transaction.commit()?;
         Ok(())
     }
+
+    #[cfg(test)]
+    fn row_count(&self) -> Result<u64> {
+        let count: i64 = self
+            .connection
+            .query_row("SELECT count(*) FROM vectors", [], |row| row.get(0))?;
+        u64::try_from(count).map_err(|_| EmbeddingError::Invalid("cached row count"))
+    }
+}
+
+/// Populate every missing cache row without retaining the corpus vector matrix
+/// in memory. A model response is fully validated before its whole batch is
+/// committed in one SQLite transaction.
+pub async fn ensure_cached<E: Embedder>(
+    embedder: &E,
+    cache: &mut EmbeddingCache,
+    profile: &EmbeddingProfile,
+    inputs: &[EmbeddingInput],
+    batch_size: usize,
+) -> Result<EmbeddingCacheStats> {
+    if batch_size == 0 || batch_size > 32 {
+        return Err(EmbeddingError::Invalid("batch size"));
+    }
+    validate_embedding_profile(profile)?;
+    let dimensions = usize::try_from(profile.dimensions)
+        .map_err(|_| EmbeddingError::Invalid("profile dimensions"))?;
+    let mut missing = Vec::new();
+    let mut cache_hits = 0;
+    for (ordinal, input) in inputs.iter().enumerate() {
+        let key = cache_key(profile, input);
+        if let Some(vector) = cache.get(&key, dimensions)? {
+            validate_vector(&vector, dimensions, &profile.normalization)?;
+            cache_hits += 1;
+        } else {
+            missing.push((ordinal, key));
+        }
+    }
+    for batch in missing.chunks(batch_size) {
+        let texts = batch
+            .iter()
+            .map(|(ordinal, _)| inputs[*ordinal].text.clone())
+            .collect::<Vec<_>>();
+        let vectors = embedder.embed(&texts).await?;
+        if vectors.len() != batch.len() {
+            return Err(EmbeddingError::Invalid("batch cardinality"));
+        }
+        let mut cache_rows = Vec::with_capacity(batch.len());
+        for ((_, key), vector) in batch.iter().zip(vectors) {
+            validate_vector(&vector, dimensions, &profile.normalization)?;
+            cache_rows.push((key.clone(), vector));
+        }
+        cache.put_batch(&cache_rows)?;
+    }
+    Ok(EmbeddingCacheStats {
+        cache_hits,
+        embedded: missing.len(),
+    })
 }
 
 #[must_use]
@@ -350,7 +483,7 @@ pub fn cache_key(profile: &EmbeddingProfile, input: &EmbeddingInput) -> String {
 
 pub async fn embed_resumable<E: Embedder>(
     embedder: &E,
-    cache: &EmbeddingCache,
+    cache: &mut EmbeddingCache,
     profile: &EmbeddingProfile,
     inputs: &[EmbeddingInput],
     batch_size: usize,
@@ -385,9 +518,13 @@ pub async fn embed_resumable<E: Embedder>(
         if vectors.len() != batch.len() {
             return Err(EmbeddingError::Invalid("batch cardinality"));
         }
-        for ((ordinal, key), vector) in batch.iter().zip(vectors) {
-            validate_vector(&vector, dimensions, &profile.normalization)?;
-            cache.put(key, &vector)?;
+        let mut cache_rows = Vec::with_capacity(batch.len());
+        for ((_, key), vector) in batch.iter().zip(&vectors) {
+            validate_vector(vector, dimensions, &profile.normalization)?;
+            cache_rows.push((key.clone(), vector.clone()));
+        }
+        cache.put_batch(&cache_rows)?;
+        for ((ordinal, _), vector) in batch.iter().zip(vectors) {
             output[*ordinal] = Some(EmbeddedDocument {
                 document_id: inputs[*ordinal].document_id.clone(),
                 vector,
@@ -466,7 +603,7 @@ mod tests {
     #[tokio::test]
     async fn cache_prevents_reembedding_and_preserves_order() {
         let root = tempdir().unwrap();
-        let cache = EmbeddingCache::open(&root.path().join("cache.sqlite3")).unwrap();
+        let mut cache = EmbeddingCache::open(&root.path().join("cache.sqlite3")).unwrap();
         let embedder = FakeEmbedder {
             calls: AtomicUsize::new(0),
         };
@@ -482,18 +619,52 @@ mod tests {
                 text: "b".into(),
             },
         ];
-        let first = embed_resumable(&embedder, &cache, &profile(), &inputs, 1)
+        let first = embed_resumable(&embedder, &mut cache, &profile(), &inputs, 1)
             .await
             .unwrap();
         assert_eq!(embedder.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(cache.row_count().unwrap(), 2);
         assert!(first.iter().all(|item| !item.from_cache));
-        let second = embed_resumable(&embedder, &cache, &profile(), &inputs, 16)
+        let second = embed_resumable(&embedder, &mut cache, &profile(), &inputs, 16)
             .await
             .unwrap();
         assert_eq!(embedder.calls.load(Ordering::Relaxed), 2);
         assert!(second.iter().all(|item| item.from_cache));
         assert_eq!(second[0].document_id, "a");
         assert_eq!(second[1].vector, vec![0.0, 1.0]);
+    }
+
+    struct PartlyInvalidEmbedder;
+
+    impl Embedder for PartlyInvalidEmbedder {
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            assert_eq!(texts.len(), 2);
+            Ok(vec![vec![1.0, 0.0], vec![f32::NAN, 0.0]])
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_model_batch_writes_no_partial_cache_rows() {
+        let root = tempdir().unwrap();
+        let mut cache = EmbeddingCache::open(&root.path().join("cache.sqlite3")).unwrap();
+        let inputs = [
+            EmbeddingInput {
+                document_id: "a".into(),
+                document_sha256: "1".into(),
+                text: "a".into(),
+            },
+            EmbeddingInput {
+                document_id: "b".into(),
+                document_sha256: "2".into(),
+                text: "b".into(),
+            },
+        ];
+        assert!(
+            ensure_cached(&PartlyInvalidEmbedder, &mut cache, &profile(), &inputs, 2)
+                .await
+                .is_err()
+        );
+        assert_eq!(cache.row_count().unwrap(), 0);
     }
 
     #[test]
@@ -550,6 +721,43 @@ mod tests {
         let mut second = first.clone();
         second.model = "different-model".into();
         assert_ne!(cache_key(&first, &input), cache_key(&second, &input));
+    }
+
+    #[test]
+    fn loopback_endpoint_parser_normalizes_exact_local_origins() {
+        assert_eq!(
+            normalize_loopback_http_endpoint("http://LOCALHOST:1234/").unwrap(),
+            "http://localhost:1234"
+        );
+        assert_eq!(
+            normalize_loopback_http_endpoint("http://127.0.0.1:1234").unwrap(),
+            "http://127.0.0.1:1234"
+        );
+        assert_eq!(
+            normalize_loopback_http_endpoint("http://[0:0:0:0:0:0:0:1]:1234").unwrap(),
+            "http://[::1]:1234"
+        );
+    }
+
+    #[test]
+    fn loopback_endpoint_parser_rejects_ambiguous_or_nonlocal_urls() {
+        for endpoint in [
+            "http://localhost:1234@evil.example",
+            "http://local%68ost@evil.example:1234",
+            "http://localhost.evil.example:1234",
+            "http://127.0.0.2:1234",
+            "http://localhost",
+            "https://localhost:1234",
+            "http://localhost:1234?target=evil",
+            "http://localhost:1234#evil",
+            "http://localhost:1234/v1",
+            "http://localhost:0",
+        ] {
+            assert!(
+                normalize_loopback_http_endpoint(endpoint).is_err(),
+                "accepted {endpoint}"
+            );
+        }
     }
 
     #[tokio::test]

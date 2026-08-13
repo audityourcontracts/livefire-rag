@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/fast-index-manifest.v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "source", "build_scope", "complete", "documents", "occurrences", "vectors", "lexical", "occurrence_lookup", "embedding_profile"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.fast-index/2"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "source": {"$ref": "#/$defs/source"},
+    "build_scope": {"enum": ["full", "sample"]},
+    "complete": {"type": "boolean"},
+    "documents": {"$ref": "#/$defs/row_object"},
+    "occurrences": {"$ref": "#/$defs/row_object"},
+    "vectors": {"$ref": "#/$defs/vectors"},
+    "lexical": {"$ref": "#/$defs/lexical"},
+    "occurrence_lookup": {"$ref": "#/$defs/lookup"},
+    "embedding_profile": {"$ref": "#/$defs/embedding"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$)).+$"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["snapshot_sha256", "mapping_sha256"], "properties": {"snapshot_sha256": {"$ref": "#/$defs/sha256"}, "mapping_sha256": {"$ref": "#/$defs/sha256"}}},
+    "row_object": {"type": "object", "additionalProperties": false, "required": ["path", "rows", "bytes", "sha256", "order_sha256"], "properties": {"path": {"$ref": "#/$defs/path"}, "rows": {"type": "integer", "minimum": 1}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}, "order_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}}},
+    "vectors": {"type": "object", "additionalProperties": false, "required": ["path", "count", "bytes", "sha256", "dimensions", "dtype", "header_bytes", "document_order_sha256"], "properties": {"path": {"$ref": "#/$defs/path"}, "count": {"type": "integer", "minimum": 1}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}, "dimensions": {"type": "integer", "minimum": 1}, "dtype": {"const": "f32le"}, "header_bytes": {"const": 64}, "document_order_sha256": {"$ref": "#/$defs/sha256"}}},
+    "lexical": {"type": "object", "additionalProperties": false, "required": ["path", "document_count", "bytes", "sha256", "tokenizer", "k1", "b"], "properties": {"path": {"$ref": "#/$defs/path"}, "document_count": {"type": "integer", "minimum": 1}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}, "tokenizer": {"const": "ascii_camel_lower_v1"}, "k1": {"const": 1.2}, "b": {"const": 0.75}}},
+    "lookup": {"type": "object", "additionalProperties": false, "required": ["path", "rows", "bytes", "sha256", "schema"], "properties": {"path": {"$ref": "#/$defs/path"}, "rows": {"type": "integer", "minimum": 1}, "bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}, "schema": {"const": "sqlite-occurrence-lookup-v1"}}},
+    "embedding": {"type": "object", "additionalProperties": false, "required": ["id", "version", "sha256", "model", "dimensions", "normalization"], "properties": {"id": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}, "model": {"type": "string", "minLength": 1}, "dimensions": {"type": "integer", "minimum": 1}, "normalization": {"enum": ["l2", "none"]}, "query_instruction": {"type": "string", "minLength": 1}, "query_composition": {"type": "string", "minLength": 1}}}
+  }
+}

@@ -2,9 +2,9 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::{self, File},
-    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    io::{BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
@@ -12,18 +12,24 @@ use std::{
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::{
-    arrow::{ArrowWriter, ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder},
+    arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
     basic::{Compression, ZstdLevel},
     file::properties::WriterProperties,
 };
 use rag_embedding::{EmbeddingProfile, validate_embedding_profile};
-use serde::{Deserialize, Serialize};
+use rusqlite::{Connection, OpenFlags, params, params_from_iter};
+use serde::{
+    Deserialize, Serialize,
+    ser::{SerializeMap, SerializeSeq},
+};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const VECTOR_MAGIC: [u8; 8] = *b"LFRAGV1\0";
 pub const VECTOR_HEADER_BYTES: u32 = 64;
 pub const MAX_RETURNED_OCCURRENCES_PER_HIT: usize = 50;
+const PARQUET_WRITE_BATCH_ROWS: usize = 8_192;
+const OCCURRENCE_LOOKUP_SCHEMA: &str = "sqlite-occurrence-lookup-v1";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -35,6 +41,8 @@ pub enum IndexError {
     Parquet(#[from] parquet::errors::ParquetError),
     #[error("index Arrow failed: {0}")]
     Arrow(#[from] arrow_schema::ArrowError),
+    #[error("index occurrence lookup failed: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     #[error("index invariant failed: {0}")]
     Invalid(&'static str),
     #[error("index artifact is corrupt: {0}")]
@@ -75,6 +83,8 @@ pub struct FastOccurrence {
 pub struct ObjectSummary {
     pub path: String,
     pub rows: u64,
+    pub bytes: u64,
+    pub sha256: String,
     pub order_sha256: Option<String>,
 }
 
@@ -83,6 +93,8 @@ pub struct ObjectSummary {
 pub struct VectorSummary {
     pub path: String,
     pub count: u64,
+    pub bytes: u64,
+    pub sha256: String,
     pub dimensions: u32,
     pub dtype: String,
     pub header_bytes: u32,
@@ -94,9 +106,21 @@ pub struct VectorSummary {
 pub struct LexicalSummary {
     pub path: String,
     pub document_count: u64,
+    pub bytes: u64,
+    pub sha256: String,
     pub tokenizer: String,
     pub k1: f64,
     pub b: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OccurrenceLookupSummary {
+    pub path: String,
+    pub rows: u64,
+    pub bytes: u64,
+    pub sha256: String,
+    pub schema: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +141,7 @@ pub enum BuildScope {
 #[serde(deny_unknown_fields)]
 pub struct FastIndexManifest {
     pub schema_version: String,
+    pub component_sha256: String,
     pub source: SourceBinding,
     pub build_scope: BuildScope,
     pub complete: bool,
@@ -124,6 +149,7 @@ pub struct FastIndexManifest {
     pub occurrences: ObjectSummary,
     pub vectors: VectorSummary,
     pub lexical: LexicalSummary,
+    pub occurrence_lookup: OccurrenceLookupSummary,
     pub embedding_profile: EmbeddingProfile,
 }
 
@@ -188,10 +214,40 @@ pub fn write_fast_index(
     vectors: &[Vec<f32>],
     embedding_profile: EmbeddingProfile,
 ) -> Result<FastIndexManifest> {
-    if output.exists() || documents.is_empty() || documents.len() != vectors.len() {
-        return Err(IndexError::Invalid("output/documents/vectors"));
+    write_fast_index_streaming(
+        output,
+        source,
+        build_scope,
+        documents,
+        occurrences.iter().cloned().map(Ok),
+        vectors.iter().cloned().map(Ok),
+        embedding_profile,
+    )
+}
+
+/// Write the canonical index from one-pass occurrence and vector streams.
+///
+/// Documents remain ordered metadata because vector ordinals and the lexical
+/// corpus are document-scoped. Occurrences and vectors, which dominate a
+/// representative build, are validated and written incrementally without a
+/// corpus-sized Arrow batch or `Vec<Vec<f32>>` copy.
+pub fn write_fast_index_streaming<O, V>(
+    output: &Path,
+    source: SourceBinding,
+    build_scope: BuildScope,
+    documents: &[FastDocument],
+    occurrences: O,
+    vectors: V,
+    embedding_profile: EmbeddingProfile,
+) -> Result<FastIndexManifest>
+where
+    O: IntoIterator<Item = Result<FastOccurrence>>,
+    V: IntoIterator<Item = Result<Vec<f32>>>,
+{
+    if output.exists() || documents.is_empty() {
+        return Err(IndexError::Invalid("output/documents"));
     }
-    validate_order(&source, documents, occurrences, vectors, &embedding_profile)?;
+    validate_documents(&source, documents, &embedding_profile)?;
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let name = output
@@ -205,37 +261,54 @@ pub fn write_fast_index(
     fs::create_dir(&staging)?;
     let result = (|| {
         write_documents(&staging.join("documents.parquet"), documents)?;
-        write_occurrences(&staging.join("occurrences.parquet"), occurrences)?;
+        let occurrence_rows = write_occurrences_streaming(
+            &staging.join("occurrences.parquet"),
+            &staging.join("occurrence-index.sqlite3"),
+            occurrences.into_iter(),
+            &source,
+            documents,
+        )?;
         let order_sha = document_order_sha256(documents);
-        write_vectors(
+        let vector_count = write_vectors_streaming(
             &staging.join("vectors.f32"),
-            vectors,
+            vectors.into_iter(),
             embedding_profile.dimensions,
             &order_sha,
+            &embedding_profile.normalization,
         )?;
-        let lexical = build_lexical(documents);
+        if vector_count != documents.len() as u64 {
+            return Err(IndexError::Invalid("document/vector count"));
+        }
         fs::create_dir(staging.join("lexical"))?;
-        let mut lexical_bytes = serde_json::to_vec(&lexical)?;
-        lexical_bytes.push(b'\n');
-        fs::write(staging.join("lexical/index.json"), lexical_bytes)?;
-        let manifest = FastIndexManifest {
-            schema_version: "livefire.rag.fast-index/1".into(),
+        write_lexical_streaming(&staging.join("lexical/index.json"), documents)?;
+        let documents_artifact = artifact_summary(
+            &staging.join("documents.parquet"),
+            "documents.parquet",
+            documents.len() as u64,
+            Some(order_sha.clone()),
+        )?;
+        let occurrences_artifact = artifact_summary(
+            &staging.join("occurrences.parquet"),
+            "occurrences.parquet",
+            occurrence_rows,
+            None,
+        )?;
+        let vectors_path = staging.join("vectors.f32");
+        let lexical_path = staging.join("lexical/index.json");
+        let occurrence_lookup_path = staging.join("occurrence-index.sqlite3");
+        let mut manifest = FastIndexManifest {
+            schema_version: "livefire.rag.fast-index/2".into(),
+            component_sha256: String::new(),
             source,
             build_scope: build_scope.clone(),
             complete: matches!(build_scope, BuildScope::Full),
-            documents: ObjectSummary {
-                path: "documents.parquet".into(),
-                rows: documents.len() as u64,
-                order_sha256: Some(order_sha.clone()),
-            },
-            occurrences: ObjectSummary {
-                path: "occurrences.parquet".into(),
-                rows: occurrences.len() as u64,
-                order_sha256: None,
-            },
+            documents: documents_artifact,
+            occurrences: occurrences_artifact,
             vectors: VectorSummary {
                 path: "vectors.f32".into(),
-                count: vectors.len() as u64,
+                count: vector_count,
+                bytes: fs::metadata(&vectors_path)?.len(),
+                sha256: file_sha256(&vectors_path)?,
                 dimensions: embedding_profile.dimensions,
                 dtype: "f32le".into(),
                 header_bytes: VECTOR_HEADER_BYTES,
@@ -244,12 +317,22 @@ pub fn write_fast_index(
             lexical: LexicalSummary {
                 path: "lexical/index.json".into(),
                 document_count: documents.len() as u64,
+                bytes: fs::metadata(&lexical_path)?.len(),
+                sha256: file_sha256(&lexical_path)?,
                 tokenizer: "ascii_camel_lower_v1".into(),
                 k1: 1.2,
                 b: 0.75,
             },
+            occurrence_lookup: OccurrenceLookupSummary {
+                path: "occurrence-index.sqlite3".into(),
+                rows: occurrence_rows,
+                bytes: fs::metadata(&occurrence_lookup_path)?.len(),
+                sha256: file_sha256(&occurrence_lookup_path)?,
+                schema: OCCURRENCE_LOOKUP_SCHEMA.into(),
+            },
             embedding_profile,
         };
+        manifest.component_sha256 = manifest_component_sha256(&manifest)?;
         let mut bytes = serde_json::to_vec_pretty(&manifest)?;
         bytes.push(b'\n');
         fs::write(staging.join("index.json"), bytes)?;
@@ -259,8 +342,8 @@ pub fn write_fast_index(
             build_scope: manifest.build_scope.clone(),
             complete: manifest.complete,
             document_count: documents.len() as u64,
-            occurrence_count: occurrences.len() as u64,
-            vector_count: vectors.len() as u64,
+            occurrence_count: occurrence_rows,
+            vector_count,
             embedding_profile_sha256: manifest.embedding_profile.sha256.clone(),
         };
         let mut report_bytes = serde_json::to_vec_pretty(&report)?;
@@ -278,9 +361,9 @@ pub fn write_fast_index(
 pub struct FastIndex {
     root: PathBuf,
     pub manifest: FastIndexManifest,
-    documents_file: File,
-    occurrences_file: File,
-    lexical_bytes: Vec<u8>,
+    documents_path: PathBuf,
+    lexical_path: PathBuf,
+    occurrence_lookup_path: PathBuf,
     vectors_file: File,
     data: OnceLock<SearchData>,
 }
@@ -290,13 +373,15 @@ struct SearchData {
     lexical: LexicalIndex,
 }
 
+type EligibleDocuments = Option<HashSet<String>>;
+
 impl FastIndex {
     /// Fast open validates metadata and vector/document pairing without replaying the parent.
     pub fn open(root: &Path) -> Result<Self> {
         let root = fs::canonicalize(root)?;
         let manifest: FastIndexManifest =
             serde_json::from_slice(&fs::read(root.join("index.json"))?)?;
-        if manifest.schema_version != "livefire.rag.fast-index/1" {
+        if manifest.schema_version != "livefire.rag.fast-index/2" {
             return Err(IndexError::Invalid("manifest version"));
         }
         if manifest.complete != matches!(manifest.build_scope, BuildScope::Full)
@@ -305,6 +390,8 @@ impl FastIndex {
             || manifest.vectors.dtype != "f32le"
             || manifest.vectors.header_bytes != VECTOR_HEADER_BYTES
             || manifest.lexical.document_count != manifest.documents.rows
+            || manifest.occurrence_lookup.rows != manifest.occurrences.rows
+            || manifest.occurrence_lookup.schema != OCCURRENCE_LOOKUP_SCHEMA
             || manifest.lexical.tokenizer != "ascii_camel_lower_v1"
             || !manifest.lexical.k1.is_finite()
             || manifest.lexical.k1 <= 0.0
@@ -314,6 +401,9 @@ impl FastIndex {
         {
             return Err(IndexError::Invalid("manifest bindings"));
         }
+        if manifest.component_sha256 != manifest_component_sha256(&manifest)? {
+            return Err(IndexError::Corrupt("index component identity"));
+        }
         let documents_path = safe_artifact(&root, &manifest.documents.path)?;
         let occurrences_path = safe_artifact(&root, &manifest.occurrences.path)?;
         if parquet_row_count(&documents_path)? != manifest.documents.rows
@@ -321,19 +411,43 @@ impl FastIndex {
         {
             return Err(IndexError::Invalid("manifest row binding"));
         }
+        validate_artifact(
+            &documents_path,
+            manifest.documents.bytes,
+            &manifest.documents.sha256,
+        )?;
+        validate_artifact(
+            &occurrences_path,
+            manifest.occurrences.bytes,
+            &manifest.occurrences.sha256,
+        )?;
         let vectors_path = safe_artifact(&root, &manifest.vectors.path)?;
         validate_vector_file(&vectors_path, &manifest.vectors)?;
         let lexical_path = safe_artifact(&root, &manifest.lexical.path)?;
-        let documents_file = File::open(&documents_path)?;
-        let occurrences_file = File::open(&occurrences_path)?;
+        validate_artifact(
+            &vectors_path,
+            manifest.vectors.bytes,
+            &manifest.vectors.sha256,
+        )?;
+        validate_artifact(
+            &lexical_path,
+            manifest.lexical.bytes,
+            &manifest.lexical.sha256,
+        )?;
+        let occurrence_lookup_path = safe_artifact(&root, &manifest.occurrence_lookup.path)?;
+        validate_artifact(
+            &occurrence_lookup_path,
+            manifest.occurrence_lookup.bytes,
+            &manifest.occurrence_lookup.sha256,
+        )?;
+        validate_occurrence_lookup_metadata(&occurrence_lookup_path, &manifest)?;
         let vectors_file = File::open(&vectors_path)?;
-        let lexical_bytes = fs::read(&lexical_path)?;
         Ok(Self {
             root,
             manifest,
-            documents_file,
-            occurrences_file,
-            lexical_bytes,
+            documents_path,
+            lexical_path,
+            occurrence_lookup_path,
             vectors_file,
             data: OnceLock::new(),
         })
@@ -354,6 +468,14 @@ impl FastIndex {
     ) -> Result<Vec<SearchHit>> {
         if top_n == 0 || top_n > 100 {
             return Err(IndexError::Invalid("top_n"));
+        }
+        if filters.relations.len() > 256
+            || filters.relations.iter().any(|relation| {
+                relation.is_empty() || relation.len() > 128 || relation.contains('\0')
+            })
+            || matches!((filters.time_start_ms, filters.time_end_ms), (Some(start), Some(end)) if start >= end)
+        {
+            return Err(IndexError::Invalid("search filters"));
         }
         let data = self.search_data()?;
         let eligible = self.eligible(data, filters)?;
@@ -393,20 +515,28 @@ impl FastIndex {
             .iter()
             .map(|(id, _)| id.clone())
             .collect::<BTreeSet<_>>();
+        let semantic_by_id = data
+            .documents
+            .iter()
+            .filter(|document| selected_ids.contains(&document.document_id))
+            .map(|document| {
+                (
+                    document.document_id.as_str(),
+                    document.semantic_text.as_str(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let occurrences_by_document =
-            read_matching_occurrences(self.occurrences_file.try_clone()?, &selected_ids, filters)?;
+            read_matching_occurrences(&self.occurrence_lookup_path, &selected_ids, filters)?;
         Ok(selected
             .into_iter()
             .enumerate()
             .map(|(index, (id, score))| SearchHit {
                 rank: index + 1,
-                semantic_text: data
-                    .documents
-                    .iter()
-                    .find(|document| document.document_id == id)
+                semantic_text: semantic_by_id
+                    .get(id.as_str())
                     .expect("ranked document exists")
-                    .semantic_text
-                    .clone(),
+                    .to_string(),
                 dense_score: dense_map.get(&id).copied(),
                 lexical_score: lexical_map.get(&id).copied(),
                 eligible_occurrence_count: occurrences_by_document
@@ -429,7 +559,7 @@ impl FastIndex {
         if let Some(data) = self.data.get() {
             return Ok(data);
         }
-        let documents = read_documents(self.documents_file.try_clone()?)?;
+        let documents = read_documents(File::open(&self.documents_path)?)?;
         if documents.len() as u64 != self.manifest.documents.rows
             || document_order_sha256(&documents) != self.manifest.vectors.document_order_sha256
             || self.manifest.documents.order_sha256.as_deref()
@@ -441,12 +571,7 @@ impl FastIndex {
         {
             return Err(IndexError::Corrupt("manifest row/order binding"));
         }
-        validate_occurrence_closure(
-            self.occurrences_file.try_clone()?,
-            &self.manifest.source,
-            &documents,
-        )?;
-        let lexical: LexicalIndex = serde_json::from_slice(&self.lexical_bytes)?;
+        let lexical: LexicalIndex = serde_json::from_slice(&fs::read(&self.lexical_path)?)?;
         let document_ids = documents
             .iter()
             .map(|document| document.document_id.as_str())
@@ -469,34 +594,25 @@ impl FastIndex {
             .ok_or(IndexError::Invalid("search data initialization"))
     }
 
-    fn eligible(&self, data: &SearchData, filters: &SearchFilters) -> Result<BTreeSet<String>> {
+    fn eligible(&self, _data: &SearchData, filters: &SearchFilters) -> Result<EligibleDocuments> {
         if filters.relations.is_empty()
             && filters.time_start_ms.is_none()
             && filters.time_end_ms.is_none()
         {
-            return Ok(data
-                .documents
-                .iter()
-                .map(|document| document.document_id.clone())
-                .collect());
+            return Ok(None);
         }
-        let mut eligible = BTreeSet::new();
-        visit_filter_rows(
-            self.occurrences_file.try_clone()?,
-            |document_id, event_time_ms, relation| {
-                if filter_values_match(event_time_ms, &relation, filters) {
-                    eligible.insert(document_id);
-                }
-            },
-        )?;
-        Ok(eligible)
+        Ok(Some(
+            read_eligible_document_ids(&self.occurrence_lookup_path, filters)?
+                .into_iter()
+                .collect(),
+        ))
     }
 
     fn dense_scores(
         &self,
         data: &SearchData,
         query: &[f32],
-        eligible: &BTreeSet<String>,
+        eligible: &EligibleDocuments,
     ) -> Result<Vec<(String, f64)>> {
         let dimensions = self.manifest.vectors.dimensions as usize;
         if query.len() != dimensions || query.iter().any(|value| !value.is_finite()) {
@@ -512,21 +628,28 @@ impl FastIndex {
                 return Err(IndexError::Invalid("query vector normalization"));
             }
         }
-        let mut vector_file = self.vectors_file.try_clone()?;
-        vector_file.seek(SeekFrom::Start(0))?;
-        let mut reader = BufReader::with_capacity(
-            dimensions
-                .checked_mul(4)
-                .and_then(|bytes| bytes.checked_mul(16))
-                .ok_or(IndexError::Invalid("vector buffer"))?,
-            vector_file,
-        );
-        let mut header = [0_u8; VECTOR_HEADER_BYTES as usize];
-        reader.read_exact(&mut header)?;
-        let mut row = vec![0_u8; dimensions * 4];
-        let mut scores = Vec::with_capacity(eligible.len());
+        let row_bytes = dimensions
+            .checked_mul(4)
+            .ok_or(IndexError::Invalid("vector row bytes"))?;
+        let mut row = vec![0_u8; row_bytes];
+        let mut scores =
+            Vec::with_capacity(eligible.as_ref().map_or(data.documents.len(), HashSet::len));
         for document in &data.documents {
-            reader.read_exact(&mut row)?;
+            if eligible
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&document.document_id))
+            {
+                continue;
+            }
+            let offset = u64::from(VECTOR_HEADER_BYTES)
+                .checked_add(
+                    document
+                        .vector_ordinal
+                        .checked_mul(row_bytes as u64)
+                        .ok_or(IndexError::Invalid("vector offset"))?,
+                )
+                .ok_or(IndexError::Invalid("vector offset"))?;
+            read_exact_at(&self.vectors_file, &mut row, offset)?;
             let mut score = 0.0_f64;
             let mut norm_squared = 0.0_f64;
             for (bytes, query_value) in row.chunks_exact(4).zip(query) {
@@ -544,9 +667,6 @@ impl FastIndex {
             {
                 return Err(IndexError::Corrupt("vector normalization"));
             }
-            if !eligible.contains(&document.document_id) {
-                continue;
-            }
             scores.push((document.document_id.clone(), score));
         }
         sort_scores(&mut scores);
@@ -554,18 +674,34 @@ impl FastIndex {
     }
 }
 
-fn filter_values_match(
-    event_time_ms: Option<u64>,
-    relation: &str,
-    filters: &SearchFilters,
-) -> bool {
-    (filters.relations.is_empty() || filters.relations.contains(relation))
-        && filters
-            .time_start_ms
-            .is_none_or(|start| event_time_ms.is_some_and(|value| value >= start))
-        && filters
-            .time_end_ms
-            .is_none_or(|end| event_time_ms.is_some_and(|value| value < end))
+#[cfg(unix)]
+fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buffer, offset)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buffer.is_empty() {
+        let read = file.seek_read(buffer, offset)?;
+        if read == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
+        offset += read as u64;
+        buffer = &mut buffer[read..];
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let mut independent = file.try_clone()?;
+    independent.seek(SeekFrom::Start(offset))?;
+    independent.read_exact(buffer)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -584,12 +720,16 @@ struct LexicalDocument {
 }
 
 impl LexicalIndex {
-    fn scores(&self, query: &str, eligible: &BTreeSet<String>) -> Vec<(String, f64)> {
+    fn scores(&self, query: &str, eligible: &EligibleDocuments) -> Vec<(String, f64)> {
         let terms = tokenize(query).into_iter().collect::<BTreeSet<_>>();
         let mut scores = self
             .documents
             .iter()
-            .filter(|doc| eligible.contains(&doc.document_id))
+            .filter(|doc| {
+                eligible
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&doc.document_id))
+            })
             .filter_map(|doc| {
                 let score = terms
                     .iter()
@@ -615,9 +755,52 @@ impl LexicalIndex {
     }
 }
 
-fn build_lexical(documents: &[FastDocument]) -> LexicalIndex {
+struct StreamingLexicalIndex<'a> {
+    documents: &'a [FastDocument],
+    average_length: f64,
+    document_frequency: BTreeMap<String, u64>,
+}
+
+impl Serialize for StreamingLexicalIndex<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(4))?;
+        map.serialize_entry("document_count", &(self.documents.len() as u64))?;
+        map.serialize_entry("average_length", &self.average_length)?;
+        map.serialize_entry("document_frequency", &self.document_frequency)?;
+        map.serialize_entry("documents", &StreamingLexicalDocuments(self.documents))?;
+        map.end()
+    }
+}
+
+struct StreamingLexicalDocuments<'a>(&'a [FastDocument]);
+
+impl Serialize for StreamingLexicalDocuments<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for document in self.0 {
+            let tokens = tokenize(&document.semantic_text);
+            let mut terms = BTreeMap::<String, u64>::new();
+            for token in tokens {
+                *terms.entry(token).or_default() += 1;
+            }
+            sequence.serialize_element(&LexicalDocument {
+                document_id: document.document_id.clone(),
+                length: terms.values().sum(),
+                terms,
+            })?;
+        }
+        sequence.end()
+    }
+}
+
+fn write_lexical_streaming(path: &Path, documents: &[FastDocument]) -> Result<()> {
     let mut document_frequency = BTreeMap::<String, u64>::new();
-    let mut lexical_documents = Vec::new();
     let mut total_length = 0_u64;
     for document in documents {
         let tokens = tokenize(&document.semantic_text);
@@ -629,18 +812,17 @@ fn build_lexical(documents: &[FastDocument]) -> LexicalIndex {
         for term in terms.keys() {
             *document_frequency.entry(term.clone()).or_default() += 1;
         }
-        lexical_documents.push(LexicalDocument {
-            document_id: document.document_id.clone(),
-            length: terms.values().sum(),
-            terms,
-        });
     }
-    LexicalIndex {
-        document_count: documents.len() as u64,
+    let lexical = StreamingLexicalIndex {
+        documents,
         average_length: total_length as f64 / documents.len().max(1) as f64,
         document_frequency,
-        documents: lexical_documents,
-    }
+    };
+    let mut writer = BufWriter::new(File::create(path)?);
+    serde_json::to_writer(&mut writer, &lexical)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
+    Ok(())
 }
 
 fn tokenize(text: &str) -> Vec<String> {
@@ -687,115 +869,30 @@ fn sort_scores(scores: &mut [(String, f64)]) {
     });
 }
 
-fn validate_order(
+fn validate_documents(
     source: &SourceBinding,
     documents: &[FastDocument],
-    occurrences: &[FastOccurrence],
-    vectors: &[Vec<f32>],
     profile: &EmbeddingProfile,
 ) -> Result<()> {
-    let dimensions = profile.dimensions as usize;
     let ids = documents
         .iter()
         .map(|item| &item.document_id)
         .collect::<BTreeSet<_>>();
-    let mut occurrence_ids = BTreeSet::new();
-    let mut occurrence_counts = BTreeMap::<&str, u64>::new();
     if decode_sha256(&source.snapshot_sha256).is_err()
         || decode_sha256(&source.mapping_sha256).is_err()
+        || validate_embedding_profile(profile).is_err()
         || ids.len() != documents.len()
-        || documents
-            .iter()
-            .any(|item| item.document_id.is_empty() || item.document_id.contains('\0'))
+        || documents.iter().any(|item| {
+            item.document_id.is_empty()
+                || item.document_id.contains('\0')
+                || item.occurrence_count == 0
+        })
         || documents
             .iter()
             .enumerate()
             .any(|(index, item)| item.vector_ordinal != index as u64)
-        || occurrences.iter().any(|item| {
-            *occurrence_counts.entry(&item.document_id).or_default() += 1;
-            item.occurrence_id.is_empty()
-                || !occurrence_ids.insert(&item.occurrence_id)
-                || item.event_id.is_empty()
-                || item.support_ref.is_empty()
-                || item.snapshot_sha256 != source.snapshot_sha256
-                || item.mapping_sha256 != source.mapping_sha256
-                || !ids.contains(&item.document_id)
-        })
-        || documents.iter().any(|item| {
-            occurrence_counts
-                .get(item.document_id.as_str())
-                .copied()
-                .unwrap_or(0)
-                != item.occurrence_count
-                || item.occurrence_count == 0
-        })
-        || vectors.iter().any(|vector| {
-            vector.len() != dimensions || vector.iter().any(|value| !value.is_finite())
-        })
     {
-        return Err(IndexError::Invalid(
-            "document/vector/occurrence association",
-        ));
-    }
-    if profile.normalization == "l2"
-        && vectors.iter().any(|vector| {
-            let norm = vector
-                .iter()
-                .map(|value| f64::from(*value) * f64::from(*value))
-                .sum::<f64>()
-                .sqrt();
-            (norm - 1.0).abs() > 1.0e-4
-        })
-    {
-        return Err(IndexError::Invalid("vector normalization"));
-    }
-    Ok(())
-}
-
-fn validate_occurrence_closure(
-    file: File,
-    source: &SourceBinding,
-    documents: &[FastDocument],
-) -> Result<()> {
-    let document_counts = documents
-        .iter()
-        .map(|document| (document.document_id.as_str(), document.occurrence_count))
-        .collect::<BTreeMap<_, _>>();
-    let mut actual_counts = BTreeMap::<String, u64>::new();
-    let mut occurrence_ids = BTreeSet::new();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let projection = ProjectionMask::leaves(builder.parquet_schema(), [0, 1, 5, 6, 7, 8]);
-    let reader = builder
-        .with_projection(projection)
-        .with_batch_size(8192)
-        .build()?;
-    for batch in reader {
-        let batch = batch?;
-        for row in 0..batch.num_rows() {
-            let occurrence_id = text(&batch, "occurrence_id", row)?;
-            let document_id = text(&batch, "document_id", row)?;
-            if occurrence_id.is_empty()
-                || !occurrence_ids.insert(occurrence_id)
-                || !document_counts.contains_key(document_id.as_str())
-                || text(&batch, "snapshot_sha256", row)? != source.snapshot_sha256
-                || text(&batch, "mapping_sha256", row)? != source.mapping_sha256
-                || text(&batch, "event_id", row)?.is_empty()
-                || text(&batch, "support_ref", row)?.is_empty()
-            {
-                return Err(IndexError::Corrupt("occurrence source closure"));
-            }
-            *actual_counts.entry(document_id).or_default() += 1;
-        }
-    }
-    if documents.iter().any(|document| {
-        document.occurrence_count == 0
-            || actual_counts
-                .get(&document.document_id)
-                .copied()
-                .unwrap_or(0)
-                != document.occurrence_count
-    }) {
-        return Err(IndexError::Corrupt("occurrence count closure"));
+        return Err(IndexError::Invalid("document association"));
     }
     Ok(())
 }
@@ -810,27 +907,61 @@ pub fn document_order_sha256(documents: &[FastDocument]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn write_vectors(
+fn write_vectors_streaming<I>(
     path: &Path,
-    vectors: &[Vec<f32>],
+    vectors: I,
     dimensions: u32,
     order_sha: &str,
-) -> Result<()> {
+    normalization: &str,
+) -> Result<u64>
+where
+    I: Iterator<Item = Result<Vec<f32>>>,
+{
     let mut writer = BufWriter::new(File::create(path)?);
     writer.write_all(&VECTOR_MAGIC)?;
     writer.write_all(&VECTOR_HEADER_BYTES.to_le_bytes())?;
     writer.write_all(&1_u16.to_le_bytes())?;
     writer.write_all(&[1_u8, 0_u8])?;
-    writer.write_all(&(vectors.len() as u64).to_le_bytes())?;
+    // The final count is patched after the one-pass vector stream is sealed.
+    writer.write_all(&0_u64.to_le_bytes())?;
     writer.write_all(&dimensions.to_le_bytes())?;
     writer.write_all(&0_u32.to_le_bytes())?;
     writer.write_all(&decode_sha256(order_sha)?)?;
+    let mut count = 0_u64;
     for vector in vectors {
-        for value in vector {
+        let vector = vector?;
+        validate_vector_values(&vector, dimensions as usize, normalization)?;
+        for value in &vector {
             writer.write_all(&value.to_le_bytes())?;
         }
+        count = count
+            .checked_add(1)
+            .ok_or(IndexError::Invalid("vector count"))?;
     }
     writer.flush()?;
+    drop(writer);
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(16))?;
+    file.write_all(&count.to_le_bytes())?;
+    file.sync_all()?;
+    Ok(count)
+}
+
+fn validate_vector_values(vector: &[f32], dimensions: usize, normalization: &str) -> Result<()> {
+    if vector.len() != dimensions || vector.iter().any(|value| !value.is_finite()) {
+        return Err(IndexError::Invalid("vector shape or finiteness"));
+    }
+    if normalization == "l2" {
+        let norm = vector
+            .iter()
+            .map(|value| f64::from(*value) * f64::from(*value))
+            .sum::<f64>()
+            .sqrt();
+        if (norm - 1.0).abs() > 1.0e-4 {
+            return Err(IndexError::Invalid("vector normalization"));
+        }
+    }
     Ok(())
 }
 
@@ -897,41 +1028,46 @@ fn write_documents(path: &Path, rows: &[FastDocument]) -> Result<()> {
         Field::new("occurrence_count", DataType::UInt64, false),
         Field::new("vector_ordinal", DataType::UInt64, false),
     ]));
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from_iter_values(
-            rows.iter().map(|r| r.document_id.as_str()),
-        )),
-        Arc::new(StringArray::from_iter_values(
-            rows.iter().map(|r| r.document_sha256.as_str()),
-        )),
-        Arc::new(StringArray::from_iter_values(
-            rows.iter().map(|r| r.document_kind.as_str()),
-        )),
-        Arc::new(StringArray::from_iter_values(
-            rows.iter().map(|r| r.semantic_text.as_str()),
-        )),
-        Arc::new(StringArray::from_iter_values(
-            rows.iter().map(|r| r.facets_json.as_str()),
-        )),
-        Arc::new(StringArray::from_iter_values(
-            rows.iter().map(|r| r.relations_json.as_str()),
-        )),
-        Arc::new(UInt64Array::from_iter_values(
-            rows.iter().map(|r| r.occurrence_count),
-        )),
-        Arc::new(UInt64Array::from_iter_values(
-            rows.iter().map(|r| r.vector_ordinal),
-        )),
-    ];
-    let batch = RecordBatch::try_new(schema.clone(), columns)?;
-    let mut writer = ArrowWriter::try_new(File::create(path)?, schema, Some(parquet_properties()))?;
-    writer.write(&batch)?;
+    let mut writer = ArrowWriter::try_new(
+        File::create(path)?,
+        schema.clone(),
+        Some(parquet_properties()),
+    )?;
+    for rows in rows.chunks(PARQUET_WRITE_BATCH_ROWS) {
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|r| r.document_id.as_str()),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|r| r.document_sha256.as_str()),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|r| r.document_kind.as_str()),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|r| r.semantic_text.as_str()),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|r| r.facets_json.as_str()),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|r| r.relations_json.as_str()),
+            )),
+            Arc::new(UInt64Array::from_iter_values(
+                rows.iter().map(|r| r.occurrence_count),
+            )),
+            Arc::new(UInt64Array::from_iter_values(
+                rows.iter().map(|r| r.vector_ordinal),
+            )),
+        ];
+        writer.write(&RecordBatch::try_new(schema.clone(), columns)?)?;
+    }
     writer.close()?;
     Ok(())
 }
 
-fn write_occurrences(path: &Path, rows: &[FastOccurrence]) -> Result<()> {
-    let schema = Arc::new(Schema::new(vec![
+fn occurrence_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
         Field::new("occurrence_id", DataType::Utf8, false),
         Field::new("document_id", DataType::Utf8, false),
         Field::new("event_time_ms", DataType::UInt64, true),
@@ -941,7 +1077,17 @@ fn write_occurrences(path: &Path, rows: &[FastOccurrence]) -> Result<()> {
         Field::new("mapping_sha256", DataType::Utf8, false),
         Field::new("event_id", DataType::Utf8, false),
         Field::new("support_ref", DataType::Utf8, false),
-    ]));
+    ]))
+}
+
+fn write_occurrence_batch(
+    writer: &mut ArrowWriter<File>,
+    schema: Arc<Schema>,
+    rows: &[FastOccurrence],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
     let columns: Vec<ArrayRef> = vec![
         Arc::new(StringArray::from_iter_values(
             rows.iter().map(|r| r.occurrence_id.as_str()),
@@ -971,10 +1117,121 @@ fn write_occurrences(path: &Path, rows: &[FastOccurrence]) -> Result<()> {
             rows.iter().map(|r| r.support_ref.as_str()),
         )),
     ];
-    let batch = RecordBatch::try_new(schema.clone(), columns)?;
+    writer.write(&RecordBatch::try_new(schema, columns)?)?;
+    Ok(())
+}
+
+fn write_occurrences_streaming<I>(
+    path: &Path,
+    lookup_path: &Path,
+    rows: I,
+    source: &SourceBinding,
+    documents: &[FastDocument],
+) -> Result<u64>
+where
+    I: Iterator<Item = Result<FastOccurrence>>,
+{
+    let schema = occurrence_schema();
     let mut writer = ArrowWriter::try_new(File::create(path)?, schema, Some(parquet_properties()))?;
-    writer.write(&batch)?;
+    let mut lookup = Connection::open(lookup_path)?;
+    lookup.execute_batch(
+        "PRAGMA journal_mode=OFF;
+         PRAGMA synchronous=OFF;
+         PRAGMA temp_store=MEMORY;
+         CREATE TABLE occurrences (
+           occurrence_id TEXT PRIMARY KEY NOT NULL,
+           document_id TEXT NOT NULL,
+           event_time_ms INTEGER,
+           relation TEXT NOT NULL,
+           snapshot_sha256 TEXT NOT NULL,
+           mapping_sha256 TEXT NOT NULL,
+           event_id TEXT NOT NULL UNIQUE,
+           support_ref TEXT NOT NULL
+         ) WITHOUT ROWID;",
+    )?;
+    let expected = documents
+        .iter()
+        .map(|document| (document.document_id.as_str(), document.occurrence_count))
+        .collect::<BTreeMap<_, _>>();
+    let mut actual = BTreeMap::<String, u64>::new();
+    let mut batch = Vec::with_capacity(PARQUET_WRITE_BATCH_ROWS);
+    let mut total = 0_u64;
+    for row in rows {
+        let row = row?;
+        if row.occurrence_id.is_empty()
+            || row.event_id.is_empty()
+            || row.support_ref.is_empty()
+            || row.snapshot_sha256 != source.snapshot_sha256
+            || row.mapping_sha256 != source.mapping_sha256
+            || !expected.contains_key(row.document_id.as_str())
+            || i64::try_from(row.event_time_ms.unwrap_or(0)).is_err()
+        {
+            return Err(IndexError::Invalid("occurrence source closure"));
+        }
+        *actual.entry(row.document_id.clone()).or_default() += 1;
+        batch.push(row);
+        total = total
+            .checked_add(1)
+            .ok_or(IndexError::Invalid("occurrence count"))?;
+        if batch.len() == PARQUET_WRITE_BATCH_ROWS {
+            write_occurrence_batch(&mut writer, occurrence_schema(), &batch)?;
+            insert_occurrence_lookup_batch(&mut lookup, &batch)?;
+            batch.clear();
+        }
+    }
+    write_occurrence_batch(&mut writer, occurrence_schema(), &batch)?;
+    insert_occurrence_lookup_batch(&mut lookup, &batch)?;
+    if expected.len() != actual.len()
+        || expected
+            .iter()
+            .any(|(id, count)| actual.get(*id) != Some(count))
+    {
+        return Err(IndexError::Invalid("occurrence count closure"));
+    }
     writer.close()?;
+    lookup.execute_batch(
+        "CREATE INDEX occurrence_document_time_relation
+           ON occurrences(document_id, event_time_ms, relation);
+         CREATE INDEX occurrence_relation_time_document
+           ON occurrences(relation, event_time_ms, document_id);
+         CREATE TABLE metadata(key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL) WITHOUT ROWID;",
+    )?;
+    for (key, value) in [
+        ("schema", OCCURRENCE_LOOKUP_SCHEMA.to_owned()),
+        ("rows", total.to_string()),
+        ("snapshot_sha256", source.snapshot_sha256.clone()),
+        ("mapping_sha256", source.mapping_sha256.clone()),
+    ] {
+        lookup.execute("INSERT INTO metadata VALUES (?1, ?2)", params![key, value])?;
+    }
+    lookup.execute_batch("PRAGMA optimize;")?;
+    drop(lookup);
+    Ok(total)
+}
+
+fn insert_occurrence_lookup_batch(
+    connection: &mut Connection,
+    rows: &[FastOccurrence],
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    {
+        let mut statement = transaction
+            .prepare("INSERT INTO occurrences VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
+        for row in rows {
+            statement.execute(params![
+                row.occurrence_id,
+                row.document_id,
+                row.event_time_ms
+                    .and_then(|value| i64::try_from(value).ok()),
+                row.relation,
+                row.snapshot_sha256,
+                row.mapping_sha256,
+                row.event_id,
+                row.support_ref,
+            ])?;
+        }
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -992,66 +1249,109 @@ fn read_documents(file: File) -> Result<Vec<FastDocument>> {
         })
     })
 }
-fn visit_filter_rows<F: FnMut(String, Option<u64>, String)>(
-    file: File,
-    mut visit: F,
-) -> Result<()> {
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let projection = ProjectionMask::leaves(builder.parquet_schema(), [1, 2, 3]);
-    let reader = builder
-        .with_projection(projection)
-        .with_batch_size(8192)
-        .build()?;
-    for batch in reader {
-        let batch = batch?;
-        for row in 0..batch.num_rows() {
-            visit(
-                text(&batch, "document_id", row)?,
-                optional_number(&batch, "event_time_ms", row)?,
-                text(&batch, "relation", row)?,
-            );
-        }
-    }
-    Ok(())
-}
-
 fn read_matching_occurrences(
-    file: File,
+    path: &Path,
     document_ids: &BTreeSet<String>,
     filters: &SearchFilters,
 ) -> Result<BTreeMap<String, MatchedOccurrences>> {
     let mut matched = BTreeMap::<String, MatchedOccurrences>::new();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let projection = ProjectionMask::leaves(builder.parquet_schema(), [1, 2, 3, 5, 6, 7, 8]);
-    let reader = builder
-        .with_projection(projection)
-        .with_batch_size(8192)
-        .build()?;
-    for batch in reader {
-        let batch = batch?;
-        for row in 0..batch.num_rows() {
-            let document_id = text(&batch, "document_id", row)?;
-            let event_time_ms = optional_number(&batch, "event_time_ms", row)?;
-            let relation = text(&batch, "relation", row)?;
-            if document_ids.contains(&document_id)
-                && filter_values_match(event_time_ms, &relation, filters)
-            {
-                let entry = matched.entry(document_id).or_default();
-                entry.eligible_count += 1;
-                if entry.rows.len() < MAX_RETURNED_OCCURRENCES_PER_HIT {
-                    entry.rows.push(EvidenceOccurrence {
-                        event_time_ms,
-                        relation,
-                        snapshot_sha256: text(&batch, "snapshot_sha256", row)?,
-                        mapping_sha256: text(&batch, "mapping_sha256", row)?,
-                        event_id: text(&batch, "event_id", row)?,
-                        support_ref: text(&batch, "support_ref", row)?,
-                    });
-                }
-            }
+    if document_ids.is_empty() {
+        return Ok(matched);
+    }
+    let connection = open_occurrence_lookup(path)?;
+    let placeholders = std::iter::repeat_n("?", document_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut sql = format!(
+        "SELECT document_id, event_time_ms, relation, snapshot_sha256,
+                mapping_sha256, event_id, support_ref
+           FROM occurrences WHERE document_id IN ({placeholders})"
+    );
+    let mut parameters = document_ids
+        .iter()
+        .cloned()
+        .map(ValueParam::Text)
+        .collect::<Vec<_>>();
+    append_filter_sql(&mut sql, &mut parameters, filters);
+    sql.push_str(" ORDER BY document_id, occurrence_id");
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query(params_from_iter(parameters.iter().map(ValueParam::as_sql)))?;
+    while let Some(row) = rows.next()? {
+        let document_id: String = row.get(0)?;
+        let event_time_ms = row
+            .get::<_, Option<i64>>(1)?
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| IndexError::Corrupt("negative occurrence timestamp"))?;
+        let entry = matched.entry(document_id).or_default();
+        entry.eligible_count += 1;
+        if entry.rows.len() < MAX_RETURNED_OCCURRENCES_PER_HIT {
+            entry.rows.push(EvidenceOccurrence {
+                event_time_ms,
+                relation: row.get(2)?,
+                snapshot_sha256: row.get(3)?,
+                mapping_sha256: row.get(4)?,
+                event_id: row.get(5)?,
+                support_ref: row.get(6)?,
+            });
         }
     }
     Ok(matched)
+}
+
+fn read_eligible_document_ids(path: &Path, filters: &SearchFilters) -> Result<Vec<String>> {
+    let connection = open_occurrence_lookup(path)?;
+    let mut sql = "SELECT DISTINCT document_id FROM occurrences WHERE 1=1".to_owned();
+    let mut parameters = Vec::new();
+    append_filter_sql(&mut sql, &mut parameters, filters);
+    sql.push_str(" ORDER BY document_id");
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(
+        params_from_iter(parameters.iter().map(ValueParam::as_sql)),
+        |row| row.get::<_, String>(0),
+    )?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+enum ValueParam {
+    Text(String),
+    Integer(i64),
+}
+
+impl ValueParam {
+    fn as_sql(&self) -> &dyn rusqlite::ToSql {
+        match self {
+            Self::Text(value) => value,
+            Self::Integer(value) => value,
+        }
+    }
+}
+
+fn append_filter_sql(sql: &mut String, parameters: &mut Vec<ValueParam>, filters: &SearchFilters) {
+    if !filters.relations.is_empty() {
+        let placeholders = std::iter::repeat_n("?", filters.relations.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND relation IN ({placeholders})"));
+        parameters.extend(filters.relations.iter().cloned().map(ValueParam::Text));
+    }
+    if let Some(start) = filters.time_start_ms {
+        sql.push_str(" AND event_time_ms >= ?");
+        parameters.push(ValueParam::Integer(
+            i64::try_from(start).unwrap_or(i64::MAX),
+        ));
+    }
+    if let Some(end) = filters.time_end_ms {
+        sql.push_str(" AND event_time_ms < ?");
+        parameters.push(ValueParam::Integer(i64::try_from(end).unwrap_or(i64::MAX)));
+    }
+}
+
+fn open_occurrence_lookup(path: &Path) -> Result<Connection> {
+    Ok(Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?)
 }
 
 #[derive(Default)]
@@ -1080,6 +1380,89 @@ fn parquet_row_count(path: &Path) -> Result<u64> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
     u64::try_from(builder.metadata().file_metadata().num_rows())
         .map_err(|_| IndexError::Invalid("Parquet row count"))
+}
+
+fn artifact_summary(
+    path: &Path,
+    relative: &str,
+    rows: u64,
+    order_sha256: Option<String>,
+) -> Result<ObjectSummary> {
+    Ok(ObjectSummary {
+        path: relative.into(),
+        rows,
+        bytes: fs::metadata(path)?.len(),
+        sha256: file_sha256(path)?,
+        order_sha256,
+    })
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let mut reader = BufReader::with_capacity(1024 * 1024, File::open(path)?);
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn validate_artifact(path: &Path, bytes: u64, sha256: &str) -> Result<()> {
+    if fs::metadata(path)?.len() != bytes || file_sha256(path)? != sha256 {
+        return Err(IndexError::Corrupt("artifact content digest"));
+    }
+    Ok(())
+}
+
+fn manifest_component_sha256(manifest: &FastIndexManifest) -> Result<String> {
+    let material = serde_json::json!({
+        "schema_version": manifest.schema_version,
+        "source": manifest.source,
+        "build_scope": manifest.build_scope,
+        "complete": manifest.complete,
+        "documents": manifest.documents,
+        "occurrences": manifest.occurrences,
+        "vectors": manifest.vectors,
+        "lexical": manifest.lexical,
+        "occurrence_lookup": manifest.occurrence_lookup,
+        "embedding_profile": manifest.embedding_profile,
+    });
+    // SDK component identities use RFC 8785 JSON Canonicalization Scheme.
+    let bytes = serde_json_canonicalizer::to_vec(&material)
+        .map_err(|_| IndexError::Invalid("component identity canonicalization"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn validate_occurrence_lookup_metadata(path: &Path, manifest: &FastIndexManifest) -> Result<()> {
+    let connection = open_occurrence_lookup(path)?;
+    let read = |key: &str| -> Result<String> {
+        Ok(
+            connection.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })?,
+        )
+    };
+    if read("schema")? != OCCURRENCE_LOOKUP_SCHEMA
+        || read("rows")? != manifest.occurrences.rows.to_string()
+        || read("snapshot_sha256")? != manifest.source.snapshot_sha256
+        || read("mapping_sha256")? != manifest.source.mapping_sha256
+    {
+        return Err(IndexError::Corrupt("occurrence lookup metadata"));
+    }
+    let rows = u64::try_from(connection.query_row(
+        "SELECT count(*) FROM occurrences",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?)
+    .map_err(|_| IndexError::Corrupt("negative occurrence lookup row count"))?;
+    if rows != manifest.occurrences.rows {
+        return Err(IndexError::Corrupt("occurrence lookup row count"));
+    }
+    Ok(())
 }
 
 fn safe_artifact(root: &Path, value: &str) -> Result<PathBuf> {
@@ -1128,6 +1511,11 @@ fn optional_number(batch: &RecordBatch, name: &'static str, row: usize) -> Resul
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{Arc, Barrier},
+        thread,
+    };
+
     use super::*;
     use tempfile::tempdir;
     fn profile() -> EmbeddingProfile {
@@ -1241,7 +1629,7 @@ mod tests {
         );
     }
     #[test]
-    fn open_is_metadata_only_and_search_loads_corpus_objects() {
+    fn open_verifies_content_bound_artifacts_before_use() {
         let root = tempdir().unwrap();
         let out = root.path().join("index");
         let (documents, occurrences, vectors) = fixture();
@@ -1259,18 +1647,10 @@ mod tests {
         )
         .unwrap();
         fs::write(out.join("lexical/index.json"), b"not-json\n").unwrap();
-        let index = FastIndex::open(&out).expect("metadata-scale open succeeds");
-        assert!(
-            index
-                .search(
-                    SearchMode::Lexical,
-                    "logging",
-                    None,
-                    &SearchFilters::default(),
-                    1,
-                )
-                .is_err()
-        );
+        assert!(matches!(
+            FastIndex::open(&out),
+            Err(IndexError::Corrupt("artifact content digest"))
+        ));
     }
     #[test]
     fn relation_filter_is_occurrence_first() {
@@ -1301,6 +1681,23 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].document_id, "b");
+    }
+
+    #[test]
+    fn query_uses_bound_occurrence_lookup_without_replaying_parquet() {
+        let (_root, out) = built_index();
+        let index = FastIndex::open(&out).unwrap();
+        fs::remove_file(out.join("occurrences.parquet")).unwrap();
+        let filters = SearchFilters {
+            relations: BTreeSet::from(["ocsf_process_activity".into()]),
+            time_start_ms: Some(0),
+            time_end_ms: Some(20),
+        };
+        let hits = index
+            .search(SearchMode::Lexical, "logging bypass", None, &filters, 1)
+            .unwrap();
+        assert_eq!(hits[0].document_id, "a");
+        assert_eq!(hits[0].occurrences[0].event_id, "e-a");
     }
 
     #[test]
@@ -1344,6 +1741,33 @@ mod tests {
         assert!(!hit.occurrences_exhausted);
     }
 
+    #[test]
+    fn writer_rejects_duplicate_snapshot_event_pointers() {
+        let root = tempdir().unwrap();
+        let out = root.path().join("index");
+        let (mut documents, mut occurrences, vectors) = fixture();
+        let mut duplicate = occurrences[0].clone();
+        duplicate.occurrence_id = "different-occurrence-id".into();
+        occurrences.push(duplicate);
+        documents[0].occurrence_count = 2;
+        assert!(matches!(
+            write_fast_index(
+                &out,
+                SourceBinding {
+                    snapshot_sha256: "a".repeat(64),
+                    mapping_sha256: "b".repeat(64),
+                },
+                BuildScope::Full,
+                &documents,
+                &occurrences,
+                &vectors,
+                profile(),
+            ),
+            Err(IndexError::Sqlite(_))
+        ));
+        assert!(!out.exists());
+    }
+
     fn built_index() -> (tempfile::TempDir, PathBuf) {
         let root = tempdir().unwrap();
         let out = root.path().join("index");
@@ -1365,36 +1789,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_foreign_occurrence_source_and_noncontiguous_vector_ordinals() {
+    fn rejects_tampered_occurrence_and_document_artifacts() {
         let (_root, out) = built_index();
         let path = out.join("occurrences.parquet");
-        let mut rows = read_parquet(File::open(&path).unwrap(), |batch, row| {
-            Ok(FastOccurrence {
-                occurrence_id: text(batch, "occurrence_id", row)?,
-                document_id: text(batch, "document_id", row)?,
-                event_time_ms: optional_number(batch, "event_time_ms", row)?,
-                relation: text(batch, "relation", row)?,
-                exact_attributes_json: text(batch, "exact_attributes_json", row)?,
-                snapshot_sha256: text(batch, "snapshot_sha256", row)?,
-                mapping_sha256: text(batch, "mapping_sha256", row)?,
-                event_id: text(batch, "event_id", row)?,
-                support_ref: text(batch, "support_ref", row)?,
-            })
-        })
-        .unwrap();
-        rows[0].snapshot_sha256 = "f".repeat(64);
-        fs::remove_file(&path).unwrap();
-        write_occurrences(&path, &rows).unwrap();
-        let index = FastIndex::open(&out).unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[32] ^= 1;
+        fs::write(&path, bytes).unwrap();
         assert!(matches!(
-            index.search(
-                SearchMode::Lexical,
-                "logging",
-                None,
-                &SearchFilters::default(),
-                1
-            ),
-            Err(IndexError::Corrupt("occurrence source closure"))
+            FastIndex::open(&out),
+            Err(IndexError::Corrupt("artifact content digest"))
         ));
 
         let (_root, out) = built_index();
@@ -1404,16 +1807,9 @@ mod tests {
         documents[1].vector_ordinal = 11;
         fs::remove_file(&path).unwrap();
         write_documents(&path, &documents).unwrap();
-        let index = FastIndex::open(&out).unwrap();
         assert!(matches!(
-            index.search(
-                SearchMode::Lexical,
-                "logging",
-                None,
-                &SearchFilters::default(),
-                1
-            ),
-            Err(IndexError::Corrupt("manifest row/order binding"))
+            FastIndex::open(&out),
+            Err(IndexError::Corrupt("artifact content digest"))
         ));
     }
 
@@ -1425,16 +1821,9 @@ mod tests {
         bytes[VECTOR_HEADER_BYTES as usize..VECTOR_HEADER_BYTES as usize + 4]
             .copy_from_slice(&f32::NAN.to_le_bytes());
         fs::write(path, bytes).unwrap();
-        let index = FastIndex::open(&out).unwrap();
         assert!(matches!(
-            index.search(
-                SearchMode::Dense,
-                "",
-                Some(&[1.0, 0.0]),
-                &SearchFilters::default(),
-                1
-            ),
-            Err(IndexError::Corrupt("non-finite vector value"))
+            FastIndex::open(&out),
+            Err(IndexError::Corrupt("artifact content digest"))
         ));
 
         let (_root, out) = built_index();
@@ -1442,16 +1831,210 @@ mod tests {
         let mut lexical: LexicalIndex = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         lexical.documents[0].document_id = "foreign".into();
         fs::write(&path, serde_json::to_vec(&lexical).unwrap()).unwrap();
-        let index = FastIndex::open(&out).unwrap();
         assert!(matches!(
-            index.search(
+            FastIndex::open(&out),
+            Err(IndexError::Corrupt("artifact content digest"))
+        ));
+    }
+
+    #[test]
+    fn streaming_writer_chunks_high_fanout_occurrences_and_closes_lookup() {
+        let root = tempdir().unwrap();
+        let out = root.path().join("index");
+        let (mut documents, mut occurrences, vectors) = fixture();
+        let template = occurrences[0].clone();
+        occurrences.retain(|row| row.document_id != "a");
+        for sequence in 0..(PARQUET_WRITE_BATCH_ROWS + 17) {
+            let mut occurrence = template.clone();
+            occurrence.occurrence_id = format!("o-a-{sequence:08}");
+            occurrence.event_id = format!("e-a-{sequence:08}");
+            occurrences.push(occurrence);
+        }
+        documents[0].occurrence_count = (PARQUET_WRITE_BATCH_ROWS + 17) as u64;
+        let manifest = write_fast_index_streaming(
+            &out,
+            SourceBinding {
+                snapshot_sha256: "a".repeat(64),
+                mapping_sha256: "b".repeat(64),
+            },
+            BuildScope::Sample,
+            &documents,
+            occurrences.into_iter().map(Ok),
+            vectors.into_iter().map(Ok),
+            profile(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.occurrences.rows,
+            (PARQUET_WRITE_BATCH_ROWS + 18) as u64
+        );
+        assert_eq!(manifest.occurrence_lookup.rows, manifest.occurrences.rows);
+        let index = FastIndex::open(&out).unwrap();
+        let hit = index
+            .search(
                 SearchMode::Lexical,
-                "logging",
+                "logging bypass",
                 None,
                 &SearchFilters::default(),
-                1
-            ),
-            Err(IndexError::Corrupt("lexical document association"))
-        ));
+                1,
+            )
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            hit.eligible_occurrence_count,
+            (PARQUET_WRITE_BATCH_ROWS + 17) as u64
+        );
+        assert_eq!(hit.occurrences.len(), MAX_RETURNED_OCCURRENCES_PER_HIT);
+    }
+
+    #[test]
+    fn concurrent_dense_searches_use_positional_vector_reads() {
+        const DOCUMENTS: usize = 4_096;
+        const DIMENSIONS: usize = 128;
+        const THREADS: usize = 8;
+        let root = tempdir().unwrap();
+        let out = root.path().join("index");
+        let mut documents = Vec::with_capacity(DOCUMENTS);
+        let mut occurrences = Vec::with_capacity(DOCUMENTS);
+        let mut vectors = Vec::with_capacity(DOCUMENTS);
+        for ordinal in 0..DOCUMENTS {
+            let document_id = format!("doc-{ordinal:08}");
+            documents.push(FastDocument {
+                document_id: document_id.clone(),
+                document_sha256: "1".into(),
+                document_kind: "activity".into(),
+                semantic_text: format!("document {ordinal}"),
+                facets_json: "{}".into(),
+                relations_json: "[]".into(),
+                occurrence_count: 1,
+                vector_ordinal: ordinal as u64,
+            });
+            occurrences.push(FastOccurrence {
+                occurrence_id: format!("occ-{ordinal:08}"),
+                document_id,
+                event_time_ms: Some(ordinal as u64),
+                relation: "ocsf_process_activity".into(),
+                exact_attributes_json: "[]".into(),
+                snapshot_sha256: "a".repeat(64),
+                mapping_sha256: "b".repeat(64),
+                event_id: format!("evt-{ordinal:08}"),
+                support_ref: format!("sup-{ordinal:08}"),
+            });
+            let mut vector = vec![0.0; DIMENSIONS];
+            vector[ordinal % DIMENSIONS] = 1.0;
+            vectors.push(vector);
+        }
+        let mut embedding_profile = profile();
+        embedding_profile.dimensions = DIMENSIONS as u32;
+        write_fast_index(
+            &out,
+            SourceBinding {
+                snapshot_sha256: "a".repeat(64),
+                mapping_sha256: "b".repeat(64),
+            },
+            BuildScope::Full,
+            &documents,
+            &occurrences,
+            &vectors,
+            embedding_profile,
+        )
+        .unwrap();
+        let index = Arc::new(FastIndex::open(&out).unwrap());
+        let mut warmup = vec![0.0; DIMENSIONS];
+        warmup[0] = 1.0;
+        index
+            .search(
+                SearchMode::Dense,
+                "",
+                Some(&warmup),
+                &SearchFilters::default(),
+                1,
+            )
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let joins = (0..THREADS)
+            .map(|thread_id| {
+                let index = Arc::clone(&index);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let mut query = vec![0.0; DIMENSIONS];
+                    query[thread_id] = 1.0;
+                    barrier.wait();
+                    for _ in 0..10 {
+                        let hit = index
+                            .search(
+                                SearchMode::Dense,
+                                "",
+                                Some(&query),
+                                &SearchFilters::default(),
+                                1,
+                            )
+                            .unwrap()
+                            .remove(0);
+                        assert_eq!(hit.dense_score, Some(1.0));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for join in joins {
+            join.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn component_identity_is_rfc8785_canonical_and_cross_language_stable() {
+        let object = |path: &str, digit: char| ObjectSummary {
+            path: path.into(),
+            rows: 1,
+            bytes: 2,
+            sha256: digit.to_string().repeat(64),
+            order_sha256: None,
+        };
+        let manifest = FastIndexManifest {
+            schema_version: "livefire.rag.fast-index/2".into(),
+            component_sha256: String::new(),
+            source: SourceBinding {
+                snapshot_sha256: "a".repeat(64),
+                mapping_sha256: "b".repeat(64),
+            },
+            build_scope: BuildScope::Sample,
+            complete: false,
+            documents: ObjectSummary {
+                order_sha256: Some("c".repeat(64)),
+                ..object("documents.parquet", 'd')
+            },
+            occurrences: object("occurrences.parquet", 'e'),
+            vectors: VectorSummary {
+                path: "vectors.f32".into(),
+                count: 1,
+                bytes: 72,
+                sha256: "f".repeat(64),
+                dimensions: 2,
+                dtype: "f32le".into(),
+                header_bytes: VECTOR_HEADER_BYTES,
+                document_order_sha256: "c".repeat(64),
+            },
+            lexical: LexicalSummary {
+                path: "lexical/index.json".into(),
+                document_count: 1,
+                bytes: 10,
+                sha256: "1".repeat(64),
+                tokenizer: "ascii_camel_lower_v1".into(),
+                k1: 1.2,
+                b: 0.75,
+            },
+            occurrence_lookup: OccurrenceLookupSummary {
+                path: "occurrence-index.sqlite3".into(),
+                rows: 1,
+                bytes: 4096,
+                sha256: "2".repeat(64),
+                schema: OCCURRENCE_LOOKUP_SCHEMA.into(),
+            },
+            embedding_profile: profile(),
+        };
+        assert_eq!(
+            manifest_component_sha256(&manifest).unwrap(),
+            "e24c25ab06821dbca8686404d30d69407c7aa6d1c0954c47dc300e57f40f9b30"
+        );
     }
 }

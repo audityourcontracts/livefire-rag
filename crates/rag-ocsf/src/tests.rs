@@ -82,7 +82,7 @@ impl Fixture {
             );
         }
 
-        let receipt = json!({
+        let mut receipt = json!({
             "schema_version": 1,
             "snapshot_manifest": {
                 "schema_version": 1,
@@ -103,10 +103,10 @@ impl Fixture {
             },
             "output_logical_sha256": hex('a'),
             "runnable_snapshot": {
-                "component": {"sha256":hex('a')},
+                "component": {"id":"fixture.snapshot","version":"1","sha256":hex('a')},
                 "dataset_sha256":hex('d'),
-                "mapping_pack":{"sha256":hex('b')},
-                "relation_contract":{"sha256":hex('5')},
+                "mapping_pack":{"id":"fixture.mapping","version":"1","sha256":hex('b')},
+                "relation_contract":{"id":"fixture.relations","version":"1","sha256":hex('5')},
                 "normalized_events":2,
                 "source_rows":2
             },
@@ -126,6 +126,13 @@ impl Fixture {
                 }
             }
         });
+        for object in receipt["snapshot_manifest"]["objects"]
+            .as_array_mut()
+            .expect("manifest objects")
+        {
+            let relative = object["path"].as_str().expect("object path");
+            object["sha256"] = Value::String(file_digest(&root.path().join(relative)));
+        }
         std::fs::write(
             root.path().join(RECEIPT_FILE),
             serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
@@ -157,6 +164,13 @@ fn object(relation: &str, rows: u64) -> Value {
 
 fn hex(character: char) -> String {
     std::iter::repeat_n(character, 64).collect()
+}
+
+fn file_digest(path: &Path) -> String {
+    format!(
+        "{:x}",
+        Sha256Hasher::digest(std::fs::read(path).expect("fixture object"))
+    )
 }
 
 fn write_batch(path: PathBuf, schema: Arc<Schema>, batch: RecordBatch) {
@@ -202,6 +216,24 @@ fn opens_current_receipt_discovers_typed_relations_and_streams_batches() {
         .expect("UTF-8");
     assert_eq!(first.value(0), "evt_1");
     assert!(!first.is_null(0));
+}
+
+#[test]
+fn scan_rehashes_each_typed_object_against_the_admitted_receipt() {
+    let fixture = Fixture::write();
+    let reader = LocalSnapshotReader::open(fixture.root.path()).expect("snapshot opens");
+    let relation = reader.typed_relations().next().expect("typed relation");
+    use std::io::Write as _;
+    File::options()
+        .append(true)
+        .open(fixture.root.path().join(&relation.path))
+        .expect("typed object")
+        .write_all(b"post-admission mutation")
+        .expect("mutate typed object");
+    assert!(matches!(
+        reader.scan(relation),
+        Err(OcsfError::ObjectDigest(_))
+    ));
 }
 
 #[test]

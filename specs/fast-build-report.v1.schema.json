@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/fast-build-report.v1.schema.json",
+  "title": "Fast evidence index build report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "source", "build_scope", "complete",
+    "document_count", "occurrence_count", "vector_count",
+    "embedding_profile_sha256", "accounting", "cache_hits", "embedded"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.fast-build-report/1"},
+    "source": {"$ref": "#/$defs/source"},
+    "build_scope": {"enum": ["full", "sample"]},
+    "complete": {"type": "boolean"},
+    "document_count": {"type": "integer", "minimum": 1},
+    "occurrence_count": {"type": "integer", "minimum": 1},
+    "vector_count": {"type": "integer", "minimum": 1},
+    "embedding_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "cache_hits": {"type": "integer", "minimum": 0},
+    "embedded": {"type": "integer", "minimum": 0},
+    "accounting": {"$ref": "#/$defs/accounting"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["snapshot_sha256", "mapping_sha256"],
+      "properties": {
+        "snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "mapping_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "count_map": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "timestamps": {
+      "type": "object", "additionalProperties": false,
+      "required": ["available", "indexed_milliseconds", "before_unix_epoch", "missing", "present_unparsed"],
+      "properties": {
+        "available": {"type": "integer", "minimum": 0},
+        "indexed_milliseconds": {"type": "integer", "minimum": 0},
+        "before_unix_epoch": {"type": "integer", "minimum": 0},
+        "missing": {"type": "integer", "minimum": 0},
+        "present_unparsed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "sampling": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "policy", "declared_census_at_or_below",
+        "hash_min_cap_above_census_threshold",
+        "effective_full_retention_at_or_below",
+        "max_documents_per_searchable_relation",
+        "source_documents_by_relation", "relation_budgets",
+        "selected_by_relation", "selected_documents",
+        "selected_occurrences", "selected_document_order_sha256"
+      ],
+      "properties": {
+        "policy": {"enum": ["full", "relation_census_1000_snapshot_bound_sha256_hash_min_cap_2000_v1"]},
+        "declared_census_at_or_below": {"type": ["integer", "null"], "minimum": 1},
+        "hash_min_cap_above_census_threshold": {"type": ["integer", "null"], "minimum": 1},
+        "effective_full_retention_at_or_below": {"type": ["integer", "null"], "minimum": 1},
+        "max_documents_per_searchable_relation": {"type": ["integer", "null"], "minimum": 1},
+        "source_documents_by_relation": {"$ref": "#/$defs/count_map"},
+        "relation_budgets": {"$ref": "#/$defs/count_map"},
+        "selected_by_relation": {"$ref": "#/$defs/count_map"},
+        "selected_documents": {"type": "integer", "minimum": 1},
+        "selected_occurrences": {"type": "integer", "minimum": 1},
+        "selected_document_order_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "accounting": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "coverage_semantics", "semantic_source_coverage_complete",
+        "source_rows_scanned", "source_rows_by_relation",
+        "materialization_rows_scanned", "projected_semantic_occurrences",
+        "structured_only_occurrences", "structured_only_by_relation",
+        "source_timestamps", "indexed_timestamps", "sampling"
+      ],
+      "properties": {
+        "coverage_semantics": {"const": "searchable_projection_only_not_source_row_coverage"},
+        "semantic_source_coverage_complete": {"type": "boolean"},
+        "source_rows_scanned": {"type": "integer", "minimum": 1},
+        "source_rows_by_relation": {"$ref": "#/$defs/count_map"},
+        "materialization_rows_scanned": {"type": "integer", "minimum": 1},
+        "projected_semantic_occurrences": {"type": "integer", "minimum": 1},
+        "structured_only_occurrences": {"type": "integer", "minimum": 0},
+        "structured_only_by_relation": {"$ref": "#/$defs/count_map"},
+        "source_timestamps": {"$ref": "#/$defs/timestamps"},
+        "indexed_timestamps": {"$ref": "#/$defs/timestamps"},
+        "sampling": {"$ref": "#/$defs/sampling"}
+      }
+    }
+  }
+}

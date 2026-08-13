@@ -1,9 +1,9 @@
 # Livefire RAG
 
-`livefire-rag` builds immutable command-intelligence indexes and serves typed
-retrieval and anomaly tools. Its first domain is command-line activity,
-including PowerShell, shell commands, process ancestry, and cloud CLI/API
-invocations.
+`livefire-rag` builds immutable, generic OCSF evidence-candidate indexes and
+serves typed retrieval tools. Process and command activity are one relation
+family among API, identity, configuration, cloud, file, network, email,
+detection, and other normalized OCSF relations.
 
 It is not Livefire's investigative brain. It returns ranked leads, score
 decompositions, comparisons, and exact source pointers. Livefire owns
@@ -19,9 +19,11 @@ hypotheses, evidence selection, conclusions, and stopping.
   or Panther credentials and makes no vendor calls at query time.
 - DuckDB is the first exact retrieval engine, not the public interface or the
   canonical index format.
-- The Wasmtime-first integration is the existing Livefire pattern: an
-  import-free runner emits `call_tool`; the native capability host executes the
-  RAG provider. Browser host parity is later work.
+- Livefire runners emit `call_tool`; the implemented Node-side SDK adapter owns
+  provider spawn/open/call/health/close and validates the exact declared
+  read-only mount bindings. OS-level immutability is enforced externally.
+  Browser/WASM code receives only an injected typed host client and never
+  spawns a process.
 
 ## V1 tools
 
@@ -64,6 +66,12 @@ are generated from the same six synthetic scenarios, so a perfect score proves
 only that the interfaces and document/vector/pointer bindings work. It is not a
 retrieval-quality benchmark.
 
+The isolated Livefire adapter includes
+`tools/prepare-external-evidence-search.mjs`, which converts the packaged RAG
+bundle and prepared local-test transcript into a validated external-tool
+loadout. A desktop/server composition root must inject that Node host into the
+runner; deterministic hunt scheduling is intentionally unchanged.
+
 The individual commands are:
 
 ```sh
@@ -72,26 +80,46 @@ cargo run -p rag-builder --bin rag -- build \
   --embedding-profile profiles/qwen3-embedding-8b-generic-evidence-lmstudio-q4.dev.json \
   --embedding-endpoint http://127.0.0.1:1234 \
   --resume CACHE.sqlite3 --embedding-batch-size 16 \
-  --sample-documents 20000
+  --representative-sample
 
 cargo run -p rag-builder --bin rag -- query \
   --index INDEX --query 'encoded PowerShell download' --mode fused --top-n 20 \
   --embedding-endpoint http://127.0.0.1:1234
+
+# Open and verify the index once, then execute a frozen JSONL experiment plan.
+cargo run -p rag-builder --bin rag -- batch-query \
+  --index INDEX --requests QUERIES.jsonl \
+  --embedding-endpoint http://127.0.0.1:1234 > RESULTS.jsonl
+
+cargo run -p rag-provider --bin rag-package-tool -- \
+  --provider target/release/rag-provider \
+  --sdk-specs ../livefire-sdk/specs --out PROVIDER_BUNDLE
+
+cargo run -p rag-provider --bin rag-prepare-local-tool -- \
+  --index INDEX --bundle PROVIDER_BUNDLE \
+  --source-receipt SNAPSHOT/build-receipt.json \
+  --embedding-profile profiles/qwen3-embedding-8b-generic-evidence-lmstudio-q4.dev.json \
+  --out LOCAL_TEST_LOADOUT
 
 cargo run -p rag-builder --bin rag -- inspect --index INDEX
 uv run --extra analysis python -m livefire_rag_analysis inspect --index INDEX
 uv run --extra analysis python -m livefire_rag_analysis pca \
   --index INDEX --out REPORT_DIR
 uv run --extra analysis python -m livefire_rag_analysis evaluate \
-  --run RUN.jsonl --qrels QRELS.jsonl --out REPORT.json
+  --run RUN.jsonl --qrels QRELS.jsonl --out REPORT.json \
+  --planned-query-id q-1 --planned-query-id q-2
 ```
 
-`--sample-documents` bounds retained documents and embedding calls, but the
-current builder still scans and projects the typed snapshot before applying the
-deterministic document sample. Do not start the next full `livefire-ocsf` build
-until its qualified release snapshot is available. The provider lifecycle is
-implemented and tested directly; production SDK admission, strict verification,
-packaging, and a Wasmtime guest are intentionally deferred. The exact contracts,
+`--representative-sample` bounds retained documents and embedding calls per
+searchable relation, but still scans and projects the typed snapshot twice: the
+first pass selects documents and the second spills all occurrences for them.
+Do not start the next production `livefire-ocsf` build until its qualified
+release snapshot is available. The Rust provider is packaged as a content-closed
+SDK bundle and tested through the SDK lifecycle with a source-bound, explicitly
+local-test admission receipt. Returned candidates are OCSF hydration handoffs,
+not evidence: an authoritative OCSF host must hydrate and verify them before use.
+Production authority admission, a concrete Livefire desktop/server composition
+root, and a Wasmtime guest remain separate integration gates. The exact contracts,
 implemented status, and remaining gaps are in
 [`docs/rust-experimental-rag-spec.md`](docs/rust-experimental-rag-spec.md).
 

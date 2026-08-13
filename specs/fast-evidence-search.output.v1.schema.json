@@ -65,17 +65,7 @@
     {"properties": {"kind": {"const": "miss"}}, "required": ["miss"], "not": {"required": ["candidates"]}}
   ],
   "$defs": {
-    "evidence_ref": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["snapshot_sha256", "mapping_sha256", "event_id", "support_ref"],
-      "properties": {
-        "snapshot_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "mapping_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "event_id": {"type": "string", "minLength": 1},
-        "support_ref": {"type": "string", "minLength": 1}
-      }
-    },
+    "evidence_ref": {"$ref": "https://livefire.dev/rag/ocsf-hydration-ref.v1.schema.json"},
     "candidate": {
       "type": "object",
       "additionalProperties": false,

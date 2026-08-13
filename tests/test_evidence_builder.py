@@ -778,8 +778,10 @@ class EvidenceBuilderTests(unittest.TestCase):
                     "evidence_exhausted": True,
                     "evidence": [
                         {
-                            "snapshot_sha256": "b" * 64,
-                            "mapping_sha256": "c" * 64,
+                            "schema_version": "livefire.ocsf-hydration-ref/1",
+                            "snapshot": {"id": "test.snapshot", "version": "1", "sha256": "b" * 64},
+                            "mapping": {"id": "test.mapping", "version": "1", "sha256": "c" * 64},
+                            "relation": "ocsf_process_activity",
                             "event_id": "event-1",
                             "support_ref": "support:event-1",
                         }
@@ -811,6 +813,14 @@ class EvidenceBuilderTests(unittest.TestCase):
 
     def test_wheel_declares_all_generic_contract_and_policy_resources(self) -> None:
         configuration = tomllib.loads((REPOSITORY / "pyproject.toml").read_text(encoding="utf-8"))
+        project = configuration["project"]
+        self.assertEqual(project["license"], "Apache-2.0")
+        self.assertEqual(project["license-files"], ["LICENSE"])
+        self.assertIn("License :: OSI Approved :: Apache Software License", project["classifiers"])
+        self.assertEqual(
+            (REPOSITORY / "LICENSE").read_text(encoding="utf-8"),
+            (REPOSITORY.parent / "livefire" / "LICENSE").read_text(encoding="utf-8"),
+        )
         forced = configuration["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
         expected = {
             *GENERIC_EVIDENCE_SCHEMA_NAMES,
@@ -820,8 +830,12 @@ class EvidenceBuilderTests(unittest.TestCase):
             "evidence-pilot-sampling-policy.v1.json",
             "evidence-pilot-geometry-policy.v1.json",
             "typed-parquet-record-profile.v1.json",
+            "fast-vector-binary-profile.v1.json",
+            "fast-lexical-profile.v1.json",
+            "fast-occurrence-lookup-profile.v1.json",
         }
         self.assertEqual({Path(destination).name for destination in forced.values()}, expected)
+        self.assertIn("/LICENSE", configuration["tool"]["hatch"]["build"]["targets"]["sdist"]["include"])
         self.assertEqual(generic_schema_root(), REPOSITORY / "specs")
 
 

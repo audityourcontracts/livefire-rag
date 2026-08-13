@@ -1,7 +1,7 @@
 # Rust experimental RAG specification
 
-Status: implemented experimental vertical slice; representative-corpus and SDK
-admission work remain
+Status: implemented experimental vertical slice; representative-corpus build
+and production authority admission remain
 
 Scope: fast local RAG experimentation over `livefire-ocsf` snapshots
 
@@ -53,12 +53,13 @@ retriever does not win.
 The default build does not:
 
 - independently replay every parent or sampled source row;
-- mint an SDK admission receipt or authority signature;
+- mint a production SDK authority receipt or signature (the packaging flow may
+  mint an explicitly local-test receipt for conformance);
 - prove the native source record behind an OCSF event;
 - run JSON Schema validation over every output row;
 - derive metric, network, entity, and state-transition overlays;
 - build an ANN index before exact search is shown to be insufficient;
-- package a production-content-closed runtime;
+- claim the locally packaged native bundle is a production-admitted runtime;
 - depend on Livefire source, hunt fixtures, qrels, expected evidence, or
   scenario indicators.
 
@@ -211,6 +212,7 @@ index/
   occurrences.parquet
   vectors.f32
   lexical/index.json
+  occurrence-index.sqlite3
   build-report.json
 ```
 
@@ -238,49 +240,85 @@ The lexical directory is derived and replaceable. The initial native adapter
 may use Tantivy, but BM25 tokenization/profile identity and output semantics are
 RAG contracts. A portable postings implementation can replace it for WASI.
 
-The current builder streams Arrow batches and projects records without JSONL or
-DuckDB staging. It groups the retained documents and occurrences in memory,
-submits only missing embeddings through a persistent SQLite cache, and writes
-the complete Parquet, vector, lexical, manifest, and build-report files to a
-staging directory before an atomic rename. The enriched JSON build report is
-also printed to stdout. It does not replay the completed index through its
-parent.
+The current builder streams Arrow batches and projects records without DuckDB
+staging. Its first pass retains document identities and the bounded selected
+document set. A second pass writes every selected occurrence to a temporary
+JSONL spill, and the index writer consumes that spill in Parquet-sized chunks.
+Only missing embeddings are submitted through the persistent SQLite cache;
+vectors are read back and written one at a time rather than materialized as a
+matrix in builder memory. The writer stages and atomically publishes the bound
+Parquet, vector, lexical, occurrence-lookup, manifest, and build-report files.
+The enriched JSON build report is also printed to stdout. It does not replay
+the completed index through its parent.
 
-This is fast enough for the experiment loop but is not yet a bounded-memory
-full-corpus writer: the selected documents, occurrences, and vectors are held
-in memory during build. Query open is metadata-scale and lazy. The first query
-materializes documents and the JSON lexical index, dense scoring streams vector
-rows, and filtered/result occurrence reads stream Parquet. A compact portable
-postings index and stronger bounded-memory build are explicit scale and WASI
-gaps.
+Representative-build memory is proportional to the distinct-document census,
+the selected documents, and lexical state, not occurrence fan-out or the vector
+matrix. Full-build memory still grows with the searchable document set and the
+initial JSON lexical index. Query open is metadata-scale and lazy. A compact
+portable postings index remains an explicit scale and WASI gap.
 
 ## 7. Commands
 
 ```text
 rag build --snapshot SNAPSHOT --out INDEX \
   --embedding-endpoint http://127.0.0.1:1234 \
-  --embedding-profile PROFILE [--sample-documents 20000]
+  --embedding-profile PROFILE [--representative-sample]
 
 rag query --index INDEX --mode dense|lexical|fused --query TEXT
+rag batch-query --index INDEX --requests QUERIES.jsonl > RESULTS.jsonl
 rag inspect --index INDEX
 
 python -m livefire_rag_analysis inspect --index INDEX
-python -m livefire_rag_analysis evaluate --run RUN [--qrels QRELS] [--out REPORT]
+python -m livefire_rag_analysis evaluate --run RUN [--qrels QRELS] \
+  [--planned-query-id ID ...] [--out REPORT]
 python -m livefire_rag_analysis pca --index INDEX --out REPORT_DIR
 
 rag-provider  # JSONL requests on stdin, responses on stdout
+
+rag-package-tool --provider PROVIDER --sdk-specs SDK_SPECS --out BUNDLE
+
+rag-prepare-local-tool --index INDEX --bundle BUNDLE \
+  --source-receipt SNAPSHOT/build-receipt.json \
+  --embedding-profile PROFILE --out LOADOUT
 ```
 
+When a frozen experiment can legitimately return no hits, pass every planned
+query ID to the evaluator. Missing ranking rows then remain explicit zero-score
+queries instead of disappearing from macro metrics.
+
+The package command emits a content-closed SDK plugin bundle. The loadout
+command verifies and wraps the physical index in an SDK index manifest, binds
+the exact snapshot and mapping-pack components from its admitted build receipt,
+and emits a local-test admission receipt, tool-binding lock, four declared
+read-only mount bindings, and a provider transcript. OS immutability is enforced
+externally. This local receipt is deliberately not a production
+authority claim. The packaged provider returns only
+`livefire.ocsf-hydration-ref/1` candidate handoffs; semantic previews and raw
+source records are excluded. A returned event becomes evidence only after an
+authoritative OCSF hydration operation resolves and verifies its snapshot,
+mapping, event ID, and support reference.
+
 Sampling is deterministic and scenario-blind. The current
-`--sample-documents` policy keeps the globally smallest snapshot-bound hash-min
-document IDs and retains every occurrence for each surviving document. Empty or
-structured-only relations cannot consume quota, and the report records the
-selected relation composition so stratification can be evaluated later. It never
-reads semantic values, queries, qrels, incident labels, or known indicators for
-selection. `index.json` records `build_scope: "sample"` and `complete: false`.
-The builder still scans and projects the complete typed snapshot before
-selection, so sampling bounds retained state and embedding work but not source
-scan time. A richer stratified sample manifest remains future work.
+`--representative-sample` policy discovers every searchable typed relation,
+declares a census at or below 1,000 documents, and applies a 2,000-document
+snapshot-bound hash-min cap above that threshold. Because the cap exceeds the
+census threshold, relations with 1,001 through 2,000 documents are also fully
+retained; only larger relations are reduced. The report records both the
+declared threshold/cap and this effective full-retention boundary.
+The report explicitly records the source-document census, per-relation budget,
+selected composition, and policy identity. It also reconciles source rows by
+relation and terminally accounts for non-searchable metric rows as
+structured-only observations. Its separate semantic-source coverage flag is
+false for every representative build and for a full searchable build whenever
+structured-only source rows exist; physical index completeness is not a claim
+that all source rows are searchable. Empty and structured-only relations cannot
+consume quota. Selection never reads semantic values, queries, qrels, incident
+labels, or known indicators. `index.json` records
+`build_scope: "sample"` and `complete: false`. The builder scans and projects
+the typed snapshot once to select documents and a second time to spill every
+occurrence for the final selection, bounding retained memory without weakening
+membership closure. Sampling therefore bounds embedding and retained state but
+not source scan time.
 
 Python index open validates the closed manifest shape, required files, vector
 header/profile/dimension/count, Parquet row counts, contiguous vector ordinals,
@@ -288,8 +326,10 @@ document-order digest, and vector finiteness/normalization. The Rust reader
 performs metadata checks at open and initializes query data lazily, then checks
 document/vector ordinals, lexical membership, occurrence counts and exact
 snapshot/mapping bindings before returning a hit. It rechecks canonical path
-containment at lazy reads. Multi-gigabyte source-object rehashing and a reusable
-host admission receipt remain future operator actions.
+containment at lazy reads. The OCSF adapter streams and rehashes each typed
+Parquet object against its admitted receipt immediately before every scan; the
+SDK wrapper and provider likewise stream-check every index artifact. Production
+authority admission remains a host action.
 
 ## 8. Embedding scheduler and measured LM Studio behavior
 
@@ -416,24 +456,34 @@ anomaly statistic. An embedding-space outlier is not called malicious.
    backpressure queue. Representative-corpus throughput still needs measurement.
 5. **Implemented — retrieval.** Exact streamed dense scoring, BM25, relation/time
    filters, deterministic ordering, and bound reciprocal-rank fusion exist.
-6. **Implemented directly, SDK admission pending — provider.** The native
-   executable implements handshake/open/call/health/close and subprocess tests.
+6. **Implemented and SDK-tested locally — provider.** The native executable
+   implements handshake/open/call/health/close. A content-closed plugin bundle,
+   SDK index wrapper, exact binding lock, four declared read-only mount
+   bindings, and an
+   explicitly local-test admission receipt are generated and validated through
+   the adjacent SDK harness.
    Search output is always non-definitive partial candidate coverage: even a
    physically complete full-scan index excludes structured-only observations
    from semantic retrieval, and every returned occurrence requires hydration.
-   Its component digests are development placeholders, and no production host
-   admission is claimed. The direct executable trusts the operator to provide
-   an OS-enforced immutable index mount for the session. Open file handles stop
-   path/symlink replacement but cannot stop a separately writable process from
-   changing the same inode; mutation resistance is therefore a production host
-   admission/sandbox gate, not a property of this local harness.
+   Its provider, descriptor, schema, profile, and physical-index identities are
+   content-bound; no production authority admission is claimed. The direct
+   executable trusts the operator to provide
+   an OS-enforced immutable index mount for the session. The provider retains an
+   open vector-file handle, while documents and the occurrence SQLite lookup are
+   opened lazily by path. Local digest and association checks cannot prevent
+   path replacement or in-place mutation by a writable peer; OS immutability is
+   therefore enforced externally as a production host admission/sandbox gate,
+   not provided by this local harness.
 7. **Implemented — analysis package.** Python strictly reads the Rust manifest,
    Parquet, and vector header; it provides run evaluation and PCA PNG/report.
 8. **Blocked on upstream qualification — settled OCSF adapter.** Update only
    `rag-ocsf` for the final release manifest, then run a representative corpus
    and the frozen blinded quality suite.
-9. **Deferred — strict assurance.** Port or wrap verification and packaging only
-   after the experiment demonstrates retrieval value.
+9. **Partly implemented — strict assurance.** Bundle closure, exact physical
+   artifact digests, SDK schema validation, local-test binding, output schema,
+   and synthetic hydration-reference closure are automated. Production signing,
+   host sandbox admission, and an authoritative released-snapshot hydration run
+   remain operator/integration gates.
 10. **Deferred — portability.** Replace native filesystem/HTTP/lexical details
     where necessary and add a WASI provider. Query embedding should become a
     host capability rather than guest network access.
@@ -497,7 +547,7 @@ calculation but cannot satisfy them:
 | Cached representative build completes in minutes | Pending representative snapshot measurement |
 | Projection/materialization is at least 10x the measured Python path | Pending identical-input benchmark |
 | Default build avoids JSONL staging, Python `executemany`, parent replay, and full verification | Achieved by the Rust vertical slice |
-| Provider direct JSONL lifecycle and pointer/miss schema validation | Achieved; production SDK host admission remains pending |
+| Provider SDK bundle/lifecycle and pointer/miss schema validation | Achieved with explicit local-test admission; production authority admission remains pending |
 | Python evaluation/PCA reads Parquet and `vectors.f32` without builder imports | Achieved by focused tests and the real smoke |
 
 ## 14. Open decisions

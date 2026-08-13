@@ -105,10 +105,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         "output_logical_sha256": snapshot_sha256,
         "runnable_snapshot": {
-            "component":{"sha256":snapshot_sha256},
+            "component":{"id":"com.ayc.livefire-ocsf.synthetic-smoke-snapshot","version":"1","sha256":snapshot_sha256},
             "dataset_sha256":"a".repeat(64),
-            "mapping_pack":{"sha256":mapping_sha256},
-            "relation_contract":{"sha256":"e".repeat(64)},
+            "mapping_pack":{"id":"com.ayc.livefire-ocsf.synthetic-mapping-pack","version":"1","sha256":mapping_sha256},
+            "relation_contract":{"id":"com.ayc.livefire-ocsf.synthetic-relation-contract","version":"1","sha256":"e".repeat(64)},
             "normalized_events":events.len(),
             "source_rows":events.len()
         },

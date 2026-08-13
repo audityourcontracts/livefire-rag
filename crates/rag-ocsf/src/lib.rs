@@ -8,6 +8,7 @@
 use std::{
     collections::BTreeSet,
     fs::File,
+    io::Read,
     path::{Component, Path, PathBuf},
 };
 
@@ -18,6 +19,7 @@ use parquet::{
 };
 use rag_contracts::Sha256;
 use serde::Deserialize;
+use sha2::{Digest, Sha256 as Sha256Hasher};
 use thiserror::Error;
 
 const RECEIPT_FILE: &str = "build-receipt.json";
@@ -36,8 +38,12 @@ const REQUIRED_CORE_RELATIONS: [&str; 7] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OcsfSnapshot {
     pub schema_version: u8,
+    pub snapshot_id: String,
+    pub snapshot_version: String,
     pub snapshot_sha256: Sha256,
     pub dataset_sha256: Sha256,
+    pub mapping_id: String,
+    pub mapping_version: String,
     pub mapping_sha256: Sha256,
     pub ocsf_schema_sha256: Sha256,
     pub extension_pack_sha256: Sha256,
@@ -143,9 +149,12 @@ impl LocalSnapshotReader {
         let extension_pack_sha256 = Sha256::new(manifest.extension_pack_sha256)?;
         let relation_contract_sha256 = Sha256::new(manifest.relation_contract_sha256)?;
         let output_logical_sha256 = Sha256::new(output_logical_sha256)?;
-        let runnable_snapshot_sha256 = Sha256::new(runnable_snapshot.component.sha256)?;
+        validate_component(&runnable_snapshot.component)?;
+        validate_component(&runnable_snapshot.mapping_pack)?;
+        validate_component(&runnable_snapshot.relation_contract)?;
+        let runnable_snapshot_sha256 = Sha256::new(runnable_snapshot.component.sha256.clone())?;
         let runnable_dataset_sha256 = Sha256::new(runnable_snapshot.dataset_sha256)?;
-        let runnable_mapping_sha256 = Sha256::new(runnable_snapshot.mapping_pack.sha256)?;
+        let runnable_mapping_sha256 = Sha256::new(runnable_snapshot.mapping_pack.sha256.clone())?;
         let runnable_relation_sha256 = Sha256::new(runnable_snapshot.relation_contract.sha256)?;
         let completeness_snapshot_sha256 =
             Sha256::new(completeness_receipt.normalized_snapshot_sha256)?;
@@ -235,8 +244,12 @@ impl LocalSnapshotReader {
             root,
             identity: OcsfSnapshot {
                 schema_version: manifest.schema_version,
+                snapshot_id: runnable_snapshot.component.id,
+                snapshot_version: runnable_snapshot.component.version,
                 snapshot_sha256,
                 dataset_sha256,
+                mapping_id: runnable_snapshot.mapping_pack.id,
+                mapping_version: runnable_snapshot.mapping_pack.version,
                 mapping_sha256,
                 ocsf_schema_sha256,
                 extension_pack_sha256,
@@ -265,11 +278,29 @@ impl SnapshotReader for LocalSnapshotReader {
             return Err(OcsfError::RelationBinding(relation.name.clone()));
         }
         let path = resolve_beneath(&self.root, &admitted.path)?;
+        verify_object_digest(&path, &admitted.object_sha256)?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?
             .with_batch_size(self.batch_size)
             .build()?;
         Ok(Box::new(reader.map(|batch| batch.map_err(OcsfError::from))))
     }
+}
+
+fn verify_object_digest(path: &Path, expected: &Sha256) -> Result<(), OcsfError> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256Hasher::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if format!("{:x}", hasher.finalize()) != expected.as_str() {
+        return Err(OcsfError::ObjectDigest(path.display().to_string()));
+    }
+    Ok(())
 }
 
 fn safe_relative_path(value: &str) -> Result<PathBuf, OcsfError> {
@@ -376,7 +407,18 @@ struct BuildReceiptView {
 
 #[derive(Debug, Deserialize)]
 struct ComponentView {
+    id: String,
+    version: String,
     sha256: String,
+}
+
+fn validate_component(component: &ComponentView) -> Result<(), OcsfError> {
+    if component.id.is_empty() || component.version.is_empty() {
+        return Err(OcsfError::InvalidReceipt(
+            "component identity is incomplete",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -485,6 +527,8 @@ pub enum OcsfError {
     UnknownRelation(String),
     #[error("relation {0:?} does not match its admitted identity")]
     RelationBinding(String),
+    #[error("snapshot object digest differs from the admitted receipt: {0}")]
+    ObjectDigest(String),
 }
 
 #[cfg(test)]
