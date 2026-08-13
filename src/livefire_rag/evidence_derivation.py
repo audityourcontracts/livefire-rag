@@ -803,7 +803,8 @@ def _insert_fixture_rows(
         if relation is None and isinstance(row.get("relation_identity"), Mapping):
             relation = row["relation_identity"].get("relation")
         occurrence_values.append((event_id, row.get("occurrence_id"), relation))
-    connection.executemany("INSERT INTO base_occurrences VALUES (?, ?, ?)", occurrence_values)
+    if occurrence_values:
+        connection.executemany("INSERT INTO base_occurrences VALUES (?, ?, ?)", occurrence_values)
     typed_values = []
     for relation in sorted(typed_rows):
         for row in typed_rows[relation]:
@@ -815,17 +816,17 @@ def _insert_fixture_rows(
                     payload if isinstance(payload, str) else canonical_json_bytes(payload).decode(),
                 )
             )
-    connection.executemany("INSERT INTO typed_events VALUES (?, ?, ?)", typed_values)
-    connection.executemany(
-        "INSERT INTO participants VALUES (?, ?, ?, ?)",
-        [
-            (row.get("event_id"), row.get("entity_id"), row.get("role"), row.get("support_ref"))
-            for row in participants
-        ],
-    )
-    connection.executemany(
-        "INSERT INTO entities VALUES (?, ?, ?, ?, ?)",
-        [
+    if typed_values:
+        connection.executemany("INSERT INTO typed_events VALUES (?, ?, ?)", typed_values)
+    participant_values = [
+        (row.get("event_id"), row.get("entity_id"), row.get("role"), row.get("support_ref"))
+        for row in participants
+    ]
+    if participant_values:
+        connection.executemany(
+            "INSERT INTO participants VALUES (?, ?, ?, ?)", participant_values
+        )
+    entity_values = [
             (
                 row.get("entity_id"),
                 row.get("kind"),
@@ -834,11 +835,12 @@ def _insert_fixture_rows(
                 row.get("support_ref"),
             )
             for row in entities
-        ],
-    )
-    connection.executemany(
-        "INSERT INTO relationships VALUES (?, ?, ?, ?, ?, ?)",
-        [
+        ]
+    if entity_values:
+        connection.executemany(
+            "INSERT INTO entities VALUES (?, ?, ?, ?, ?)", entity_values
+        )
+    relationship_values = [
             (
                 row.get("relationship_id"),
                 row.get("kind"),
@@ -848,8 +850,11 @@ def _insert_fixture_rows(
                 row.get("support_ref"),
             )
             for row in relationships
-        ],
-    )
+        ]
+    if relationship_values:
+        connection.executemany(
+            "INSERT INTO relationships VALUES (?, ?, ?, ?, ?, ?)", relationship_values
+        )
 
 
 def _prepare_views(connection: Any) -> None:

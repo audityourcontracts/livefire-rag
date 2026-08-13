@@ -129,17 +129,24 @@ def _canonical_lines(path: Path) -> Iterator[tuple[str, dict[str, Any]]]:
             yield raw[:-1].decode("utf-8"), value
 
 
-def _omit_null_object_fields(value: Any) -> Any:
-    """Reconstruct absent optional JSON properties from nullable Parquet fields."""
+def _omit_null_object_fields(value: Any, *, preserve_json_nulls: bool = False) -> Any:
+    """Omit nullable STRUCT fields while preserving nulls inside JSON values."""
 
     if isinstance(value, dict):
-        return {
-            key: _omit_null_object_fields(child)
-            for key, child in value.items()
-            if child is not None
-        }
+        result = {}
+        for key, child in value.items():
+            child_is_json = preserve_json_nulls or key == "aggregate_material"
+            if child is None and not child_is_json:
+                continue
+            result[key] = _omit_null_object_fields(
+                child, preserve_json_nulls=child_is_json
+            )
+        return result
     if isinstance(value, list):
-        return [_omit_null_object_fields(child) for child in value]
+        return [
+            _omit_null_object_fields(child, preserve_json_nulls=preserve_json_nulls)
+            for child in value
+        ]
     return value
 
 
@@ -493,42 +500,105 @@ def loopback_embedder(endpoint: str, model: str, *, timeout_seconds: float = 300
     return _LoopbackEmbedder(endpoint, model, timeout_seconds)
 
 
-def _materialize_logical_table(connection: Any, envelope: str, logical: str) -> None:
-    """Reconstruct typed logical rows from their canonical JSON payloads."""
+_COMPONENT_STRUCTURE = {
+    "id": "VARCHAR", "version": "VARCHAR", "sha256": "VARCHAR", "uri": "VARCHAR",
+}
+_RELATION_STRUCTURE = {
+    "namespace": "VARCHAR", "relation": "VARCHAR", "schema_version": "VARCHAR",
+    "ocsf_category_uid": "UBIGINT", "ocsf_category_name": "VARCHAR",
+    "ocsf_class_uid": "UBIGINT", "ocsf_class_name": "VARCHAR",
+    "ocsf_activity_id": "UBIGINT", "ocsf_activity_name": "VARCHAR",
+}
+_FACET_STRUCTURE = {"name": "VARCHAR", "values": ["VARCHAR"]}
+_EXACT_ATTRIBUTE_STRUCTURE = {
+    "namespace": "VARCHAR", "path": "VARCHAR", "value": "JSON",
+}
+_LOGICAL_STRUCTURES: dict[str, dict[str, Any]] = {
+    "canonical_documents": {
+        "schema_version": "VARCHAR", "document_id": "VARCHAR",
+        "document_sha256": "VARCHAR", "document_kind": "VARCHAR",
+        "representation": "VARCHAR", "searchable": "BOOLEAN",
+        "projection_policy": _COMPONENT_STRUCTURE,
+        "derivation_policy": _COMPONENT_STRUCTURE,
+        "relation_identities": [_RELATION_STRUCTURE],
+        "time_range": {"start": "VARCHAR", "end_exclusive": "VARCHAR"},
+        "semantic_projection": {"text": "VARCHAR", "facets": [_FACET_STRUCTURE]},
+        "semantic_group": {"group_id": "VARCHAR", "group_key_sha256": "VARCHAR"},
+        "occurrence_count": "UBIGINT", "exact_attributes": [_EXACT_ATTRIBUTE_STRUCTURE],
+    },
+    "canonical_occurrences": {
+        "schema_version": "VARCHAR", "occurrence_id": "VARCHAR", "event_time": "VARCHAR",
+        "relation_identity": _RELATION_STRUCTURE,
+        "source_pointer": {
+            "schema_version": "VARCHAR", "snapshot": _COMPONENT_STRUCTURE,
+            "snapshot_profile": _COMPONENT_STRUCTURE, "record_id": "VARCHAR",
+            "record_sha256": "VARCHAR",
+            "locator": {
+                "kind": "VARCHAR", "object_sha256": "VARCHAR", "relation": "VARCHAR",
+                "row_group": "UBIGINT", "row_ordinal": "UBIGINT",
+                "line_ordinal": "UBIGINT", "key_sha256": "VARCHAR",
+            },
+            "support_refs": ["VARCHAR"], "native_locator_sha256": "VARCHAR",
+        },
+        "projection_policy": _COMPONENT_STRUCTURE, "terminal_disposition": "VARCHAR",
+        "document_ids": ["VARCHAR"], "semantic_group_id": "VARCHAR",
+        "reason_codes": ["VARCHAR"], "exact_attributes": [_EXACT_ATTRIBUTE_STRUCTURE],
+        "exact_attribute_projection": {
+            "contract": "VARCHAR", "selected_count": "UBIGINT",
+            "scalars_scanned": "UBIGINT", "known_omitted_scalar_count": "UBIGINT",
+            "omitted_subtree_count": "UBIGINT",
+            "omission_counts": [{"reason": "VARCHAR", "count": "UBIGINT"}],
+            "scan_truncated": "BOOLEAN", "source_hydration_required": "BOOLEAN",
+            "limits": {
+                "max_attributes": "UBIGINT", "max_scalars_scanned": "UBIGINT",
+                "max_list_items": "UBIGINT", "max_string_utf8_bytes": "UBIGINT",
+                "max_path_chars": "UBIGINT",
+            },
+        },
+    },
+    "canonical_derivation_documents": {
+        "schema_version": "VARCHAR", "document_id": "VARCHAR",
+        "document_sha256": "VARCHAR", "document_kind": "VARCHAR",
+        "representation": "VARCHAR", "searchable": "BOOLEAN",
+        "source_snapshot": _COMPONENT_STRUCTURE, "base_projection_pack": _COMPONENT_STRUCTURE,
+        "derivation_policy": _COMPONENT_STRUCTURE,
+        "relation_identities": [_RELATION_STRUCTURE],
+        "time_range": {"start": "VARCHAR", "end": "VARCHAR", "bounds": "VARCHAR"},
+        "semantic_projection": {"text": "VARCHAR", "facets": [_FACET_STRUCTURE]},
+        "derivation": {
+            "group_sha256": "VARCHAR", "input_count": "UBIGINT",
+            "input_set_sha256": "VARCHAR", "closure_state": "VARCHAR",
+            "completeness_state": "VARCHAR", "aggregate_material": "JSON",
+        },
+        "occurrence_count": "UBIGINT",
+    },
+    "canonical_derivation_memberships": {
+        "schema_version": "VARCHAR", "membership_id": "VARCHAR",
+        "membership_sha256": "VARCHAR", "derived_document_id": "VARCHAR",
+        "occurrence_id": "VARCHAR", "input_role": "VARCHAR", "entity_id": "VARCHAR",
+        "derivation_policy": _COMPONENT_STRUCTURE,
+    },
+}
 
-    structure = connection.execute(
-        f"SELECT json_group_structure(json(payload_json)) FROM {envelope}"
-    ).fetchone()[0]
-    if structure is None:
-        if logical == "canonical_derivation_documents":
-            connection.execute(
-                "CREATE TABLE canonical_derivation_documents("
-                "schema_version VARCHAR, document_id VARCHAR, document_sha256 VARCHAR, "
-                "document_kind VARCHAR, representation VARCHAR, searchable BOOLEAN, "
-                "source_snapshot STRUCT(id VARCHAR, version VARCHAR, sha256 VARCHAR, uri VARCHAR), "
-                "base_projection_pack STRUCT(id VARCHAR, version VARCHAR, sha256 VARCHAR, uri VARCHAR), "
-                "derivation_policy STRUCT(id VARCHAR, version VARCHAR, sha256 VARCHAR, uri VARCHAR), "
-                "relation_identities STRUCT(namespace VARCHAR, relation VARCHAR, ocsf_category_uid BIGINT, "
-                "ocsf_class_uid BIGINT, ocsf_activity_id BIGINT)[], "
-                "time_range STRUCT(start VARCHAR, end VARCHAR, bounds VARCHAR), "
-                "semantic_projection STRUCT(text VARCHAR, facets STRUCT(name VARCHAR, values VARCHAR[])[]), "
-                "derivation STRUCT(group_sha256 VARCHAR, input_count BIGINT, input_set_sha256 VARCHAR, "
-                "closure_state VARCHAR, completeness_state VARCHAR, aggregate_material JSON), "
-                "occurrence_count BIGINT)"
-            )
-            return
-        if logical == "canonical_derivation_memberships":
-            connection.execute(
-                "CREATE TABLE canonical_derivation_memberships("
-                "schema_version VARCHAR, membership_id VARCHAR, membership_sha256 VARCHAR, "
-                "derived_document_id VARCHAR, occurrence_id VARCHAR, input_role VARCHAR, "
-                "derivation_policy STRUCT(id VARCHAR, version VARCHAR, sha256 VARCHAR, uri VARCHAR))"
-            )
-            return
-        raise EvidenceIndexError(f"cannot infer an empty logical {logical} table")
+
+def _materialize_logical_table(connection: Any, envelope: str, logical: str) -> None:
+    """Reconstruct typed logical rows without corpus-sized schema aggregation."""
+
+    row_count = connection.execute(f"SELECT count(*) FROM {envelope}").fetchone()[0]
+    if row_count == 0:
+        if logical not in {
+            "canonical_derivation_documents", "canonical_derivation_memberships"
+        }:
+            raise EvidenceIndexError(f"cannot materialize an empty logical {logical} table")
+    structure = json.dumps(_LOGICAL_STRUCTURES[logical], separators=(",", ":"))
+    source = (
+        f"SELECT json_transform(json(payload_json), ?) AS row_value FROM {envelope}"
+        if row_count
+        else "SELECT json_transform(json('{}'), ?) AS row_value"
+    )
     connection.execute(
-        f"CREATE TABLE {logical} AS SELECT row_value.* FROM ("
-        f"SELECT json_transform(json(payload_json), ?) AS row_value FROM {envelope})",
+        f"CREATE TABLE {logical} AS SELECT row_value.* FROM ({source})"
+        + (" WHERE FALSE" if not row_count else ""),
         [structure],
     )
 
@@ -1640,7 +1710,7 @@ class EvidenceIndex:
             ).fetchone()
             if document_payload is None:
                 raise EvidenceIndexCorrupt("ranked document is absent")
-            document = json.loads(document_payload[0])
+            document = _omit_null_object_fields(json.loads(document_payload[0]))
             occurrence_rows = self.connection.execute(
                 "SELECT to_json(o) FROM evidence_search_eligible_occurrences o "
                 "WHERE o.document_id=? ORDER BY o.occurrence_id LIMIT ?",
@@ -1652,7 +1722,7 @@ class EvidenceIndex:
             ).fetchone()[0]
             source_occurrences = []
             for (payload,) in occurrence_rows:
-                occurrence = json.loads(payload)
+                occurrence = _omit_null_object_fields(json.loads(payload))
                 item = {
                     "occurrence_id": occurrence["occurrence_id"],
                     "relation_identity": occurrence["relation_identity"],

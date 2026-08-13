@@ -20,7 +20,7 @@ from .canonical import (
     sha256_file,
     write_canonical_json,
 )
-from .evidence_index import EvidenceIndex
+from .evidence_index import EvidenceIndex, _omit_null_object_fields
 from .evidence_service import EvidenceService
 
 
@@ -170,7 +170,7 @@ def _validate_pointer_closure(
                     raise EvidencePilotEvaluationError(
                         f"returned occurrence is absent from index: {occurrence_id}"
                     )
-                occurrence = json.loads(row[0])
+                occurrence = _omit_null_object_fields(json.loads(row[0]))
                 cache[occurrence_id] = occurrence
             if (
                 candidate["document_id"] not in occurrence["document_ids"]
