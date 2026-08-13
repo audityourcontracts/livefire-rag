@@ -35,6 +35,8 @@ GENERIC_EVIDENCE_SCHEMA_NAMES = (
     "evidence-projection-pack.v1.schema.json",
     "evidence-search.input.v1.schema.json",
     "evidence-search.output.v1.schema.json",
+    "fast-evidence-search.input.v1.schema.json",
+    "fast-evidence-search.output.v1.schema.json",
 )
 
 

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/fast-evidence-search.input.v1.schema.json",
+  "title": "Fast experimental evidence search input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "query", "mode", "top_n"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.fast-search.input/1"},
+    "query": {"type": "string", "minLength": 1, "maxLength": 8192},
+    "mode": {"enum": ["dense", "lexical", "fused"]},
+    "top_n": {"type": "integer", "minimum": 1, "maximum": 100},
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "relations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "time_start_ms": {"type": "integer", "minimum": 0},
+        "time_end_ms": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

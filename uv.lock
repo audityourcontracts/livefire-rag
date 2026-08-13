@@ -90,6 +90,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+analysis = [
+    { name = "duckdb" },
+]
 prototype = [
     { name = "duckdb" },
     { name = "pytz" },
@@ -97,13 +100,14 @@ prototype = [
 
 [package.metadata]
 requires-dist = [
+    { name = "duckdb", marker = "extra == 'analysis'", specifier = ">=1.4,<2" },
     { name = "duckdb", marker = "extra == 'prototype'", specifier = ">=1.4,<2" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "numpy", specifier = ">=2.1,<3" },
     { name = "pytz", marker = "extra == 'prototype'", specifier = ">=2025.2,<2027" },
     { name = "rfc8785", specifier = ">=0.1.4,<0.2" },
 ]
-provides-extras = ["prototype", "test"]
+provides-extras = ["prototype", "analysis", "test"]
 
 [[package]]
 name = "numpy"

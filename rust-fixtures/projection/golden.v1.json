@@ -1,0 +1,83 @@
+{
+  "schema_version": "livefire.rag.projection-golden/1",
+  "cases": [
+    {
+      "name": "process activity",
+      "relation_name": "ocsf_process_activity",
+      "event_id": "evt-1",
+      "support_ref": "support:1",
+      "typed_event": {
+        "activity_name": "Launch",
+        "class_uid": 1007,
+        "category_uid": 1,
+        "time": 1710000000000,
+        "actor": {"user": {"name": "alice@example.com"}},
+        "process": {"name": "powershell.exe", "cmd_line": "powershell -enc AAA", "pid": 123},
+        "status": "Success",
+        "src_endpoint": {"ip": "10.1.2.3", "port": 54321}
+      },
+      "expected": {
+        "document_kind": "activity",
+        "semantic_group_sha256": "1d65fd0fc57999c791ac480720f86327f93209a65557603cf1d35304aec3289c",
+        "semantic_text": "kind: activity | relation: ocsf_process_activity | outcome: status=Success | action: activity_name=Launch | target: process.cmd_line=powershell -enc AAA; process.name=powershell.exe | context: category_uid=1; class_uid=1007; src_endpoint.ip=<redacted:ip-address>; src_endpoint.port=<port:dynamic>",
+        "event_time": "2024-03-09T16:00:00.000Z",
+        "terminal_disposition": "direct_semantic_document"
+      }
+    },
+    {
+      "name": "inventory state",
+      "relation_name": "ocsf_inventory_info",
+      "event_id": "evt-2",
+      "support_ref": "support:2",
+      "typed_event": {
+        "activity_name": "Inventory",
+        "class_uid": 5001,
+        "time": "2026-01-01T00:00:00Z",
+        "device": {"hostname": "server-01", "os": {"name": "Linux", "version": "6.8"}},
+        "status": "Current"
+      },
+      "expected": {
+        "document_kind": "state",
+        "semantic_group_sha256": "d6f8e92c2d4cc08dbae4ae2d60736f628b4517fcee008a78faf2cef0da6782d5",
+        "semantic_text": "kind: state | relation: ocsf_inventory_info | outcome: status=Current | action: activity_name=Inventory | target: device.hostname=<redacted:hostname>; device.os.version=6.8 | context: class_uid=5001",
+        "event_time": "2026-01-01T00:00:00Z",
+        "terminal_disposition": "direct_semantic_document"
+      }
+    },
+    {
+      "name": "detection finding",
+      "relation_name": "ocsf_detection_finding",
+      "event_id": "evt-3",
+      "support_ref": "support:3",
+      "typed_event": {
+        "activity_name": "Create",
+        "class_uid": 2004,
+        "time": 1710000000,
+        "finding": {"title": "Suspicious process", "severity": "High"},
+        "status": "Open",
+        "message": "Bearer abcDEF0123456789 token=verysecret 10.2.3.4 alice@example.com"
+      },
+      "expected": {
+        "document_kind": "detection",
+        "semantic_group_sha256": "59b3e26aa6250b39b9f28eb896b4da09d2af35376cb0b8ee1b351860469229dd",
+        "semantic_text": "kind: detection | relation: ocsf_detection_finding | outcome: finding.severity=High; finding.title=Suspicious process; status=Open | action: activity_name=Create | context: message=Bearer <redacted:secret> token=<redacted:secret> <redacted:ip-address> <redacted:email-address>; class_uid=2004",
+        "event_time": "2024-03-09T16:00:00.000Z",
+        "terminal_disposition": "direct_semantic_document"
+      }
+    },
+    {
+      "name": "metric awaits derivation",
+      "relation_name": "ocsf_ext_livefire_system_metric",
+      "event_id": "evt-4",
+      "support_ref": "support:4",
+      "typed_event": {"time": 1710000000, "metric": {"name": "cpu", "value": 92.3}, "host": {"name": "db-1"}},
+      "expected": {
+        "document_kind": "structured_only",
+        "semantic_group_sha256": "02db9a192322ffec789a1fb930bad58c3986e722a6ae4908ab2bf138909934da",
+        "semantic_text": null,
+        "event_time": "2024-03-09T16:00:00.000Z",
+        "terminal_disposition": "structured_only_occurrence"
+      }
+    }
+  ]
+}

@@ -39,6 +39,10 @@
   prior-comparison explanation.
 - `cli-candidates.output.v1`: ranked candidate pointers for outlier, search, and
   similarity tools.
+- `fast-evidence-search.input.v1` and `fast-evidence-search.output.v1`:
+  development contract for dense/lexical/fused queries over the Rust fast
+  index. Results contain only snapshot/mapping-bound OCSF event references;
+  indexed exact attributes are not tool evidence and are not returned.
 - `livefire.plugin.example`: native provider/builder packaging example for the
   SDK capability host.
 

@@ -723,6 +723,92 @@ class EvidenceBuilderTests(unittest.TestCase):
         self.assertNotIn("evidence-qrel-row.v1.schema.json", schemas)
         self.assertNotIn("evidence-benchmark-run.v1.schema.json", schemas)
 
+    def test_fast_provider_input_and_pointer_miss_outputs_validate_offline(self) -> None:
+        from jsonschema import Draft202012Validator, ValidationError
+
+        registry, schemas = _offline_registry(REPOSITORY / "specs", SDK_SPECS)
+        input_validator = Draft202012Validator(
+            schemas["fast-evidence-search.input.v1.schema.json"], registry=registry
+        )
+        output_validator = Draft202012Validator(
+            schemas["fast-evidence-search.output.v1.schema.json"], registry=registry
+        )
+        input_validator.validate(
+            {
+                "schema_version": "livefire.rag.fast-search.input/1",
+                "query": "encoded PowerShell command",
+                "mode": "fused",
+                "top_n": 20,
+                "filters": {"relations": ["ocsf_process_activity"]},
+            }
+        )
+        component = {"id": "test.index", "version": "1", "sha256": "a" * 64}
+        common = {
+            "schema_version": "livefire.rag.fast-search.output/1",
+            "tool": "evidence.search",
+            "index": component,
+            "source_snapshots": [
+                {"id": "test.snapshot", "version": "1", "sha256": "b" * 64}
+            ],
+            "query": "encoded PowerShell command",
+            "coverage": {
+                "status": "complete",
+                "indexed_documents": 6,
+                "definitive": False,
+                "reason_codes": [
+                    "candidate_occurrences_require_authoritative_hydration"
+                ],
+            },
+        }
+        pointer = {
+            **common,
+            "kind": "pointer",
+            "selection": {
+                "requested_top_n": 20,
+                "returned_count": 1,
+                "deterministic": True,
+                "tie_break": "score_desc_document_id_asc",
+            },
+            "candidates": [
+                {
+                    "rank": 1,
+                    "document_id": "sha256:document",
+                    "scores": {"retrieval": 0.8, "dense": 0.8, "lexical": None},
+                    "eligible_evidence_count": 1,
+                    "evidence_exhausted": True,
+                    "evidence": [
+                        {
+                            "snapshot_sha256": "b" * 64,
+                            "mapping_sha256": "c" * 64,
+                            "event_id": "event-1",
+                            "support_ref": "support:event-1",
+                        }
+                    ],
+                }
+            ],
+        }
+        output_validator.validate(pointer)
+        output_validator.validate(
+            {
+                **common,
+                "kind": "miss",
+                "selection": {
+                    "requested_top_n": 20,
+                    "returned_count": 0,
+                    "deterministic": True,
+                    "tie_break": "score_desc_document_id_asc",
+                },
+                "miss": {
+                    "reason": "no_ranked_candidates",
+                    "message": "No indexed semantic document matched the query.",
+                },
+            }
+        )
+        broken = json.loads(json.dumps(pointer))
+        del broken["candidates"][0]["eligible_evidence_count"]
+        with self.assertRaises(ValidationError):
+            output_validator.validate(broken)
+
     def test_wheel_declares_all_generic_contract_and_policy_resources(self) -> None:
         configuration = tomllib.loads((REPOSITORY / "pyproject.toml").read_text(encoding="utf-8"))
         forced = configuration["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]

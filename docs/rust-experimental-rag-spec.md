@@ -1,6 +1,7 @@
 # Rust experimental RAG specification
 
-Status: draft implementation specification
+Status: implemented experimental vertical slice; representative-corpus and SDK
+admission work remain
 
 Scope: fast local RAG experimentation over `livefire-ocsf` snapshots
 
@@ -10,10 +11,10 @@ Production admission: explicitly deferred
 
 The next implementation is a Rust execution rewrite of the useful RAG
 contracts, not another expansion of the current promotion and proof pipeline.
-The normal operator loop is:
+The implemented operator loop is:
 
 ```text
-rag build -> rag query -> rag eval -> rag visualize -> rag serve
+rag build -> rag query -> Python evaluate/PCA -> rag-provider JSONL lifecycle
 ```
 
 It must be possible to change a projection, embedding profile, retrieval method,
@@ -61,14 +62,15 @@ The default build does not:
 - depend on Livefire source, hunt fixtures, qrels, expected evidence, or
   scenario indicators.
 
-Those capabilities are not discarded. They are moved behind explicit strict
-commands:
+Those capabilities are not discarded. The intended later operator surface is:
 
 ```text
 rag verify --strict
 rag package
 rag admit
 ```
+
+These strict commands are design targets, not commands in the current Rust CLI.
 
 ## 4. `livefire-ocsf` input boundary
 
@@ -148,8 +150,10 @@ pub trait SnapshotReader {
 
 Fast admission checks receipt shape, root-relative safe paths, required
 objects, Parquet metadata row counts, required columns, and retained snapshot,
-mapping, schema, and relation identities. It does not hash every multi-gigabyte
-object again.
+mapping, schema, and relation identities. It also reconciles the runnable
+snapshot, closure and completeness receipts, requires clean closure metrics,
+and requires typed-relation rows to sum exactly to the normalized event count.
+It does not hash every multi-gigabyte object again.
 
 The first adapter may read the present local `build-receipt.json` shape for
 parity. A released adapter must consume the eventual E9 release manifest and
@@ -180,13 +184,13 @@ crates/
   rag-embedding/    LM Studio client, scheduler, resumable cache
   rag-index/        index writer/reader, filters, dense, lexical, fusion
   rag-builder/      `rag build` executable
-  rag-provider/     SDK JSONL provider and `rag serve`
+  rag-provider/     standalone SDK JSONL provider executable
   rag-testkit/      fixtures, Python-parity oracle, benchmarks
 python/
   livefire_rag_analysis/
+    index.py
     evaluate.py
     geometry.py
-    visualize.py
 ```
 
 The first Rust provider is native. Core projection, filters, exact vector scan,
@@ -206,30 +210,49 @@ index/
   documents.parquet
   occurrences.parquet
   vectors.f32
-  lexical/
+  lexical/index.json
   build-report.json
 ```
 
-`documents.parquet` stores document ID, digest, kind, semantic text, facets,
-relation identities, occurrence count, and vector ordinal.
+`documents.parquet` stores `document_id`, `document_sha256`, `document_kind`,
+`semantic_text`, `facets_json`, `relations_json`, `occurrence_count`, and
+`vector_ordinal`.
 
-`occurrences.parquet` stores document ordinal, event time, relation identity,
-bounded exact attributes, and `EvidenceRef`.
+`occurrences.parquet` stores `occurrence_id`, `document_id`, optional
+`event_time_ms`, `relation`, `exact_attributes_json`, `snapshot_sha256`,
+`mapping_sha256`, `event_id`, and `support_ref`.
 
-`vectors.f32` contains a versioned header followed by contiguous row-major
-little-endian float32 vectors. The header binds dimensions, count, embedding
-profile, and document-order digest. Python opens it directly with
+Provider candidates return at most 50 matching OCSF hydration references per
+semantic document and always report the full eligible occurrence count plus an
+exhaustion flag. Exact attributes remain index-side filter material and are not
+copied into tool responses.
+
+`vectors.f32` contains a 64-byte versioned header followed by contiguous
+row-major little-endian float32 vectors. The header is `LFRAGV1\0`, header size,
+version, f32-LE dtype, flags, count, dimensions, a reserved field, and the raw
+32-byte document-order SHA-256. `index.json` binds that file and order to the
+embedding profile. Python opens it directly with
 `numpy.memmap`; Rust scans it without JSON or Arrow list conversion.
 
 The lexical directory is derived and replaceable. The initial native adapter
 may use Tantivy, but BM25 tokenization/profile identity and output semantics are
 RAG contracts. A portable postings implementation can replace it for WASI.
 
-The default builder streams Arrow batches, projects records, groups documents,
-writes Parquet in batches, submits only missing embeddings, appends contiguous
-vectors, computes inexpensive digests while writing, writes a report, and
-atomically renames staging into place. It never loads all occurrences into a
-database or replays the completed index back through its parent.
+The current builder streams Arrow batches and projects records without JSONL or
+DuckDB staging. It groups the retained documents and occurrences in memory,
+submits only missing embeddings through a persistent SQLite cache, and writes
+the complete Parquet, vector, lexical, manifest, and build-report files to a
+staging directory before an atomic rename. The enriched JSON build report is
+also printed to stdout. It does not replay the completed index through its
+parent.
+
+This is fast enough for the experiment loop but is not yet a bounded-memory
+full-corpus writer: the selected documents, occurrences, and vectors are held
+in memory during build. Query open is metadata-scale and lazy. The first query
+materializes documents and the JSON lexical index, dense scoring streams vector
+rows, and filtered/result occurrence reads stream Parquet. A compact portable
+postings index and stronger bounded-memory build are explicit scale and WASI
+gaps.
 
 ## 7. Commands
 
@@ -239,24 +262,34 @@ rag build --snapshot SNAPSHOT --out INDEX \
   --embedding-profile PROFILE [--sample-documents 20000]
 
 rag query --index INDEX --mode dense|lexical|fused --query TEXT
-rag eval --index INDEX --suite SUITE --out REPORT
-rag visualize --index INDEX --out REPORT
-rag serve --index INDEX
-rag verify --index INDEX [--strict --snapshot SNAPSHOT]
+rag inspect --index INDEX
+
+python -m livefire_rag_analysis inspect --index INDEX
+python -m livefire_rag_analysis evaluate --run RUN [--qrels QRELS] [--out REPORT]
+python -m livefire_rag_analysis pca --index INDEX --out REPORT_DIR
+
+rag-provider  # JSONL requests on stdin, responses on stdout
 ```
 
-Sampling is deterministic and scenario-blind. It can inspect structural fields
-such as relation, document kind, occurrence-count bucket, and facet names, but
-never semantic values, queries, qrels, incident labels, or known indicators.
-The sample manifest records source identity, selection policy, relation budgets,
-selected counts, and selected-document digest. A normal sample build does not
-rescan the parent after selection.
+Sampling is deterministic and scenario-blind. The current
+`--sample-documents` policy keeps the globally smallest snapshot-bound hash-min
+document IDs and retains every occurrence for each surviving document. Empty or
+structured-only relations cannot consume quota, and the report records the
+selected relation composition so stratification can be evaluated later. It never
+reads semantic values, queries, qrels, incident labels, or known indicators for
+selection. `index.json` records `build_scope: "sample"` and `complete: false`.
+The builder still scans and projects the complete typed snapshot before
+selection, so sampling bounds retained state and embedding work but not source
+scan time. A richer stratified sample manifest remains future work.
 
-Index open performs only constant- or metadata-scale checks: compatible format,
-required files, vector header/profile/dimension/count, Parquet metadata, and
-document/vector ordinal bounds. It never performs a corpus-wide verification
-scan. Strict verification is a separate operator action and emits a reusable
-receipt.
+Python index open validates the closed manifest shape, required files, vector
+header/profile/dimension/count, Parquet row counts, contiguous vector ordinals,
+document-order digest, and vector finiteness/normalization. The Rust reader
+performs metadata checks at open and initializes query data lazily, then checks
+document/vector ordinals, lexical membership, occurrence counts and exact
+snapshot/mapping bindings before returning a hit. It rechecks canonical path
+containment at lazy reads. Multi-gigabyte source-object rehashing and a reusable
+host admission receipt remain future operator actions.
 
 ## 8. Embedding scheduler and measured LM Studio behavior
 
@@ -282,19 +315,25 @@ Increasing client concurrency increased latency but did not materially improve
 throughput; the server accepted and queued concurrent work rather than
 executing it in parallel.
 
-Rust defaults are therefore:
+The implemented Rust client therefore defaults to:
 
 ```text
 embedding_batch_size = 16
-embedding_max_in_flight = 1
+embedding_requests_in_flight = 1 (fixed)
 ```
 
-Both remain configurable, but a value greater than one is enabled only by a
-recorded benchmark. The scheduler uses stable batch sequence numbers, validates
-response order/cardinality/dimensions/finiteness, retries only failed batches,
-applies bounded backpressure, and persists every successful batch immediately.
-The cache key binds embedding profile, document ID/digest, and semantic-text
-digest. Concurrency must never change document/vector association or ranking.
+Batch size is configurable from 1 through 32. Request concurrency is not
+configurable: missing vectors are processed as sequential batches with one HTTP
+request in flight. The client validates response indices and cardinality, then
+validates every vector's dimensions, finiteness, and configured normalization
+before writing it to the SQLite cache. It preserves input order and the cache
+key binds embedding profile, document ID/digest, and semantic-text digest.
+
+Automatic retries, retry classification, multi-request scheduling, and a
+bounded backpressure queue are not implemented. A failed request stops the
+build; vectors from earlier completed batches remain cached and the operator can
+rerun it. These features should be added only when representative builds show
+that they improve the experiment loop without obscuring failures.
 
 LM Studio's model-worker `--parallel` option is a separate controlled
 experiment because it changes external model state and memory consumption. It
@@ -342,82 +381,124 @@ every query or cached rebuild.
 
 ## 11. Evaluation and visualization
 
-Rust produces retrieval runs as canonical JSONL/Parquet. Python consumes only
-the stable index and run artifacts. It owns:
+The Rust query command emits one JSON result. The smoke runner converts a query
+set into a stable JSONL retrieval run, and Python consumes only the index/run
+artifacts. The implemented analysis package provides configurable-cutoff macro
+nDCG and Recall, MRR, per-query metrics when qrels are supplied, explicit
+diagnostics when they are not, and PCA plots with original-space centroid
+distance markers.
 
-- macro nDCG@20, Recall@5/10/20, MRR, and worst-paraphrase recall;
-- hard-negative win rate and margin;
-- dense/lexical/fused paired comparisons;
-- PCA plots and exact original-space nearest-neighbor diagnostics;
-- relation/source overlays and outlier review tables;
-- bootstrap intervals and report rendering.
+Worst-paraphrase recall, hard-negative wins/margins, dense/lexical/fused paired
+statistics, relation/source overlays, nearest-neighbor review tables, bootstrap
+intervals, and richer report rendering remain planned work for the blinded
+representative suite.
 
 PCA/UMAP coordinates are visualization aids, never the retrieval distance or
 anomaly statistic. An embedding-space outlier is not called malicious.
 
 ## 12. Migration plan
 
-1. **Contracts and fixture reader.** Add the Rust workspace, deserialize the
-   present RAG contracts, and implement an OCSF receipt/Parquet fixture reader.
-2. **Projection parity.** Port activity/state/detection projection and compare
-   exact semantic fields, group membership, and identifier/secret redaction to
-   the Python oracle on varied frozen records.
-3. **Direct writer.** Write document/occurrence Parquet and `vectors.f32`
-   directly; demonstrate a cached rebuild without JSONL, DuckDB insertion, or
-   parent replay.
-4. **Embedding client.** Add resumable LM Studio batches with the measured
-   defaults and concurrency equivalence tests.
-5. **Retrieval.** Implement exact dense search, cached BM25, filters, and bound
-   reciprocal-rank fusion.
-6. **Provider.** Implement SDK handshake/open/call/health/close and replay the
-   existing golden lifecycle and output-schema fixtures.
-7. **Analysis package.** Point Python evaluation and visualization at the new
-   index format.
-8. **Settled OCSF adapter.** Update only `rag-ocsf` to the E9 release manifest
-   after E6 reconciliation; then run a representative corpus and the frozen
-   quality suite.
-9. **Strict assurance.** Port or wrap strict verification and packaging only
-   after the experimental loop demonstrates value.
-10. **Portability.** Replace native-only lexical/filter adapters where needed
-    and add a WASI provider variant. Query embedding becomes a host capability
-    rather than direct network access from the Wasm guest.
+1. **Implemented — contracts and current snapshot reader.** The Rust workspace
+   reads the present embedded build receipt and scans manifested typed Parquet.
+2. **Partly implemented — generic projection.** Direct activity, state, and
+   detection projection, grouping, redaction, and accounting exist with Rust
+   fixtures. Broader Python-oracle parity and representative OCSF class coverage
+   remain.
+3. **Implemented for the experiment — direct writer.** The builder emits
+   document/occurrence Parquet, `vectors.f32`, lexical JSON, and bound manifests
+   without JSONL, DuckDB insertion, or parent replay. Build memory remains
+   proportional to the retained set.
+4. **Implemented — embedding client.** LM Studio batching, strict response
+   validation, and a persistent resumable cache exist. Cached-rebuild and
+   response-order preservation are covered by focused tests; the recorded local
+   concurrency benchmark found no useful gain beyond one in-flight batch. The
+   implementation is sequential and has no automatic retry scheduler or
+   backpressure queue. Representative-corpus throughput still needs measurement.
+5. **Implemented — retrieval.** Exact streamed dense scoring, BM25, relation/time
+   filters, deterministic ordering, and bound reciprocal-rank fusion exist.
+6. **Implemented directly, SDK admission pending — provider.** The native
+   executable implements handshake/open/call/health/close and subprocess tests.
+   Search output is always non-definitive partial candidate coverage: even a
+   physically complete full-scan index excludes structured-only observations
+   from semantic retrieval, and every returned occurrence requires hydration.
+   Its component digests are development placeholders, and no production host
+   admission is claimed. The direct executable trusts the operator to provide
+   an OS-enforced immutable index mount for the session. Open file handles stop
+   path/symlink replacement but cannot stop a separately writable process from
+   changing the same inode; mutation resistance is therefore a production host
+   admission/sandbox gate, not a property of this local harness.
+7. **Implemented — analysis package.** Python strictly reads the Rust manifest,
+   Parquet, and vector header; it provides run evaluation and PCA PNG/report.
+8. **Blocked on upstream qualification — settled OCSF adapter.** Update only
+   `rag-ocsf` for the final release manifest, then run a representative corpus
+   and the frozen blinded quality suite.
+9. **Deferred — strict assurance.** Port or wrap verification and packaging only
+   after the experiment demonstrates retrieval value.
+10. **Deferred — portability.** Replace native filesystem/HTTP/lexical details
+    where necessary and add a WASI provider. Query embedding should become a
+    host capability rather than guest network access.
+
+### 12.1 Reproducible vertical-slice smoke
+
+`tools/run_rust_smoke.py` generates six generic typed OCSF records, builds a
+real 4,096-dimensional index through the locally served Qwen3 embedding model,
+runs six queries, evaluates a JSONL run, writes PCA artifacts, and exercises the
+standalone provider's complete JSONL lifecycle over the generated index:
+
+```sh
+uv run --extra analysis python tools/run_rust_smoke.py \
+  --work /tmp/livefire-rag-smoke --mode fused
+```
+
+On 13 August 2026 the fused smoke produced six documents, six occurrences, six
+vectors, 36 run rows, a provider pointer response, and rank-one retrieval for
+all six synthetic qrels (MRR, Recall@1, and nDCG@1 all `1.0`). This is an
+interface and binding sanity check only. The runner also performs a cached
+rebuild against an unreachable model endpoint, requires zero embedding calls,
+compares stable index artifacts byte-for-byte, and validates the actual provider
+pointer output against the packaged fast-search schema. The fixture and qrels
+are generated together, the corpus is tiny, and the result must not be presented
+as evidence that retrieval improved. The effectiveness decision requires a
+blinded, representative candidate universe with adjudicated qrels and lexical/
+dense/fused comparison.
 
 ## 13. Acceptance gates
 
 ### Correctness
 
-- Rust/Python projection parity on every golden record.
-- Every searchable document has exactly one vector and every vector maps to
-  the intended document.
-- Vectors have the bound dimension, are finite, and meet the normalization
-  contract.
-- Occurrence filters are applied before document eligibility; zero filter
-  violations are tolerated.
-- Every returned event reference hydrates through the bound OCSF host.
-- Repeated runs and concurrency settings preserve deterministic tie order and
-  document/vector association.
-- A cached rebuild makes zero embedding calls.
-- Normal index open performs no corpus-wide scan.
+| Gate | Status |
+|---|---|
+| Rust/Python parity for the checked-in representative projection records | Achieved by the golden projection tests |
+| One bound vector per searchable document, with stable document order | Achieved by writer/reader and cross-language tests |
+| Dimension, finiteness, and normalization validation | Achieved in the embedding client and Python reader |
+| Occurrence-first relation/time filtering | Achieved by focused Rust tests |
+| Every returned reference hydrates through the qualified OCSF host | Pending the released OCSF snapshot/host |
+| Rebuild preserves document/vector association and stable artifacts | Achieved by the cached smoke rebuild; concurrent scheduling is not implemented |
+| Cached rebuild makes zero embedding calls | Achieved by the unreachable-endpoint smoke rebuild |
+| Normal Rust index open performs no corpus-wide scan | Achieved by the metadata-open test |
 
 ### Effectiveness
 
-- Report macro nDCG@20, Recall@5/10/20, MRR, hard-negative wins/margins, and
-  worst-paraphrase recall for dense, lexical, and fused retrieval.
-- Demonstrate semantic wins over lexical retrieval without regressing exact
-  controls or increasing unsupported conclusions in the structured runner.
-- Keep structured OCSF operations authoritative for counts, chronology,
-  joins, exhaustive populations, exact polarity, and negative evidence.
+All effectiveness gates remain pending. The synthetic smoke exercises metric
+calculation but cannot satisfy them:
+
+- report macro nDCG@20, Recall@5/10/20, MRR, hard-negative wins/margins, and
+  worst-paraphrase recall for dense, lexical, and fused retrieval on the blinded
+  representative suite;
+- demonstrate semantic wins over lexical retrieval without regressing exact
+  controls or increasing unsupported conclusions in the structured runner;
+- keep structured OCSF operations authoritative for counts, chronology, joins,
+  exhaustive populations, exact polarity, and negative evidence.
 
 ### Engineering
 
-- A cached representative build completes in minutes, not hours.
-- Projection/materialization throughput improves by at least 10x over the
-  measured Python path on identical input.
-- No JSONL bulk staging, Python `executemany`, parent replay, or full
-  verification occurs in the default build.
-- The Rust provider passes the existing SDK lifecycle and output-schema tests.
-- The analysis package can produce the same report and PCA inputs from
-  `documents.parquet` and `vectors.f32` without importing builder code.
+| Gate | Status |
+|---|---|
+| Cached representative build completes in minutes | Pending representative snapshot measurement |
+| Projection/materialization is at least 10x the measured Python path | Pending identical-input benchmark |
+| Default build avoids JSONL staging, Python `executemany`, parent replay, and full verification | Achieved by the Rust vertical slice |
+| Provider direct JSONL lifecycle and pointer/miss schema validation | Achieved; production SDK host admission remains pending |
+| Python evaluation/PCA reads Parquet and `vectors.f32` without builder imports | Achieved by focused tests and the real smoke |
 
 ## 14. Open decisions
 

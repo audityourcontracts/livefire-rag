@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rag-contracts",
+    "crates/rag-ocsf",
+    "crates/rag-projection",
+    "crates/rag-embedding",
+    "crates/rag-index",
+    "crates/rag-builder",
+    "crates/rag-provider",
+    "crates/rag-testkit",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+rag-contracts = { path = "crates/rag-contracts" }
+rag-ocsf = { path = "crates/rag-ocsf" }
+rag-projection = { path = "crates/rag-projection" }
+rag-embedding = { path = "crates/rag-embedding" }
+rag-index = { path = "crates/rag-index" }
+arrow-array = "58"
+arrow-schema = "58"
+clap = { version = "4.6", features = ["derive"] }
+parquet = { version = "58", default-features = false, features = ["arrow", "zstd"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

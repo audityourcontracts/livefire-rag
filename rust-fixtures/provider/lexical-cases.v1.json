@@ -1,0 +1,53 @@
+{
+  "schema_version": "livefire.rag.provider-lexical-fixture/1",
+  "documents": [
+    {
+      "document_id": "doc-linux",
+      "document_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "document_kind": "activity",
+      "semantic_text": "kind activity relation process action install package target linux host",
+      "facets_json": "{}",
+      "relations_json": "[\"ocsf_process_activity\"]",
+      "occurrence_count": 1,
+      "vector_ordinal": 0
+    },
+    {
+      "document_id": "doc-powershell",
+      "document_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "document_kind": "activity",
+      "semantic_text": "kind activity relation process action encoded powershell command target windows",
+      "facets_json": "{}",
+      "relations_json": "[\"ocsf_process_activity\"]",
+      "occurrence_count": 1,
+      "vector_ordinal": 1
+    }
+  ],
+  "occurrences": [
+    {
+      "occurrence_id": "occ-linux",
+      "document_id": "doc-linux",
+      "event_time_ms": 1710000000000,
+      "relation": "ocsf_process_activity",
+      "exact_attributes_json": "[]",
+      "snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "mapping_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "event_id": "event-linux",
+      "support_ref": "support-linux"
+    },
+    {
+      "occurrence_id": "occ-powershell",
+      "document_id": "doc-powershell",
+      "event_time_ms": 1710000001000,
+      "relation": "ocsf_process_activity",
+      "exact_attributes_json": "[]",
+      "snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "mapping_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "event_id": "event-powershell",
+      "support_ref": "support-powershell"
+    }
+  ],
+  "vectors": [[1.0, 0.0], [0.0, 1.0]],
+  "pointer_query": "encoded powershell",
+  "pointer_document_id": "doc-powershell",
+  "miss_query": "term-not-present-anywhere"
+}

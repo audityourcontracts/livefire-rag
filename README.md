@@ -37,6 +37,64 @@ All tools return candidate pointers, never a malicious/benign verdict or
 authoritative evidence. `top_n` is honored up to the declared bound; there is no
 hidden alert threshold.
 
+## Rust experimental vertical slice
+
+The fast experimental path now has a working OCSF fixture-to-tool vertical
+slice. It streams typed Parquet through the Rust projection, batches embeddings
+through LM Studio, writes the language-neutral fast index, queries dense,
+lexical, or fused retrieval, and opens that index in the standalone Rust JSONL
+provider. Python reads the same Parquet and `vectors.f32` artifacts for qrel
+evaluation and PCA; it is not in the build or query path.
+
+With LM Studio serving the model named by
+`profiles/qwen3-embedding-8b-generic-evidence-lmstudio-q4.dev.json`, run the
+six-document interface smoke with:
+
+```sh
+uv run --extra analysis python tools/run_rust_smoke.py \
+  --work /tmp/livefire-rag-smoke --mode fused
+```
+
+The command refuses to overwrite its work directory. It writes the source
+fixture, index, per-query results, retrieval run, qrel metrics, PCA PNG/report,
+direct provider JSONL transcript, and a `smoke-report.json`. It also repeats the
+build with the embedding endpoint deliberately unreachable, requires zero model
+calls, and compares the stable index artifacts byte-for-byte. The bundled qrels
+are generated from the same six synthetic scenarios, so a perfect score proves
+only that the interfaces and document/vector/pointer bindings work. It is not a
+retrieval-quality benchmark.
+
+The individual commands are:
+
+```sh
+cargo run -p rag-builder --bin rag -- build \
+  --snapshot SNAPSHOT --out INDEX \
+  --embedding-profile profiles/qwen3-embedding-8b-generic-evidence-lmstudio-q4.dev.json \
+  --embedding-endpoint http://127.0.0.1:1234 \
+  --resume CACHE.sqlite3 --embedding-batch-size 16 \
+  --sample-documents 20000
+
+cargo run -p rag-builder --bin rag -- query \
+  --index INDEX --query 'encoded PowerShell download' --mode fused --top-n 20 \
+  --embedding-endpoint http://127.0.0.1:1234
+
+cargo run -p rag-builder --bin rag -- inspect --index INDEX
+uv run --extra analysis python -m livefire_rag_analysis inspect --index INDEX
+uv run --extra analysis python -m livefire_rag_analysis pca \
+  --index INDEX --out REPORT_DIR
+uv run --extra analysis python -m livefire_rag_analysis evaluate \
+  --run RUN.jsonl --qrels QRELS.jsonl --out REPORT.json
+```
+
+`--sample-documents` bounds retained documents and embedding calls, but the
+current builder still scans and projects the typed snapshot before applying the
+deterministic document sample. Do not start the next full `livefire-ocsf` build
+until its qualified release snapshot is available. The provider lifecycle is
+implemented and tested directly; production SDK admission, strict verification,
+packaging, and a Wasmtime guest are intentionally deferred. The exact contracts,
+implemented status, and remaining gaps are in
+[`docs/rust-experimental-rag-spec.md`](docs/rust-experimental-rag-spec.md).
+
 ## Implemented standalone POC commands
 
 ```text

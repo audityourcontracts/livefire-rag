@@ -1,5 +1,5 @@
 # rag-builder
 
-Planned native offline executable implementing the SDK index-builder protocol,
-bounded PowerShell analysis, command projection, local embedding, chronological
-score materialization, and canonical Parquet index pack.
+Native `rag` CLI for direct `livefire-ocsf` snapshot projection, resumable local
+embedding, fast-index construction, inspection, and dense/lexical/fused query.
+Use `--sample-documents` for the bounded scenario-blind experiment path.

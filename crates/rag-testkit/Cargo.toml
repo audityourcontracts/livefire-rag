@@ -1,0 +1,22 @@
+[package]
+name = "rag-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+clap.workspace = true
+parquet.workspace = true
+rag-embedding.workspace = true
+rag-index.workspace = true
+rag-ocsf.workspace = true
+rag-projection.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
