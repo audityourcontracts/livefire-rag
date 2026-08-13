@@ -1085,13 +1085,14 @@ def _verify_evidence_pack(
         connection.execute("PRAGMA synchronous=OFF")
         connection.execute(
             "CREATE TABLE documents(document_id TEXT PRIMARY KEY, expected INTEGER NOT NULL, "
-            "actual INTEGER NOT NULL, payload BLOB NOT NULL)"
+            "replay_sha256 BLOB NOT NULL) WITHOUT ROWID"
         )
         connection.execute(
             "CREATE TABLE source_pointers("
             "relation_name TEXT NOT NULL, object_sha256 TEXT NOT NULL, row_group INTEGER NOT NULL, "
             "row_ordinal INTEGER NOT NULL, record_id TEXT NOT NULL, record_sha256 TEXT NOT NULL, "
-            "support_refs BLOB NOT NULL, occurrence_payload BLOB NOT NULL, "
+            "support_refs_sha256 BLOB NOT NULL, occurrence_sha256 BLOB NOT NULL, "
+            "document_id TEXT, "
             "PRIMARY KEY(relation_name, object_sha256, row_group, row_ordinal)) WITHOUT ROWID"
         )
         document_count = 0
@@ -1124,9 +1125,16 @@ def _verify_evidence_pack(
                 raise EvidencePackCorrupt("invalid evidence document kind/searchability")
             verified_document_kinds[document_kind] += 1
             searchable_document_count += int(searchable)
+            replay_document = dict(document)
+            replay_document.pop("document_sha256", None)
+            replay_document.pop("occurrence_count", None)
             connection.execute(
-                "INSERT INTO documents(document_id, expected, actual, payload) VALUES (?, ?, 0, ?)",
-                (document_id, expected_count, canonical_json_bytes(document)),
+                "INSERT INTO documents(document_id, expected, replay_sha256) VALUES (?, ?, ?)",
+                (
+                    document_id,
+                    expected_count,
+                    bytes.fromhex(sha256_bytes(canonical_json_bytes(replay_document))),
+                ),
             )
             document_count += 1
 
@@ -1181,7 +1189,7 @@ def _verify_evidence_pack(
                 raise EvidencePackCorrupt("source pointer lacks valid support refs")
             try:
                 connection.execute(
-                    "INSERT INTO source_pointers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO source_pointers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         relation_name,
                         locator["object_sha256"],
@@ -1189,8 +1197,9 @@ def _verify_evidence_pack(
                         locator["row_ordinal"],
                         pointer["record_id"],
                         pointer["record_sha256"],
-                        canonical_json_bytes(support_refs),
-                        canonical_json_bytes(occurrence),
+                        bytes.fromhex(sha256_bytes(canonical_json_bytes(support_refs))),
+                        bytes.fromhex(sha256_bytes(canonical_json_bytes(occurrence))),
+                        document_ids[0] if isinstance(document_ids, list) and document_ids else None,
                     ),
                 )
             except sqlite3.IntegrityError as error:
@@ -1216,13 +1225,6 @@ def _verify_evidence_pack(
             }:
                 if len(document_ids) != 1 or not isinstance(document_ids[0], str):
                     raise EvidencePackCorrupt("document disposition lacks document_id")
-                document_id = document_ids[0]
-                cursor = connection.execute(
-                    "UPDATE documents SET actual = actual + 1 WHERE document_id = ?",
-                    (document_id,),
-                )
-                if cursor.rowcount != 1:
-                    raise EvidencePackCorrupt("occurrence refers to an unknown document")
             elif document_ids:
                 raise EvidencePackCorrupt("non-document disposition names a document")
             relation_counts[relation_name] += 1
@@ -1231,8 +1233,21 @@ def _verify_evidence_pack(
             for reason in reason_codes:
                 verified_reason_counts[(disposition, reason)] += 1
             occurrence_count += 1
+        unknown_document = connection.execute(
+            "SELECT s.document_id FROM source_pointers s LEFT JOIN documents d "
+            "ON d.document_id = s.document_id WHERE s.document_id IS NOT NULL "
+            "AND d.document_id IS NULL LIMIT 1"
+        ).fetchone()
+        if unknown_document:
+            raise EvidencePackCorrupt(
+                f"occurrence refers to an unknown document: {unknown_document[0]}"
+            )
         mismatch = connection.execute(
-            "SELECT document_id FROM documents WHERE expected != actual LIMIT 1"
+            "SELECT d.document_id FROM documents d LEFT JOIN "
+            "(SELECT document_id, count(*) actual FROM source_pointers "
+            "WHERE document_id IS NOT NULL GROUP BY document_id) a "
+            "ON a.document_id = d.document_id "
+            "WHERE d.expected != coalesce(a.actual, 0) LIMIT 1"
         ).fetchone()
         if mismatch:
             raise EvidencePackCorrupt(f"document occurrence count mismatch: {mismatch[0]}")
@@ -1268,7 +1283,7 @@ def _verify_evidence_pack(
                     )
                     record_sha256 = sha256_bytes(_typed_event_bytes(typed_event_json))
                     candidate = connection.execute(
-                        "SELECT support_refs, occurrence_payload FROM source_pointers "
+                        "SELECT support_refs_sha256, occurrence_sha256 FROM source_pointers "
                         "WHERE relation_name = ? "
                         "AND object_sha256 = ? AND row_group = ? AND row_ordinal = ? "
                         "AND record_id = ? AND record_sha256 = ?",
@@ -1285,8 +1300,10 @@ def _verify_evidence_pack(
                         raise EvidencePackCorrupt(
                             f"source row has no exact occurrence pointer: {source.relation_name}"
                         )
-                    support_refs = json.loads(bytes(candidate[0]))
-                    if support_refs != [support_ref]:
+                    expected_support_refs_sha256 = bytes.fromhex(
+                        sha256_bytes(canonical_json_bytes([support_ref]))
+                    )
+                    if bytes(candidate[0]) != expected_support_refs_sha256:
                         raise EvidencePackCorrupt("source pointer support reference mismatch")
                     expected_pointer = _source_pointer(
                         row,
@@ -1309,44 +1326,35 @@ def _verify_evidence_pack(
                         source_pointer=expected_pointer,
                         projection_policy=projection_policy,
                     )
-                    actual_occurrence = json.loads(bytes(candidate[1]))
-                    if actual_occurrence != expected_occurrence:
+                    expected_occurrence_sha256 = bytes.fromhex(
+                        sha256_bytes(canonical_json_bytes(expected_occurrence))
+                    )
+                    if bytes(candidate[1]) != expected_occurrence_sha256:
                         raise EvidencePackCorrupt(
                             f"occurrence does not replay from source: {source.relation_name}"
                         )
                     if expected_document is not None:
                         actual_row = connection.execute(
-                            "SELECT payload FROM documents WHERE document_id = ?",
+                            "SELECT replay_sha256 FROM documents WHERE document_id = ?",
                             (expected_document["document_id"],),
                         ).fetchone()
                         if actual_row is None:
                             raise EvidencePackCorrupt("replayed projection document is missing")
-                        actual_document = json.loads(bytes(actual_row[0]))
-                        actual_document.pop("document_sha256", None)
-                        actual_document.pop("occurrence_count", None)
                         expected_document.pop("document_sha256", None)
-                        if actual_document != expected_document:
+                        expected_document_sha256 = bytes.fromhex(
+                            sha256_bytes(canonical_json_bytes(expected_document))
+                        )
+                        if bytes(actual_row[0]) != expected_document_sha256:
                             raise EvidencePackCorrupt(
                                 f"document does not replay from source: {source.relation_name}"
                             )
-                    connection.execute(
-                        "DELETE FROM source_pointers WHERE relation_name = ? "
-                        "AND object_sha256 = ? AND row_group = ? AND row_ordinal = ?",
-                        (
-                            source.relation_name,
-                            row["source_object_sha256"],
-                            row["row_group"],
-                            row["row_ordinal"],
-                        ),
-                    )
                     source_count += 1
                 if source_count != relation_counts.get(source.relation_name, 0):
                     raise EvidencePackCorrupt(
                         f"source/occurrence count mismatch: {source.relation_name}"
                     )
                 resolved_count += source_count
-            unresolved = connection.execute("SELECT count(*) FROM source_pointers").fetchone()[0]
-            if unresolved != 0 or resolved_count != occurrence_count:
+            if resolved_count != occurrence_count:
                 raise EvidencePackCorrupt("not every occurrence pointer resolves to an exact row")
         else:
             resolved_count = occurrence_count

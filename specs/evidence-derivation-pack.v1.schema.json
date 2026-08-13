@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-derivation-pack.v1.schema.json",
+  "title": "Livefire immutable evidence derivation overlay pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "component",
+    "stage",
+    "source_snapshot",
+    "base_projection_pack",
+    "derivation_policy",
+    "auxiliary_inputs",
+    "row_schemas",
+    "physical_contract",
+    "objects",
+    "closure"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-derivation-pack/1"},
+    "component": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "stage": {"const": "pre_embedding_derivation_overlay"},
+    "source_snapshot": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "base_projection_pack": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "derivation_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "auxiliary_inputs": {
+      "type": "array",
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["relation", "path", "sha256", "rows"],
+        "properties": {
+          "relation": {"enum": ["entities", "participants", "relationships"]},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "rows": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "row_schemas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["derived_document", "derivation_membership", "derivation_coverage"],
+      "properties": {
+        "derived_document": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "derivation_membership": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "derivation_coverage": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+      }
+    },
+    "physical_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documents_format",
+        "memberships_format",
+        "encoding",
+        "line_termination",
+        "document_order",
+        "membership_order"
+      ],
+      "properties": {
+        "documents_format": {"const": "canonical_jsonl"},
+        "memberships_format": {"const": "canonical_jsonl"},
+        "encoding": {"const": "utf-8"},
+        "line_termination": {"const": "lf"},
+        "document_order": {"const": "family_then_canonical_group_key"},
+        "membership_order": {"const": "document_emission_then_occurrence_id_then_input_role"}
+      }
+    },
+    "objects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documents", "memberships", "coverage_report", "object_lock"],
+      "properties": {
+        "documents": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "memberships": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "coverage_report": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "object_lock": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    },
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_source_record_count",
+        "derived_document_count",
+        "derivation_membership_count",
+        "unresolved_membership_count",
+        "unaccounted_derivation_input_count"
+      ],
+      "properties": {
+        "base_source_record_count": {"type": "integer", "minimum": 0},
+        "derived_document_count": {"type": "integer", "minimum": 0},
+        "derivation_membership_count": {"type": "integer", "minimum": 0},
+        "unresolved_membership_count": {"const": 0},
+        "unaccounted_derivation_input_count": {"const": 0}
+      }
+    }
+  }
+}

@@ -31,6 +31,15 @@ Exit gate: all derived memberships reconcile to source occurrences, embeddings
 cover every and only searchable document, and standalone SDK invocation works
 without a Livefire checkout.
 
+Status: the projection, immutable derivation overlay, Parquet promoter, exact
+dense/lexical/fused provider, explicit miss contract, and source/schema-closed
+development SDK bundle are implemented and covered by deterministic fixtures.
+The ambient Python/native dependency runtime is not yet content-bound, so this
+is not a portable production bundle. Full M21 v2
+projection, derivation, model embedding, and external SDK lifecycle replay are
+release gates; fixture success is not presented as full-corpus admission or a
+retrieval-quality result.
+
 ## Milestone 1: immutable command snapshot
 
 1. Implement the `livefire-sdk` source-snapshot reader and canonical command

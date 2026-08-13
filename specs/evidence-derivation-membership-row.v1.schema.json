@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-derivation-membership-row.v1.schema.json",
+  "title": "Livefire derived evidence membership row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "membership_id",
+    "membership_sha256",
+    "derived_document_id",
+    "occurrence_id",
+    "input_role",
+    "derivation_policy"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-derivation-membership-row/1"},
+    "membership_id": {"type": "string", "pattern": "^dmem-[0-9a-f]{64}$"},
+    "membership_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "derived_document_id": {"type": "string", "pattern": "^ddoc-[0-9a-f]{64}$"},
+    "occurrence_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "input_role": {"type": "string", "minLength": 1, "maxLength": 256},
+    "entity_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "Exact canonical entity identity for entity-document memberships only; it is filter metadata and never embedding text."
+    },
+    "derivation_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+  }
+}

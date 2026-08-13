@@ -18,11 +18,20 @@ class EvidenceSchemaError(RuntimeError):
 
 
 GENERIC_EVIDENCE_SCHEMA_NAMES = (
+    "embedding-policy.v1.schema.json",
     "evidence-common.v1.schema.json",
     "evidence-coverage-report.v1.schema.json",
+    "evidence-derivation-coverage.v1.schema.json",
+    "evidence-derivation-membership-row.v1.schema.json",
+    "evidence-derivation-pack.v1.schema.json",
+    "evidence-derived-document.v1.schema.json",
     "evidence-document.v1.schema.json",
+    "evidence-embedding-row.v1.schema.json",
     "evidence-index-manifest.v1.schema.json",
     "evidence-occurrence-row.v1.schema.json",
+    "evidence-pilot-coverage.v1.schema.json",
+    "evidence-pilot-sample.v1.schema.json",
+    "evidence-pilot-selection-row.v1.schema.json",
     "evidence-projection-pack.v1.schema.json",
     "evidence-search.input.v1.schema.json",
     "evidence-search.output.v1.schema.json",

@@ -1,0 +1,12 @@
+{
+  "schema_version": "livefire.rag.embedding-conformance-fixture/1",
+  "encoding": "UTF-8 canonical JSON; output vectors are RFC 8785 JSON with a final LF",
+  "request": {
+    "model": "text-embedding-qwen3-embedding-8b",
+    "input": [
+      "livefire embedding conformance document one",
+      "Instruct: Retrieve generic security evidence relevant to this investigation. Match behavior, actor role, action, target, context, outcome, state, and detection semantics without treating similarity as proof.\nQuery: find encoded powershell"
+    ]
+  },
+  "output_normalization": "Validate server order, dimensions, finite float32 values, and declared L2 tolerance; hash the RFC 8785 JSON array of float32 vectors including final LF without client renormalization."
+}

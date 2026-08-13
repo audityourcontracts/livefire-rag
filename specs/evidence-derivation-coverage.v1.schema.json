@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-derivation-coverage.v1.schema.json",
+  "title": "Livefire derivation overlay coverage report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_snapshot",
+    "base_projection_pack",
+    "derivation_policy",
+    "closure",
+    "base_relation_counts",
+    "families"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-derivation-coverage/1"},
+    "source_snapshot": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "base_projection_pack": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "derivation_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_source_record_count",
+        "typed_derivation_input_count",
+        "unaccounted_typed_derivation_input_count",
+        "all_derivation_inputs_accounted",
+        "derived_document_count",
+        "derivation_membership_count",
+        "by_document_kind"
+      ],
+      "properties": {
+        "base_source_record_count": {"type": "integer", "minimum": 0},
+        "typed_derivation_input_count": {"type": "integer", "minimum": 0},
+        "unaccounted_typed_derivation_input_count": {"const": 0},
+        "all_derivation_inputs_accounted": {"const": true},
+        "derived_document_count": {"type": "integer", "minimum": 0},
+        "derivation_membership_count": {"type": "integer", "minimum": 0},
+        "by_document_kind": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "base_relation_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "families": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric_window", "network_window", "state_transition", "entity"],
+      "properties": {
+        "metric_window": {"type": "object"},
+        "network_window": {"type": "object"},
+        "state_transition": {"type": "object"},
+        "entity": {"type": "object"}
+      }
+    }
+  }
+}

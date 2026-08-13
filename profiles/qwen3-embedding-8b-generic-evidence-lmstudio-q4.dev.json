@@ -1,0 +1,47 @@
+{
+  "schema_version": "livefire.rag.embedding-policy/1",
+  "admission_status": "development_only",
+  "purpose": "semantic_search",
+  "model_repository": "Qwen/Qwen3-Embedding-8B-GGUF",
+  "model_revision": "69d0e58a13e463cd99a9b83e3f5fee7c10265fab",
+  "model_artifact_set": {
+    "id": "hf.Qwen.Qwen3-Embedding-8B-GGUF.Q4_K_M",
+    "version": "69d0e58a13e463cd99a9b83e3f5fee7c10265fab",
+    "sha256": "9e5f2156b767ea1d403e5f1c217455d48095095c1603bf9e79feab19aac9561f"
+  },
+  "model_objects": [{
+    "path": "models/Qwen3-Embedding-8B-Q4_K_M.gguf",
+    "media_type": "application/vnd.gguf",
+    "sha256": "3fcd3febec8b3fd64435204db75bf0dd73b91e8d0661e0331acfe7e7c3120b85",
+    "bytes": 4676804928
+  }],
+  "tokenizer": {
+    "id": "hf.Qwen.Qwen3-Embedding-8B-GGUF.embedded-tokenizer",
+    "version": "69d0e58a13e463cd99a9b83e3f5fee7c10265fab",
+    "sha256": "3fcd3febec8b3fd64435204db75bf0dd73b91e8d0661e0331acfe7e7c3120b85"
+  },
+  "runtime": {
+    "id": "com.lmstudio.app.macos",
+    "version": "0.4.20+1",
+    "sha256": "3c83edeb0f7bdcb25cdfd1463f990fcc9c341d37272db31690309ba9a722ed51"
+  },
+  "runtime_mode": "lmstudio_loopback",
+  "api_contract": "openai_compatible_v1_embeddings",
+  "api_model_key": "text-embedding-qwen3-embedding-8b",
+  "dimensions": 4096,
+  "dtype": "float32",
+  "quantization": "q4_k_m",
+  "pooling": "last_token",
+  "normalization": "l2",
+  "maximum_tokens": 8192,
+  "document_prefix": "",
+  "query_instruction": "Retrieve generic security evidence relevant to this investigation. Match behavior, actor role, action, target, context, outcome, state, and detection semantics without treating similarity as proof.",
+  "query_composition": "Instruct: {query_instruction}\nQuery: {query}",
+  "batching": {"maximum_batch_items": 32, "order": "preserve_input_order", "overlength": "reject"},
+  "output_processing": {"client_normalization": "none", "required_l2_norm_tolerance_millionths": 100},
+  "conformance": {
+    "mode": "exact_digest",
+    "fixture_sha256": "2f1d18d17f3c09b507bee0698a476a1b7f81c898a21f20ed5982cba0fd776c78",
+    "normalized_output_sha256": "f6aea8e8ec5711d0a3e73cc21a53519d7195a13f40e509f040411ef24930ea36"
+  }
+}

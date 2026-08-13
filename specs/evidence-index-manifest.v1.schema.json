@@ -7,6 +7,7 @@
   "required": [
     "schema_version",
     "component",
+    "projection_pack",
     "base_index_manifest",
     "index_format_descriptor",
     "physical_profile",
@@ -23,6 +24,30 @@
   "properties": {
     "schema_version": {"const": "livefire.rag.evidence-index/1"},
     "component": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "projection_pack": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "pilot_sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "scope_status", "admission_status", "selection_unit", "selected_document_count", "selected_occurrence_count", "source_document_count", "source_occurrence_count", "preserves_all_selected_document_occurrences", "corpus_miss_definitive"],
+      "properties": {
+        "artifact": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "scope_status": {"const": "sample_only_not_corpus_coverage"},
+        "admission_status": {"const": "local_evaluation_only_not_sdk_admitted"},
+        "selection_unit": {"const": "semantic_document_group"},
+        "selected_document_count": {"type": "integer", "minimum": 1},
+        "selected_occurrence_count": {"type": "integer", "minimum": 1},
+        "source_document_count": {"type": "integer", "minimum": 1},
+        "source_occurrence_count": {"type": "integer", "minimum": 1},
+        "preserves_all_selected_document_occurrences": {"const": true},
+        "corpus_miss_definitive": {"const": false}
+      }
+    },
+    "derivation_packs": {
+      "type": "array",
+      "maxItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
+    },
     "base_index_manifest": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
     "index_format_descriptor": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
     "physical_profile": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
@@ -47,17 +72,19 @@
     "row_schemas": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["evidence_document", "evidence_occurrence", "coverage_report"],
+      "required": ["evidence_document", "evidence_occurrence", "evidence_embedding", "coverage_report"],
       "properties": {
         "evidence_document": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
         "evidence_occurrence": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "evidence_embedding": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "derivation_document": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+        "derivation_membership": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
         "coverage_report": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
       }
     },
     "projection_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
     "derivation_policies": {
       "type": "array",
-      "minItems": 1,
       "uniqueItems": true,
       "items": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"}
     },
@@ -71,14 +98,20 @@
     "objects": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["documents", "occurrences", "embeddings", "coverage_report", "object_lock"],
+      "required": ["documents", "occurrences", "embeddings", "embedding_profile", "coverage_report", "base_manifest", "format_descriptor", "build_report", "object_lock"],
       "properties": {
         "documents": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
         "occurrences": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
         "embeddings": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "derivation_documents": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "derivation_memberships": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "embedding_profile": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
         "relations": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
         "lexical_inputs": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
         "coverage_report": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "base_manifest": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "format_descriptor": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "build_report": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
         "object_lock": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
       }
     },
@@ -91,6 +124,8 @@
         "terminal_disposition_count": {"type": "integer", "minimum": 0},
         "document_count": {"type": "integer", "minimum": 0},
         "searchable_document_count": {"type": "integer", "minimum": 0},
+        "derived_document_count": {"type": "integer", "minimum": 0},
+        "derivation_membership_count": {"type": "integer", "minimum": 0},
         "unaccounted_record_count": {"const": 0},
         "unresolved_pointer_count": {"const": 0}
       }
@@ -108,5 +143,30 @@
         "tie_break": {"const": "ranking_score_desc_document_id_asc"}
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["derivation_packs"]},
+      "then": {
+        "properties": {
+          "derivation_packs": {"minItems": 1},
+          "derivation_policies": {"minItems": 1},
+          "row_schemas": {
+            "required": ["derivation_document", "derivation_membership"]
+          },
+          "objects": {
+            "required": ["derivation_documents", "derivation_memberships"]
+          },
+          "coverage": {
+            "required": ["derived_document_count", "derivation_membership_count"]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "derivation_policies": {"maxItems": 0}
+        }
+      }
+    }
+  ]
 }

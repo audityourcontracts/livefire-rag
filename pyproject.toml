@@ -25,15 +25,28 @@ livefire-rag = "livefire_rag.cli:main"
 packages = ["src/livefire_rag"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"specs/embedding-policy.v1.schema.json" = "livefire_rag/evidence_specs/embedding-policy.v1.schema.json"
 "specs/evidence-common.v1.schema.json" = "livefire_rag/evidence_specs/evidence-common.v1.schema.json"
 "specs/evidence-coverage-report.v1.schema.json" = "livefire_rag/evidence_specs/evidence-coverage-report.v1.schema.json"
+"specs/evidence-derivation-coverage.v1.schema.json" = "livefire_rag/evidence_specs/evidence-derivation-coverage.v1.schema.json"
+"specs/evidence-derivation-membership-row.v1.schema.json" = "livefire_rag/evidence_specs/evidence-derivation-membership-row.v1.schema.json"
+"specs/evidence-derivation-pack.v1.schema.json" = "livefire_rag/evidence_specs/evidence-derivation-pack.v1.schema.json"
+"specs/evidence-derived-document.v1.schema.json" = "livefire_rag/evidence_specs/evidence-derived-document.v1.schema.json"
 "specs/evidence-document.v1.schema.json" = "livefire_rag/evidence_specs/evidence-document.v1.schema.json"
+"specs/evidence-embedding-row.v1.schema.json" = "livefire_rag/evidence_specs/evidence-embedding-row.v1.schema.json"
 "specs/evidence-index-manifest.v1.schema.json" = "livefire_rag/evidence_specs/evidence-index-manifest.v1.schema.json"
 "specs/evidence-occurrence-row.v1.schema.json" = "livefire_rag/evidence_specs/evidence-occurrence-row.v1.schema.json"
+"specs/evidence-pilot-coverage.v1.schema.json" = "livefire_rag/evidence_specs/evidence-pilot-coverage.v1.schema.json"
+"specs/evidence-pilot-sample.v1.schema.json" = "livefire_rag/evidence_specs/evidence-pilot-sample.v1.schema.json"
+"specs/evidence-pilot-selection-row.v1.schema.json" = "livefire_rag/evidence_specs/evidence-pilot-selection-row.v1.schema.json"
+"specs/evidence-pilot-sampling-policy.v1.json" = "livefire_rag/evidence_specs/evidence-pilot-sampling-policy.v1.json"
+"specs/evidence-pilot-geometry-policy.v1.json" = "livefire_rag/evidence_specs/evidence-pilot-geometry-policy.v1.json"
 "specs/evidence-projection-pack.v1.schema.json" = "livefire_rag/evidence_specs/evidence-projection-pack.v1.schema.json"
 "specs/evidence-search.input.v1.schema.json" = "livefire_rag/evidence_specs/evidence-search.input.v1.schema.json"
 "specs/evidence-search.output.v1.schema.json" = "livefire_rag/evidence_specs/evidence-search.output.v1.schema.json"
 "specs/evidence-projection-policy.v1.json" = "livefire_rag/evidence_specs/evidence-projection-policy.v1.json"
+"specs/evidence-projection-policy.v2.json" = "livefire_rag/evidence_specs/evidence-projection-policy.v2.json"
+"specs/evidence-derivation-policy.v1.json" = "livefire_rag/evidence_specs/evidence-derivation-policy.v1.json"
 "specs/typed-parquet-record-profile.v1.json" = "livefire_rag/evidence_specs/typed-parquet-record-profile.v1.json"
 
 [tool.hatch.build.targets.sdist]

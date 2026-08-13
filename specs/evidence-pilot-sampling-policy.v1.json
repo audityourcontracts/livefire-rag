@@ -1,0 +1,25 @@
+{
+  "schema_version": "livefire.rag.evidence-pilot-sampling-policy/1",
+  "selection_unit": "semantic_document_group",
+  "scenario_blind": true,
+  "relation_frame": {
+    "census_at_or_below": 1000,
+    "sample_above": 2000
+  },
+  "stratification": [
+    "occurrence_count_power_of_two_bucket",
+    "sorted_facet_name_pattern"
+  ],
+  "allocation": "proportional_largest_remainder_stratum_name_tie_break",
+  "within_stratum_rank": "sha256_projection_pack_policy_relation_stratum_document_id",
+  "occurrence_retention": "all_occurrences_for_selected_documents",
+  "forbidden_selection_inputs": [
+    "semantic_text",
+    "facet_values",
+    "queries",
+    "qrels",
+    "labels",
+    "scenario_or_incident_indicators"
+  ],
+  "corpus_miss_definitive": false
+}

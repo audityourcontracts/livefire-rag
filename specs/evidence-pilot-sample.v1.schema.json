@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-pilot-sample.v1.schema.json",
+  "title": "Livefire immutable scenario-blind evidence pilot sample v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component", "stage", "scope_status", "admission_status", "projection_pack", "sampling_policy", "selection_unit", "count_semantics", "objects", "source_counts", "selected_counts", "closure"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-pilot-sample/1"},
+    "component": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "stage": {"const": "evaluation_sampling_pre_embedding"},
+    "scope_status": {"const": "sample_only_not_corpus_coverage"},
+    "admission_status": {"const": "local_evaluation_only_not_sdk_admitted"},
+    "projection_pack": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "sampling_policy": {"$ref": "https://livefire.dev/sdk/component-ref.v1.schema.json"},
+    "selection_unit": {"const": "semantic_document_group"},
+    "count_semantics": {
+      "const": {
+        "source_documents": "all_searchable_semantic_document_groups_in_projection_pack",
+        "source_occurrences": "all_projection_pack_occurrences_including_structured_only",
+        "selected_occurrences": "all_occurrences_attached_to_selected_documents"
+      }
+    },
+    "objects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documents", "occurrences", "selection", "sampling_policy", "coverage_report", "object_lock"],
+      "properties": {
+        "documents": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "occurrences": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "selection": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "sampling_policy": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "coverage_report": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"},
+        "object_lock": {"$ref": "https://livefire.dev/sdk/artifact-ref.v1.schema.json"}
+      }
+    },
+    "source_counts": {"$ref": "#/$defs/counts"},
+    "selected_counts": {"$ref": "#/$defs/counts"},
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preserves_all_selected_documents", "preserves_all_selected_document_occurrences", "corpus_miss_definitive"],
+      "properties": {
+        "preserves_all_selected_documents": {"const": true},
+        "preserves_all_selected_document_occurrences": {"const": true},
+        "corpus_miss_definitive": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documents", "occurrences"],
+      "properties": {
+        "documents": {"type": "integer", "minimum": 0},
+        "occurrences": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

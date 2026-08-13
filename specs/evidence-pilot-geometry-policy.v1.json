@@ -1,0 +1,60 @@
+{
+  "schema_version": "livefire.rag.evidence-pilot-geometry-policy/1",
+  "input_boundary": {
+    "required": [
+      "sealed_promoted_pilot_index",
+      "sealed_pilot_selection_metadata"
+    ],
+    "forbidden": [
+      "queries",
+      "qrels",
+      "expected_relation_families",
+      "scenario_or_incident_indicators",
+      "anchor_ids",
+      "analyst_labels"
+    ]
+  },
+  "neighbor_geometry": {
+    "space": "original_l2_embedding",
+    "metric": "cosine_distance_one_minus_dot_product",
+    "exact": true,
+    "same_relation_k": [10, 25, 50],
+    "short_relation_rule": "effective_k_min_requested_k_relation_size_minus_one",
+    "self_rule": "exclude",
+    "tie_break": "cosine_distance_ascending_document_id_ascending"
+  },
+  "isolation": {
+    "meaning": "geometric_isolation_not_maliciousness",
+    "basis": "mean_cosine_distance_to_effective_k_same_relation_neighbors",
+    "robust_score": "0.6744897501960817_times_value_minus_relation_median_divided_by_relation_mad",
+    "zero_mad_rule": "score_unavailable",
+    "high_isolation_visual_marker_at_or_above": 3.5
+  },
+  "projection": {
+    "purpose": "visualization_only_not_neighbor_or_score_space",
+    "algorithm": "deterministic_randomized_subspace_iteration_pca",
+    "components": 3,
+    "oversamples": 8,
+    "power_iterations": 2,
+    "seed": "sha256_index_pilot_policy_and_caller_seed_first_64_bits",
+    "centering": "float64_mean",
+    "sign_rule": "largest_absolute_loading_positive",
+    "plots": ["pc1_pc2", "pc1_pc3"]
+  },
+  "sensitivity": {
+    "fit_and_neighbor_weights": "none",
+    "aggregate_weightings": [
+      "document",
+      "occurrence_count",
+      "inverse_inclusion_probability",
+      "occurrence_count_times_inverse_inclusion_probability"
+    ]
+  },
+  "output": {
+    "coordinate_round_decimal_places": 10,
+    "metric_round_decimal_places": 12,
+    "row_order": "document_id_ascending",
+    "admission_status": "local_evaluation_only_not_sdk_admitted",
+    "quality_claim": "diagnostic_geometry_only"
+  }
+}

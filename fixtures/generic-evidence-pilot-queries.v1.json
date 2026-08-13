@@ -1,0 +1,88 @@
+{
+  "schema_version": "livefire.rag.generic-evidence-pilot-queries/1",
+  "status": "predeclared_before_pilot_ranking",
+  "scope": "sample_only_not_corpus_coverage",
+  "authoring_constraints": {
+    "answer_neutral": true,
+    "exact_event_identifiers_forbidden": true,
+    "exact_hosts_principals_addresses_paths_and_resource_names_forbidden": true,
+    "expected_relation_families_are_diagnostic_not_relevance_labels": true
+  },
+  "queries": [
+    {
+      "query_id": "interpreter-telemetry-suppression",
+      "query": "Find interpreter or script activity that attempts to suppress, bypass, or weaken its own execution telemetry.",
+      "expected_relation_families": ["ocsf_event_log_activity", "ocsf_process_activity"]
+    },
+    {
+      "query_id": "persistence-task-service",
+      "query": "Find activity establishing persistence through a scheduled task, service, startup mechanism, or recurring hidden interpreter execution.",
+      "expected_relation_families": ["ocsf_process_activity", "ocsf_event_log_activity", "ocsf_ext_livefire_configuration_snapshot"]
+    },
+    {
+      "query_id": "identity-creation-privilege",
+      "query": "Find activity creating an identity, credential, access key, or privileged group membership.",
+      "expected_relation_families": ["ocsf_api_activity", "ocsf_entity_management", "ocsf_process_activity", "ocsf_event_log_activity"]
+    },
+    {
+      "query_id": "endpoint-discovery-defense",
+      "query": "Find endpoint discovery, address-range scanning, or commands that disable firewall or endpoint protections.",
+      "expected_relation_families": ["ocsf_process_activity", "ocsf_network_activity", "ocsf_event_log_activity"]
+    },
+    {
+      "query_id": "remote-transfer-execution",
+      "query": "Find activity that downloads or transfers remote content and then executes, launches, or stages it.",
+      "expected_relation_families": ["ocsf_process_activity", "ocsf_event_log_activity", "ocsf_http_activity", "ocsf_network_activity"]
+    },
+    {
+      "query_id": "cloud-compute-failure",
+      "query": "Find failed or denied cloud compute provisioning activity, especially repeated attempts across scopes or regions.",
+      "expected_relation_families": ["ocsf_api_activity"]
+    },
+    {
+      "query_id": "object-storage-exposure",
+      "query": "Find changes that make object-storage data publicly accessible or later restrict that access.",
+      "expected_relation_families": ["ocsf_api_activity", "ocsf_ext_livefire_configuration_snapshot"]
+    },
+    {
+      "query_id": "authentication-abuse",
+      "query": "Find unusual authentication failures, account misuse, or successful access following repeated denial.",
+      "expected_relation_families": ["ocsf_authentication", "ocsf_event_log_activity"]
+    },
+    {
+      "query_id": "suspicious-email-delivery",
+      "query": "Find email delivery or mailbox activity involving suspicious attachments, links, forwarding, or search and export behavior.",
+      "expected_relation_families": ["ocsf_email_activity", "ocsf_api_activity"]
+    },
+    {
+      "query_id": "sensitive-file-change",
+      "query": "Find creation, modification, or access of executable content, credential material, or other sensitive files.",
+      "expected_relation_families": ["ocsf_file_activity", "ocsf_process_activity", "ocsf_event_log_activity"]
+    },
+    {
+      "query_id": "suspicious-name-resolution",
+      "query": "Find unusual name-resolution behavior, repetitive encoded-looking queries, or requests associated with command-and-control activity.",
+      "expected_relation_families": ["ocsf_dns_activity", "ocsf_network_activity"]
+    },
+    {
+      "query_id": "data-store-manipulation",
+      "query": "Find unusual data-store reads, writes, administrative operations, or attempts to alter protected information.",
+      "expected_relation_families": ["ocsf_datastore_activity", "ocsf_api_activity"]
+    },
+    {
+      "query_id": "security-detection",
+      "query": "Find security detections describing exploitation, malicious execution, credential access, persistence, or exfiltration.",
+      "expected_relation_families": ["ocsf_detection_finding"]
+    },
+    {
+      "query_id": "configuration-weakening",
+      "query": "Find configuration state that weakens logging, access controls, encryption, exposure safeguards, or defensive policy.",
+      "expected_relation_families": ["ocsf_ext_livefire_configuration_snapshot", "ocsf_cloud_resources_inventory_info", "ocsf_inventory_info"]
+    },
+    {
+      "query_id": "generic-negative-control",
+      "query": "Find spacecraft propulsion calibration activity performed during an orbital maintenance window.",
+      "expected_relation_families": []
+    }
+  ]
+}

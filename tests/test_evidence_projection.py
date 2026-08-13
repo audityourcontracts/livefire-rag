@@ -212,7 +212,7 @@ class EvidenceProjectionTest(unittest.TestCase):
                     "device": "device-441",
                 },
                 "structured_only",
-                "98250",
+                "<quantity:1e4>",
             ),
             (
                 "ocsf_network_activity",
@@ -341,6 +341,65 @@ class EvidenceProjectionTest(unittest.TestCase):
         self.assertTrue(projected["exact_attribute_metadata"]["source_hydration_required"])
         self.assertEqual(len(projected["projection_sha256"]), 64)
 
+    def test_semantic_group_drops_transport_identity_noise_and_buckets_quantities(self) -> None:
+        first_event = {
+            "ocsf": {
+                "time": 1_700_000_000_000,
+                "activity_id": 6,
+                "class_uid": 4001,
+                "metadata": {
+                    "version": "1.8.0",
+                    "product": {"name": "normalizer-a", "vendor_name": "vendor-a"},
+                },
+                "unmapped": {
+                    "endtime": "2025-01-01T00:00:01Z",
+                    "src_mac": "00:11:22:33:44:55",
+                    "dest_mac": "66:77:88:99:aa:bb",
+                    "src_content": "opaque-packet-a",
+                    "bytes": 145,
+                },
+            },
+            "support_ref": "support-a",
+            "protocol_stack": "ip:tcp:https",
+            "status": "allowed",
+        }
+        second_event = json.loads(json.dumps(first_event))
+        second_event["ocsf"]["time"] = 1_700_000_010_000
+        second_event["ocsf"]["metadata"] = {
+            "version": "9.9.9",
+            "product": {"name": "normalizer-b", "vendor_name": "vendor-b"},
+        }
+        second_event["ocsf"]["unmapped"].update(
+            {
+                "endtime": "2025-01-01T00:10:01Z",
+                "src_mac": "aa:aa:aa:aa:aa:aa",
+                "dest_mac": "bb:bb:bb:bb:bb:bb",
+                "src_content": "opaque-packet-b",
+                "bytes": 199,
+            }
+        )
+        second_event["support_ref"] = "support-b"
+
+        first = project_event("ocsf_network_activity", "event-a", first_event, "support-a")
+        second = project_event("ocsf_network_activity", "event-b", second_event, "support-b")
+        self.assertEqual(first["semantic_group_sha256"], second["semantic_group_sha256"])
+        self.assertIn("<quantity:1e2>", first["semantic_text"])
+        for forbidden in (
+            "00:11:22:33:44:55",
+            "opaque-packet-a",
+            "normalizer-a",
+            "vendor-a",
+            "2025-01-01T00:00:01Z",
+            "support-a",
+        ):
+            self.assertNotIn(forbidden, first["semantic_text"])
+        self.assertNotEqual(first["projection_sha256"], second["projection_sha256"])
+
+        changed = json.loads(json.dumps(second_event))
+        changed["status"] = "blocked"
+        blocked = project_event("ocsf_network_activity", "event-c", changed, "support-c")
+        self.assertNotEqual(first["semantic_group_sha256"], blocked["semantic_group_sha256"])
+
     def test_unknown_relation_and_invalid_json_are_terminal_not_silent(self) -> None:
         unknown = project_event(
             "ocsf_future_activity",
@@ -389,6 +448,89 @@ class EvidenceProjectionTest(unittest.TestCase):
             exact_metadata["omission_counts"],
         )
         self.assertTrue(exact_metadata["source_hydration_required"])
+
+    def test_typed_behavior_has_priority_over_large_unmapped_bags(self) -> None:
+        result = project_event(
+            "ocsf_process_activity",
+            "priority-event",
+            {
+                "ocsf": {
+                    "time": 1_700_000_000_000,
+                    "unmapped": {f"field_{index:03d}": "noise" for index in range(300)},
+                },
+                "process": {"command_line": "portable-tool --mode inspect"},
+                "status": "denied",
+            },
+            "priority-support",
+        )
+        self.assertTrue(result["event_metadata"]["projection_truncated"])
+        self.assertIn("portable-tool --mode inspect", result["action_text"])
+        self.assertIn("status=denied", result["outcome_text"])
+        self.assertIn("portable-tool --mode inspect", result["semantic_text"])
+        self.assertIn("status=denied", result["semantic_text"])
+
+    def test_each_semantic_role_has_a_reserved_embedding_text_budget(self) -> None:
+        long_value = "generic-value-" * 20
+        result = project_event(
+            "ocsf_api_activity",
+            "role-budget-event",
+            {
+                "request": {f"action_{index}": long_value for index in range(8)},
+                "resource": {f"target_{index}": long_value for index in range(8)},
+                **{f"context_{index}": long_value for index in range(8)},
+                "state": "disabled",
+                "status": "denied",
+                "severity_name": "Critical",
+            },
+            "role-budget-support",
+        )
+        self.assertLessEqual(len(result["semantic_text"]), MAX_SEMANTIC_TEXT_CHARS)
+        self.assertIn("state=disabled", result["semantic_text"])
+        self.assertIn("status=denied", result["semantic_text"])
+        self.assertIn("severity_name=Critical", result["semantic_text"])
+
+    def test_vendor_identifier_aliases_and_opaque_secret_fields_are_safe(self) -> None:
+        result = project_event(
+            "ocsf_authentication",
+            "alias-event",
+            {
+                "activity_name": "Login",
+                "computer_name": "SECRET-WORKSTATION",
+                "source_hostname": "private.internal",
+                "workstation_name": "FINANCE-LAPTOP",
+                "user_name": "operator@example.invalid",
+                "x_api_key": "opaque-value-without-standard-prefix",
+                "aws_secret_access_key": "another-opaque-value",
+                "passphrase": "correct horse battery staple",
+                "status": "success",
+            },
+            "alias-support",
+        )
+        semantic = " ".join(
+            result[field]
+            for field in (
+                "semantic_text",
+                "action_text",
+                "target_text",
+                "context_text",
+                "outcome_text",
+            )
+        )
+        for forbidden in (
+            "SECRET-WORKSTATION",
+            "private.internal",
+            "FINANCE-LAPTOP",
+            "operator@example.invalid",
+            "opaque-value-without-standard-prefix",
+            "another-opaque-value",
+            "correct horse battery staple",
+        ):
+            self.assertNotIn(forbidden, semantic)
+        self.assertEqual(result["structured_fields"]["x_api_key"]["classification"], "secret")
+        exact_paths = {row["path"] for row in result["exact_attributes"]}
+        self.assertNotIn("/x_api_key", exact_paths)
+        self.assertNotIn("/aws_secret_access_key", exact_paths)
+        self.assertNotIn("/passphrase", exact_paths)
 
     def test_projector_source_contains_no_hunt_or_benchmark_literals(self) -> None:
         source = (ROOT / "src/livefire_rag/evidence_projection.py").read_text(encoding="utf-8").lower()

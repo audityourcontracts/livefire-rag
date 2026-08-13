@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-pilot-selection-row.v1.schema.json",
+  "title": "Livefire scenario-blind pilot selection membership v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "document_id", "relation", "stratum", "selection_reason", "rank_sha256", "stratum_population", "stratum_quota", "inclusion_probability", "sampling_weight"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-pilot-selection-row/1"},
+    "document_id": {"type": "string", "pattern": "^doc-[0-9a-f]{64}$"},
+    "relation": {"type": "string", "minLength": 1},
+    "stratum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["occurrence_count_bucket", "facet_name_pattern"],
+      "properties": {
+        "occurrence_count_bucket": {"type": "string", "minLength": 1},
+        "facet_name_pattern": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "selection_reason": {"enum": ["relation_census", "relation_stratified_hash_min"]},
+    "rank_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "stratum_population": {"type": "integer", "minimum": 1},
+    "stratum_quota": {"type": "integer", "minimum": 1},
+    "inclusion_probability": {"$ref": "#/$defs/ratio"},
+    "sampling_weight": {"$ref": "#/$defs/ratio"}
+  },
+  "$defs": {
+    "ratio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 1},
+        "denominator": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

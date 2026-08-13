@@ -218,10 +218,10 @@ class EvidenceSourceAdmissionTests(unittest.TestCase):
     def test_projection_policy_identity_is_stable_and_scenario_blind(self) -> None:
         reference = projection_policy_ref()
         self.assertEqual(reference, projection_policy_ref())
-        self.assertEqual(reference["version"], "1")
+        self.assertEqual(reference["version"], "2")
         self.assertEqual(
             projection_policy_material(),
-            json.loads((Path(__file__).parents[1] / "specs/evidence-projection-policy.v1.json").read_text()),
+            json.loads((Path(__file__).parents[1] / "specs/evidence-projection-policy.v2.json").read_text()),
         )
         self.assertEqual(
             source_record_profile_material(),
@@ -238,7 +238,7 @@ class EvidenceSourceAdmissionTests(unittest.TestCase):
             root / "src/livefire_rag/evidence_builder.py",
             root / "src/livefire_rag/evidence_projection.py",
             root / "src/livefire_rag/evidence_source.py",
-            root / "specs/evidence-projection-policy.v1.json",
+            root / "specs/evidence-projection-policy.v2.json",
             root / "specs/typed-parquet-record-profile.v1.json",
         ]
         material = "\n".join(path.read_text(encoding="utf-8").lower() for path in paths)

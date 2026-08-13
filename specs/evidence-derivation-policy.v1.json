@@ -1,0 +1,301 @@
+{
+  "entity": {
+    "identity": "exact_entity_id",
+    "membership": "sorted_unique_entity_occurrence_role",
+    "orphan_behavior": "coverage_only_no_evidence_document",
+    "semantic_fields": [
+      "entity_kind",
+      "participant_roles",
+      "typed_relations",
+      "relationship_kinds_and_directions",
+      "neighbor_entity_kinds"
+    ],
+    "semantic_identifier_values_permitted": false
+  },
+  "field_adapters": {
+    "time_pointers": [
+      "/header/time",
+      "/ocsf/time",
+      "/time",
+      "/event_time"
+    ],
+    "source_type_pointers": [
+      "/header/metadata/type",
+      "/ocsf/metadata/type",
+      "/metadata/type"
+    ],
+    "configuration_subject_instance_pointers": [
+      "/subject_instance_id",
+      "/subject_instance_uid",
+      "/subject_instance/id",
+      "/subject_instance/uid",
+      "/subject/id",
+      "/subject/uid",
+      "/resource/id",
+      "/resource/uid"
+    ],
+    "network_operation_pointers": [
+      "/action",
+      "/method",
+      "/query_type",
+      "/activity_name",
+      "/ocsf/activity_name"
+    ],
+    "network_protocol_pointers": [
+      "/protocol",
+      "/protocol_stack",
+      "/transport",
+      "/ocsf/protocol_name",
+      "/ocsf/app_name"
+    ],
+    "network_outcome_pointers": [
+      "/status",
+      "/status_code",
+      "/rcode",
+      "/response/status_code",
+      "/ocsf/status"
+    ],
+    "network_measure_pointers": {
+      "bytes": [
+        "/bytes",
+        "/traffic/bytes",
+        "/ocsf/traffic/bytes"
+      ],
+      "bytes_in": [
+        "/bytes_in",
+        "/traffic/bytes_in",
+        "/ocsf/traffic/bytes_in"
+      ],
+      "bytes_out": [
+        "/bytes_out",
+        "/traffic/bytes_out",
+        "/ocsf/traffic/bytes_out"
+      ],
+      "duration_millis": [
+        "/duration_millis",
+        "/duration",
+        "/ocsf/duration"
+      ],
+      "packets": [
+        "/packets",
+        "/traffic/packets",
+        "/ocsf/traffic/packets"
+      ],
+      "packets_in": [
+        "/packets_in",
+        "/traffic/packets_in",
+        "/ocsf/traffic/packets_in"
+      ],
+      "packets_out": [
+        "/packets_out",
+        "/traffic/packets_out",
+        "/ocsf/traffic/packets_out"
+      ]
+    },
+    "volatile_state_pointers": [
+      "/event_id",
+      "/event_time",
+      "/header/event_id",
+      "/header/metadata/uid",
+      "/header/time",
+      "/ingest_time",
+      "/ingestion_time",
+      "/native_event_uid",
+      "/ocsf/metadata/uid",
+      "/ocsf/time",
+      "/record_uid",
+      "/support_ref",
+      "/time"
+    ]
+  },
+  "identity": {
+    "canonicalization": "RFC8785",
+    "hash": "sha256",
+    "membership_set": "length_prefixed_sorted_unique_membership_tuples"
+  },
+  "input_contract": {
+    "base_pack": "verified_immutable_projection_pack",
+    "graph_relations": [
+      "entities",
+      "participants",
+      "relationships"
+    ],
+    "selectors_permitted": false,
+    "typed_relations": [
+      "ocsf_api_activity",
+      "ocsf_application_lifecycle",
+      "ocsf_authentication",
+      "ocsf_cloud_resources_inventory_info",
+      "ocsf_datastore_activity",
+      "ocsf_detection_finding",
+      "ocsf_dns_activity",
+      "ocsf_email_activity",
+      "ocsf_entity_management",
+      "ocsf_event_log_activity",
+      "ocsf_ext_livefire_configuration_snapshot",
+      "ocsf_ext_livefire_system_metric",
+      "ocsf_file_activity",
+      "ocsf_http_activity",
+      "ocsf_inventory_info",
+      "ocsf_network_activity",
+      "ocsf_process_activity",
+      "ocsf_user_inventory"
+    ]
+  },
+  "leakage_controls": {
+    "corpus_tuned_thresholds_permitted": false,
+    "expected_evidence_permitted": false,
+    "labels_permitted": false,
+    "qrels_permitted": false,
+    "query_input_permitted": false
+  },
+  "metric_window": {
+    "aggregates": [
+      "count",
+      "minimum",
+      "maximum",
+      "integer_sum",
+      "mean_fraction"
+    ],
+    "bounds": "start_inclusive_end_exclusive",
+    "closure": "snapshot_sealed_observed",
+    "completeness": "unknown_expected_cadence",
+    "group_fields": [
+      "relation",
+      "source_type",
+      "metric",
+      "unit",
+      "scope"
+    ],
+    "origin_epoch_millis": 0,
+    "relations": [
+      "ocsf_ext_livefire_system_metric"
+    ],
+    "window_millis": 300000
+  },
+  "network_window": {
+    "bounds": "start_inclusive_end_exclusive",
+    "closure": "snapshot_sealed_observed",
+    "completeness": "unknown_expected_cadence",
+    "group_fields": [
+      "relation",
+      "source_type",
+      "operation_signature",
+      "protocol_signature",
+      "scope"
+    ],
+    "missing_measures": "counted_not_zero_filled",
+    "origin_epoch_millis": 0,
+    "relations": [
+      "ocsf_dns_activity",
+      "ocsf_http_activity",
+      "ocsf_network_activity"
+    ],
+    "window_millis": 300000
+  },
+  "policy_id": "livefire.rag.generic-evidence-derivation-policy",
+  "schema_version": "livefire.rag.evidence-derivation-policy/1",
+  "scope": {
+    "material": "sorted_unique_exact_participant_role_and_entity_id_pairs",
+    "missing_scope": "explicit_ineligible_no_anonymous_merge",
+    "semantic_identity_exposure": false
+  },
+  "semantic_rendering": {
+    "scalar_policy": "generic_evidence_projection_policy_semantic_safe_value",
+    "numeric_policy": "sign_and_base10_magnitude_bucket",
+    "safe_state_categories": [
+      "active",
+      "allowed",
+      "blocked",
+      "closed",
+      "compliant",
+      "created",
+      "deleted",
+      "denied",
+      "disabled",
+      "enabled",
+      "failed",
+      "inactive",
+      "noncompliant",
+      "open",
+      "private",
+      "public",
+      "running",
+      "stopped",
+      "success",
+      "unknown"
+    ],
+    "unknown_state_value": "typed_value_kind_only",
+    "identifiers_in_text": false,
+    "graph_taxonomy_allowlists": {
+      "entity_kind": [
+        "account",
+        "application",
+        "credential",
+        "datastore",
+        "device",
+        "file",
+        "identity",
+        "network_endpoint",
+        "process",
+        "resource",
+        "service",
+        "session"
+      ],
+      "participant_role": [
+        "actor",
+        "device",
+        "object",
+        "observer",
+        "owner",
+        "principal",
+        "recipient",
+        "resource",
+        "sender",
+        "source",
+        "subject",
+        "target"
+      ],
+      "relationship_kind": [
+        "acted_on",
+        "authenticated_as",
+        "authenticated_from",
+        "communicated_with",
+        "executed_on",
+        "hosted_by",
+        "member_of",
+        "observed_on",
+        "produced",
+        "resolved_to",
+        "same_session",
+        "used_credential"
+      ]
+    },
+    "nested_value_bounds": {
+      "maximum_depth": 8,
+      "maximum_container_items": 32,
+      "maximum_scalars": 128,
+      "maximum_visited_nodes": 256,
+      "over_bound": "omit_without_traversal"
+    }
+  },
+  "state_transition": {
+    "closure": "snapshot_sealed_observed_history_outside_snapshot_unknown",
+    "equal_adjacent_state": "unchanged",
+    "first_observation": "no_predecessor",
+    "configuration_requires_explicit_stable_subject_instance": true,
+    "missing_configuration_subject_instance": "ineligible",
+    "relations": [
+      "ocsf_cloud_resources_inventory_info",
+      "ocsf_ext_livefire_configuration_snapshot",
+      "ocsf_inventory_info",
+      "ocsf_user_inventory"
+    ],
+    "same_time_distinct_state": "ambiguous_no_transition",
+    "series_order": [
+      "event_time_millis",
+      "event_id"
+    ]
+  },
+  "version": "1"
+}

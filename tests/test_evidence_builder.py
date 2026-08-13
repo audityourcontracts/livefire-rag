@@ -729,6 +729,10 @@ class EvidenceBuilderTests(unittest.TestCase):
         expected = {
             *GENERIC_EVIDENCE_SCHEMA_NAMES,
             "evidence-projection-policy.v1.json",
+            "evidence-projection-policy.v2.json",
+            "evidence-derivation-policy.v1.json",
+            "evidence-pilot-sampling-policy.v1.json",
+            "evidence-pilot-geometry-policy.v1.json",
             "typed-parquet-record-profile.v1.json",
         }
         self.assertEqual({Path(destination).name for destination in forced.values()}, expected)

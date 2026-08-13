@@ -184,14 +184,15 @@ documents, materializes the portable Parquet representation, and emits an
 `evidence-index-manifest.v1`. Only this second artifact is a searchable evidence
 index.
 
-The current projection implementation emits generic `activity`, `state`, and
+The projection implementation emits generic `activity`, `state`, and
 `detection` semantic groups for every eligible typed observation. Raw system
 metric samples receive `structured_only_occurrence` with the stable reason
 `awaits_deterministic_window_derivation`; they remain exactly pointer-addressable
 and are not embedded as millions of context-free scalar samples. Metric windows,
 state transitions, network windows, and entity consolidations are distinct
-policy-bound derivation stages. Their absence must remain visible in the
-coverage report and cannot be represented as silent omission.
+policy-bound derivation stages implemented as an immutable many-to-many overlay.
+Their absence remains visible in coverage and cannot be represented as silent
+omission.
 
 ## Standalone projection commands
 
@@ -223,6 +224,14 @@ livefire-rag inspect-evidence-projection \
   --pack PROJECTION_PACK \
   --snapshot-root NORMALIZED_SNAPSHOT \
   --sdk-specs ../livefire-sdk/specs
+
+livefire-rag derive-evidence-overlay \
+  --pack PROJECTION_PACK \
+  --snapshot-root NORMALIZED_SNAPSHOT \
+  --component-id DERIVATION_COMPONENT_ID \
+  --out DERIVATION_OVERLAY
+
+livefire-rag verify-evidence-overlay --overlay DERIVATION_OVERLAY
 ```
 
 The wheel includes the generic evidence schemas, projection policy, and typed
@@ -258,7 +267,13 @@ evidence-index/
   documents.parquet
   occurrences.parquet
   embeddings.parquet
+  derivation-documents.parquet    # optional verified derivation overlay
+  derivation-memberships.parquet  # optional occurrence membership overlay
+  embedding-profile.json
   coverage-report.json
+  base-index-manifest.json
+  index-format-descriptor.json
+  build-report.json
   objects.lock.json
   relations.parquet       # optional exact relationship projection
   lexical-inputs.parquet  # optional canonical input for a lexical cache
@@ -273,6 +288,18 @@ are admission failures.
 the manifest's embedding profiles. It must not contain a vector for a
 `structured_only` document. Exact vector search is the correctness oracle;
 approximate indexes are disposable caches.
+
+Promotion runs a bound embedding-execution preflight before creating any output.
+The v1 LM Studio adapter executes the generic conformance fixture twice, requires
+both jq-normalized output digests to equal the profile, checks the exposed model
+key/type/GGUF format/quantization/file size/loaded context, and rejects a caller
+batch larger than the profile maximum. Documents are rejected before submission
+when their UTF-8 byte length exceeds the token limit; this conservative upper
+bound avoids relying on undocumented server truncation. LM Studio does not expose
+artifact, repository-revision, tokenizer, pooling, inference-engine, or runtime
+digests, so the build report names those properties as unverifiable and the
+provided profile remains `development_only`. No build report is an SDK admission
+receipt.
 
 `coverage-report.json` validates against `evidence-coverage-report.v1`. Its
 global, per-relation, per-disposition, per-kind, rejection-reason, and pointer
@@ -346,9 +373,12 @@ The provider performs these logical steps:
 6. apply the manifest tie break; and
 7. return candidate documents with matching immutable occurrence pointers.
 
-Score fields use deterministic integer encodings. Missing retrieval channels are
-represented as `null`, not fabricated zero scores. `matched_facets` are copied
-from deterministic projected fields and are not generated explanations.
+No eligible or rankable candidate is an explicit successful `miss`, not an
+empty pointer result and not a protocol failure. Score fields use deterministic
+integer encodings. Missing retrieval channels are
+represented as `null`, not fabricated zero scores. The v1 `matched_facets`
+field is reserved and emitted as an empty array; it is never a generated
+explanation or an unsupported claim about why the model ranked a document.
 
 Search output is deliberately insufficient for evidence admission. Hydration,
 exact aggregation, entity joins, state ordering, chronology, and factual claims
@@ -359,12 +389,12 @@ brain.
 
 The projection pack is a builder artifact, not a tool-provider index binding.
 It is therefore verified with `verify-evidence-projection` and must not be
-opened by the Livefire runner. The promotion step will produce the SDK base
-index manifest, specialized `evidence-index-manifest.v1`, admission receipt,
-object lock, format descriptor, and `evidence.search` tool descriptor required
-by a provider binding.
+opened by the Livefire runner. The implemented promotion step produces the SDK
+base index manifest, specialized `evidence-index-manifest.v1`, object lock,
+format descriptor, build report, and canonical Parquet objects. It deliberately
+does not mint a host admission receipt or authority signature.
 
-The eventual provider follows the existing SDK JSONL lifecycle:
+The provider follows the existing SDK JSONL lifecycle:
 `handshake -> open(binding lock + admitted index mount) -> call -> health ->
 close`. It opens the final index read-only, returns only
 `source-record-pointer.v1` candidates, and has no normalized-source mount,
@@ -372,10 +402,65 @@ vendor credentials, or Livefire repository dependency. This contract does not
 require a new Livefire brain interface and does not move hypothesis, evidence,
 or finding logic into RAG.
 
-The current SDK component/artifact/source-pointer types are sufficient for the
-projection stage. A real tool bundle is intentionally deferred until there is a
-searchable, admitted evidence index; packaging the pre-embedding pack as a
-provider index would be a false capability claim.
+The provider-only development bundle closes over its Python sources and schemas
+and excludes index/source data. It can be validated by `livefire-sdk
+validate-bundle`; a host must still supply and verify the immutable index,
+binding lock, embedding profile, and admission receipt before `open`. This POC
+vendors and content-binds `rfc8785`, but still uses ambient Python 3.12,
+DuckDB, NumPy, jsonschema, and referencing packages, so it is targeted as
+`python3.12-darwin-arm64-ambient-development`, not as a portable or
+self-contained executable. A production-candidate bundle must bind and mount an
+immutable runtime component (or package a native/self-contained executable) and
+pass the same SDK transcript in a clean environment. Local fixture receipts are
+explicitly test-only and are not production authority claims.
+
+### Local-test provider replay
+
+After promotion, the development provider can be exercised without hand-writing
+identity-bearing locks or protocol envelopes:
+
+```sh
+uv run --extra prototype livefire-rag package-evidence-bundle \
+  --repository-root . --sdk-specs ../livefire-sdk/specs --out dist/evidence-provider
+
+../livefire-sdk/target/debug/livefire-sdk \
+  --specs ../livefire-sdk/specs validate-bundle \
+  --manifest dist/evidence-provider/plugin.json --root dist/evidence-provider
+
+uv run --extra prototype livefire-rag prepare-evidence-loadout \
+  --index indexes/evidence-v1 --bundle dist/evidence-provider \
+  --sdk-specs ../livefire-sdk/specs \
+  --request requests/process-search.json --request requests/api-search.json \
+  --embedding-endpoint http://127.0.0.1:1234 \
+  --out reports/evidence-loadout
+
+uv run ../livefire-sdk/target/debug/livefire-sdk \
+  --specs ../livefire-sdk/specs invoke \
+  --program dist/evidence-provider/bin/livefire-rag-evidence-provider \
+  --requests reports/evidence-loadout/requests.jsonl --timeout-ms 30000 \
+  > reports/evidence-wire.jsonl
+
+uv run --extra prototype livefire-rag validate-evidence-wire \
+  --wire reports/evidence-wire.jsonl --loadout reports/evidence-loadout \
+  --sdk-specs ../livefire-sdk/specs \
+  --report reports/evidence-wire-validation.json \
+  --hydration-requests reports/evidence-hydration-requests.jsonl
+```
+
+The generated receipt uses a `local-test:` pseudo-signature, declares
+`deterministic_rebuild: false`, and cannot be substituted for host admission.
+The transcript binds absolute local mount paths and a deterministic far-future
+deadline for reproducible POC replay. Dense or fused calls require the exact
+profile model at the bound loopback endpoint; lexical-only calls do not invoke
+the model, although `open` still checks the profile and endpoint binding.
+
+Wire validation checks every SDK response envelope, every call output schema,
+request digest, index and snapshot identity, and lifecycle ordering. Its JSONL
+hydration export deduplicates source pointers and records every query/document/
+occurrence discovery context. It is a request handoff only: the authoritative
+source adapter must resolve the locator against the admitted snapshot, verify
+the record digest under the bound snapshot profile, and return typed source
+fields. RAG previews and scores remain non-evidentiary.
 
 ## Admission checks
 

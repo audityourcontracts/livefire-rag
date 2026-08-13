@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/evidence-pilot-coverage.v1.schema.json",
+  "title": "Livefire non-corpus pilot coverage v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scope_status", "admission_status", "count_semantics", "source", "selected", "by_relation", "closure"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.evidence-pilot-coverage/1"},
+    "scope_status": {"const": "sample_only_not_corpus_coverage"},
+    "admission_status": {"const": "local_evaluation_only_not_sdk_admitted"},
+    "count_semantics": {
+      "const": {
+        "source_documents": "all_searchable_semantic_document_groups_in_projection_pack",
+        "source_occurrences": "all_projection_pack_occurrences_including_structured_only",
+        "selected_occurrences": "all_occurrences_attached_to_selected_documents"
+      }
+    },
+    "source": {"$ref": "#/$defs/counts"},
+    "selected": {"$ref": "#/$defs/counts"},
+    "by_relation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["relation", "source_documents", "selected_documents", "selected_occurrences", "frame"],
+        "properties": {
+          "relation": {"type": "string", "minLength": 1},
+          "source_documents": {"type": "integer", "minimum": 1},
+          "selected_documents": {"type": "integer", "minimum": 1},
+          "selected_occurrences": {"type": "integer", "minimum": 0},
+          "frame": {"enum": ["census", "stratified_hash_min"]}
+        }
+      }
+    },
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preserves_all_selected_documents", "preserves_all_selected_document_occurrences", "unresolved_selected_document_count", "unresolved_selected_occurrence_count", "corpus_miss_definitive"],
+      "properties": {
+        "preserves_all_selected_documents": {"const": true},
+        "preserves_all_selected_document_occurrences": {"const": true},
+        "unresolved_selected_document_count": {"const": 0},
+        "unresolved_selected_occurrence_count": {"const": 0},
+        "corpus_miss_definitive": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documents", "occurrences"],
+      "properties": {
+        "documents": {"type": "integer", "minimum": 0},
+        "occurrences": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

@@ -46,6 +46,22 @@ PROVIDER_WRAPPER_TEXT = (
     "raise SystemExit(main(['provider', *sys.argv[1:]]))\n"
 )
 
+# Provider identity is the transitive runtime closure for the legacy command
+# provider, not every Python module that happens to share this distribution.
+# Keeping this list explicit prevents independent generic evidence components
+# from silently changing the legacy provider component reference.
+PROVIDER_RUNTIME_MODULES = (
+    "__init__.py",
+    "canonical.py",
+    "cli.py",
+    "contracts.py",
+    "embedding.py",
+    "index.py",
+    "provider.py",
+    "schema_validation.py",
+    "service.py",
+)
+
 
 def _distribution_root() -> Path:
     # Editable checkout: <root>/src/livefire_rag. Bundle: <root>/lib/livefire_rag.
@@ -140,7 +156,8 @@ def provider_object_lock() -> dict[str, Any]:
             "bytes": len(PROVIDER_WRAPPER_TEXT.encode("utf-8")),
         }
     ]
-    for source in sorted(source_dir.glob("*.py"), key=lambda path: path.name):
+    for name in PROVIDER_RUNTIME_MODULES:
+        source = source_dir / name
         data = source.read_bytes()
         objects.append(
             {

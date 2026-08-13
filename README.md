@@ -55,6 +55,40 @@ livefire-rag verify-evidence-projection --pack PACK --snapshot-root SNAPSHOT \
   --sdk-specs SDK_SPECS
 livefire-rag inspect-evidence-projection --pack PACK --snapshot-root SNAPSHOT \
   --sdk-specs SDK_SPECS
+livefire-rag build-evidence-pilot --pack PACK --component-id ID \
+  --sdk-specs SDK_SPECS --out PILOT
+livefire-rag verify-evidence-pilot --pilot PILOT --pack PACK \
+  --sdk-specs SDK_SPECS
+livefire-rag promote-evidence-pilot-index --pack PACK --pilot PILOT \
+  --source-admission-component RECEIPT_REF --embedding-profile PROFILE \
+  --embedding-conformance-fixture FIXTURE --embedding-profile-id ID \
+  --index-id ID --sdk-specs SDK_SPECS --out PILOT_INDEX
+livefire-rag verify-evidence-index --index PILOT_INDEX --pilot-sample PILOT \
+  --sdk-specs SDK_SPECS
+livefire-rag evaluate-evidence-pilot --index PILOT_INDEX \
+  --query-fixture fixtures/generic-evidence-pilot-queries.v1.json \
+  --embedding-endpoint http://127.0.0.1:1234 --component-id ID \
+  --sdk-specs SDK_SPECS --out PILOT_EVALUATION
+livefire-rag report-evidence-pilot-geometry --index PILOT_INDEX --pilot PILOT \
+  --component-id ID --sdk-specs SDK_SPECS --out PILOT_GEOMETRY
+livefire-rag derive-evidence-overlay --pack PACK --snapshot-root SNAPSHOT \
+  --component-id ID --out OVERLAY
+livefire-rag verify-evidence-overlay --overlay OVERLAY
+livefire-rag promote-evidence-index --pack PACK --derivation-pack OVERLAY \
+  --snapshot-root SNAPSHOT --source-admission-component RECEIPT_REF \
+  --embedding-profile PROFILE --embedding-conformance-fixture FIXTURE \
+  --embedding-profile-id ID --index-id ID \
+  --sdk-specs SDK_SPECS --out INDEX
+livefire-rag verify-evidence-index --index INDEX --pack PACK \
+  --derivation-pack OVERLAY --sdk-specs SDK_SPECS
+livefire-rag search-evidence --index INDEX --pack PACK \
+  --derivation-pack OVERLAY --sdk-specs SDK_SPECS --request REQUEST
+livefire-rag evidence-provider --sdk-specs SDK_SPECS
+livefire-rag package-evidence-bundle --sdk-specs SDK_SPECS --out BUNDLE
+livefire-rag prepare-evidence-loadout --index INDEX --bundle BUNDLE \
+  --sdk-specs SDK_SPECS --request REQUEST [--request REQUEST...] --out LOADOUT
+livefire-rag validate-evidence-wire --wire WIRE --loadout LOADOUT \
+  --sdk-specs SDK_SPECS --report REPORT --hydration-requests POINTERS
 ```
 
 The immutable POC pack contains canonical `documents.jsonl`, row-major
@@ -63,14 +97,46 @@ manifest. Exact search accumulates in float64 and breaks equal distances by
 ascending command ID. The SDK provider implements the complete JSONL lifecycle
 and returns typed pointer or miss results.
 
-The generic evidence projection command admits every typed relation from a
-completed normalized-snapshot build receipt, verifies each Parquet object and
-row count, and emits one terminal occurrence for every source row. It is a
-pre-embedding projection pack, not yet a searchable SDK index. Remaining
-planned production work includes promotion of those generic documents into the
-canonical Parquet/embedding index, deterministic metric/state/network derived
-windows, `cli.outliers`, and `cli.explain`. The fact-evidence evaluator remains
-the separate `tools/evaluate_fact_evidence.py` command documented below.
+The generic evidence path admits every typed relation from a completed
+normalized-snapshot build receipt, verifies each Parquet object and row count,
+and emits one terminal occurrence for every source row. A separate immutable
+overlay derives fixed-policy metric/network windows, state transitions, and
+entity summaries without rewriting source occurrences. Promotion converts the
+base and derived documents to canonical Parquet, embeds every and only
+searchable document, and emits a locally verified index. `evidence.search`
+then applies source filters to occurrences before ranking documents and returns
+only source pointers. Local verification and the SDK bundle are implemented;
+the repository deliberately does not claim production host admission or an
+authority signature.
+
+Before full-corpus derivation and embedding, the pilot commands can seal and
+embed a deterministic structural sample of an already verified projection
+pack. Selection is scenario-blind, binds the fixed sampling policy, and retains
+every occurrence for each selected semantic document group. The resulting
+index has the normal physical/query interface, but its manifest and build
+report declare `sample_only_not_corpus_coverage` and
+`local_evaluation_only_not_sdk_admitted`. Every pointer or miss returned from
+that index has partial coverage with
+`pilot_sample_not_corpus_coverage`; a miss is explicitly not a corpus-wide
+absence claim. Pilot promotion does not accept a derivation overlay.
+
+`evaluate-evidence-pilot` freezes the complete execution plan before its first
+search, runs every predeclared query through lexical, dense, and fused retrieval,
+and seals every top-N output plus fixed pairwise ranking comparisons. It verifies
+partial sample scope and exact occurrence-pointer closure. Expected relation
+families are reported only as answer-neutral diagnostics; without adjudicated
+qrels the report makes no retrieval-quality claim. PCA/kNN corpus geometry is a
+separate index-only analysis so query metadata cannot influence it; see
+[`docs/evidence-pilot-evaluation.md`](docs/evidence-pilot-evaluation.md).
+
+`prepare-evidence-loadout` creates a deterministic local-test admission receipt,
+exact binding lock, and SDK lifecycle transcript for a promoted index and
+development bundle. It never creates a production authority receipt. After
+`livefire-sdk invoke`, `validate-evidence-wire` validates every successful call
+output and its request/index/lock identities, then exports deduplicated immutable
+pointer requests. It does not hydrate source data; an authoritative OCSF/source
+adapter must resolve and verify those pointers before Livefire treats fields as
+facts.
 
 Generic RAG schemas plus the projection policy and typed-Parquet pointer profile
 are included in the wheel and discovered automatically by projection-pack
@@ -106,6 +172,8 @@ source-fidelity, conformance, quality, performance, and reporting program is in
 The scenario-blind evidence indexing boundary, closure rules, document
 families, and promotion contract are specified in
 [`docs/generic-evidence-index.md`](docs/generic-evidence-index.md).
+The many-to-many derivation boundary and its scenario-blind policies are in
+[`docs/evidence-derivation-overlay.md`](docs/evidence-derivation-overlay.md).
 The first complete 13.9-million-row M21 projection build and its closure,
 artifact, verification, and performance results are recorded in
 [`docs/generic-evidence-m21-v1-build-report.md`](docs/generic-evidence-m21-v1-build-report.md).

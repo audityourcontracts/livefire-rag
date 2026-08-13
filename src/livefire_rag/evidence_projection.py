@@ -50,6 +50,7 @@ MAX_LIST_ITEMS = 24
 MAX_VALUE_CHARS = 240
 MAX_FACET_TEXT_CHARS = 1_024
 MAX_SEMANTIC_TEXT_CHARS = 3_072
+MAX_PROJECTION_SCALARS_SCANNED = 1_024
 MAX_JCS_SAFE_INTEGER = (1 << 53) - 1
 MAX_EXACT_ATTRIBUTES = 256
 MAX_EXACT_SCALARS_SCANNED = 512
@@ -92,6 +93,8 @@ _IDENTIFIER_KEYS = {
     "interface",
     "message_trace_uid",
     "message_uid",
+    "mac",
+    "mac_address",
     "native_event_uid",
     "parent_process_uid",
     "principal",
@@ -105,6 +108,7 @@ _IDENTIFIER_KEYS = {
     "session_id",
     "source_address",
     "src_ip",
+    "src_mac",
     "subject",
     "target",
     "user",
@@ -121,6 +125,7 @@ _IDENTIFIER_KEYS = {
     "rgid",
     "uuid",
     "host_uuid",
+    "dst_mac",
 }
 _IDENTIFIER_CONTAINER_TOKENS = {
     "account",
@@ -151,6 +156,28 @@ _IDENTIFIER_CONTAINER_TOKENS = {
     "session",
     "user",
 }
+_SEMANTIC_IDENTIFIER_PLACEHOLDERS = {
+    "account",
+    "actor",
+    "address",
+    "device",
+    "domain",
+    "dst_ip",
+    "email",
+    "host",
+    "hostname",
+    "principal",
+    "recipient",
+    "recipients",
+    "resource",
+    "resources",
+    "sender",
+    "source_address",
+    "src_ip",
+    "subject",
+    "target",
+    "user",
+}
 _SEMANTIC_UID_KEYS = {
     "activity_id",
     "activity_name",
@@ -179,6 +206,8 @@ _TIME_KEYS = {
     "uptime",
     "btime",
     "unix_time",
+    "endtime",
+    "starttime",
 }
 _VOLATILE_KEYS = {
     "counter",
@@ -220,9 +249,48 @@ _IDENTIFIER_SUFFIXES = (
     "_identifier",
     "_address",
     "_ip",
+    "_mac",
+    "_mac_address",
     "_arn",
     "_uuid",
 )
+_IDENTIFIER_NAME_PREFIX_TOKENS = {
+    "account",
+    "actor",
+    "client",
+    "computer",
+    "destination",
+    "device",
+    "host",
+    "identity",
+    "principal",
+    "recipient",
+    "sender",
+    "source",
+    "tenant",
+    "user",
+    "username",
+    "workstation",
+}
+_IDENTIFIER_ALIASES = {
+    "account_name",
+    "client_hostname",
+    "computer_name",
+    "destination_hostname",
+    "source_hostname",
+    "tenant_name",
+    "user_name",
+    "username",
+    "workstation_name",
+}
+_SECRET_TOKENS = {
+    "apikey",
+    "passphrase",
+    "passwd",
+    "password",
+    "secret",
+    "token",
+}
 
 _ACTION_TOKENS = {
     "action",
@@ -276,6 +344,21 @@ _OUTCOME_TOKENS = {
     "transition",
 }
 
+_ROLE_PRECEDENCE = ("outcome", "action", "target", "context")
+_SEMANTIC_ROLE_BUDGETS = {
+    "action": 640,
+    "target": 640,
+    "context": 768,
+    "outcome": 768,
+}
+_PRIORITY_SUBTREE_TOKENS = (
+    _OUTCOME_TOKENS
+    | _ACTION_TOKENS
+    | _TARGET_TOKENS
+    | _FREE_TEXT_KEYS
+    | {"state", "process", "request", "response", "finding", "file"}
+)
+
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)(?P<name>password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|"
     r"authorization|cookie|private[-_]?key)(?P<sep>\s*(?:=|:)\s*|\s+)(?P<value>"
@@ -294,17 +377,42 @@ _UUID_RE = re.compile(
 _LONG_HEX_RE = re.compile(r"(?i)(?<![0-9a-f])[0-9a-f]{32,}(?![0-9a-f])")
 _CLOUD_IDENTIFIER_RE = re.compile(r"(?i)\barn:[a-z0-9-]+:[^\s,;]+")
 _ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
+_JWT_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])")
+_MAC_RE = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f])")
 _LIST_INDEX_RE = re.compile(r"\[\d+\]")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _NON_KEY_RE = re.compile(r"[^a-z0-9]+")
 _POSITIONAL_TOKEN_RE = re.compile(r"(?:^|\.)unmapped\.\$token/\d+(?:\.|$)", re.IGNORECASE)
+
+_QUANTITY_TOKENS = {
+    "bytes",
+    "count",
+    "duration",
+    "length",
+    "millis",
+    "milliseconds",
+    "packets",
+    "rtt",
+    "size",
+    "time_taken",
+    "total",
+    "value",
+}
+_SEMANTIC_LEAF_ALIASES = {
+    "dest_ip": "dst_ip",
+    "dest_mac": "dst_mac",
+    "dest_port": "dst_port",
+    "source_ip": "src_ip",
+    "source_mac": "src_mac",
+    "source_port": "src_port",
+}
 
 
 def projection_policy_material() -> dict[str, Any]:
     """Return the complete immutable policy material bound by projection packs."""
 
     return {
-        "schema_version": "livefire.rag.generic-evidence-projection-policy/1",
+        "schema_version": "livefire.rag.generic-evidence-projection-policy/2",
         "relation_document_kinds": dict(sorted(RELATION_DOCUMENT_KINDS.items())),
         "derivation_only_relations": sorted(_DERIVATION_ONLY_RELATIONS),
         "bounds": {
@@ -313,6 +421,7 @@ def projection_policy_material() -> dict[str, Any]:
             "max_value_chars": MAX_VALUE_CHARS,
             "max_facet_text_chars": MAX_FACET_TEXT_CHARS,
             "max_semantic_text_chars": MAX_SEMANTIC_TEXT_CHARS,
+            "max_projection_scalars_scanned": MAX_PROJECTION_SCALARS_SCANNED,
             "max_exact_attributes": MAX_EXACT_ATTRIBUTES,
             "max_exact_scalars_scanned": MAX_EXACT_SCALARS_SCANNED,
             "max_exact_list_items": MAX_EXACT_LIST_ITEMS,
@@ -352,12 +461,62 @@ def projection_policy_material() -> dict[str, Any]:
             "field_name_normalization": "camel_case_and_punctuation_to_lower_snake_case",
             "identifier_suffixes": list(_IDENTIFIER_SUFFIXES),
             "identifier_leaf_names": sorted(_IDENTIFIER_KEYS),
+            "identifier_aliases": sorted(_IDENTIFIER_ALIASES),
+            "identifier_name_prefix_tokens": sorted(_IDENTIFIER_NAME_PREFIX_TOKENS),
+            "identifier_container_tokens": sorted(_IDENTIFIER_CONTAINER_TOKENS),
+            "semantic_uid_keys": sorted(_SEMANTIC_UID_KEYS),
+            "key_and_path_normalization_patterns": {
+                "list_index": _LIST_INDEX_RE.pattern,
+                "camel_boundary": _CAMEL_BOUNDARY_RE.pattern,
+                "non_key": _NON_KEY_RE.pattern,
+                "positional_token": _POSITIONAL_TOKEN_RE.pattern,
+            },
             "time_leaf_names": sorted(_TIME_KEYS),
             "volatile_leaf_names": sorted(_VOLATILE_KEYS),
             "free_text_leaf_names": sorted(_FREE_TEXT_KEYS),
             "excluded_path_families": ["unmapped.$token/<ordinal>"],
+            "semantic_noise_paths": [
+                "metadata.product.*",
+                "metadata.version",
+                "support_ref",
+                "unmapped.dest_content",
+                "unmapped.src_content",
+            ],
+            "quantity_normalization": "sign_and_base10_magnitude_bucket_except_semantic_ids_status_and_ports",
+            "quantity_leaf_tokens": sorted(_QUANTITY_TOKENS),
+            "semantic_null_values": "omitted",
+            "semantic_identifier_placeholders": sorted(_SEMANTIC_IDENTIFIER_PLACEHOLDERS),
+            "unmapped_duplicate_policy": "prefer_non_unmapped_typed_leaf",
+            "semantic_leaf_aliases": dict(sorted(_SEMANTIC_LEAF_ALIASES.items())),
+            "role_token_sets": {
+                "action": sorted(_ACTION_TOKENS),
+                "target": sorted(_TARGET_TOKENS),
+                "outcome": sorted(_OUTCOME_TOKENS),
+            },
+            "role_precedence": list(_ROLE_PRECEDENCE),
+            "semantic_role_budgets": dict(sorted(_SEMANTIC_ROLE_BUDGETS.items())),
+            "projection_traversal": {
+                "selection": "priority_typed_semantic_leaves_then_typed_context_then_unmapped",
+                "subtree_priority_tokens": sorted(_PRIORITY_SUBTREE_TOKENS),
+                "tie_break": "normalized_path_ascending",
+            },
+            "source_port_normalization": "privileged_registered_dynamic_bucket",
             "secret_leaf_names": sorted(_SECRET_KEYS),
             "secret_suffixes": ["_secret", "_password", "_token"],
+            "secret_tokens": sorted(_SECRET_TOKENS),
+            "secret_token_combinations": ["api+key", "access+key", "private+key"],
+            "in_band_redaction_patterns": {
+                "secret_assignment": _SECRET_ASSIGNMENT_RE.pattern,
+                "bearer": _BEARER_RE.pattern,
+                "email": _EMAIL_RE.pattern,
+                "ipv4": _IPV4_RE.pattern,
+                "uuid": _UUID_RE.pattern,
+                "long_hex": _LONG_HEX_RE.pattern,
+                "cloud_identifier": _CLOUD_IDENTIFIER_RE.pattern,
+                "access_key": _ACCESS_KEY_RE.pattern,
+                "jwt": _JWT_RE.pattern,
+                "mac": _MAC_RE.pattern,
+            },
         },
         "selection_policy": "closed_typed_relation_set_without_event-value_predicates",
         "unknown_or_unparsed_policy": "structured_only_occurrence",
@@ -369,7 +528,7 @@ def projection_policy_ref() -> dict[str, str]:
 
     return component_ref(
         "livefire.rag.generic-evidence-projection-policy",
-        "1",
+        "2",
         projection_policy_material(),
     )
 
@@ -399,11 +558,16 @@ def _leaf_name(path: str) -> str:
 
 def _is_secret(path: str) -> bool:
     leaf = _leaf_name(path)
+    tokens = _tokens(path)
     return (
         leaf in _SECRET_KEYS
         or leaf.endswith("_secret")
         or leaf.endswith("_password")
         or leaf.endswith("_token")
+        or bool(tokens & _SECRET_TOKENS)
+        or {"api", "key"} <= tokens
+        or {"access", "key"} <= tokens
+        or {"private", "key"} <= tokens
     )
 
 
@@ -414,7 +578,12 @@ def _is_identifier(path: str) -> bool:
     path_tokens = _tokens(path)
     return (
         leaf in _IDENTIFIER_KEYS
+        or leaf in _IDENTIFIER_ALIASES
         or leaf.endswith(_IDENTIFIER_SUFFIXES)
+        or (
+            leaf.endswith("_name")
+            and bool(set(leaf.removesuffix("_name").split("_")) & _IDENTIFIER_NAME_PREFIX_TOKENS)
+        )
         or (
             leaf in {"name", "value"}
             and bool(path_tokens & _IDENTIFIER_CONTAINER_TOKENS)
@@ -444,6 +613,97 @@ def _is_free_text(path: str) -> bool:
     return _leaf_name(path) in _FREE_TEXT_KEYS or _is_positional_raw_token(path)
 
 
+def _is_semantic_noise(path: str) -> bool:
+    """Return true for producer/envelope or raw transport fields with no semantic role.
+
+    This list is structural and source-value independent. It removes normalizer
+    identity and opaque packet bytes while retaining typed and unmapped fields
+    that can carry security behavior.
+    """
+
+    normalized = ".".join(_normalise_key(part) for part in _LIST_INDEX_RE.sub("", path).split("."))
+    leaf = _leaf_name(path)
+    return (
+        ".metadata.product." in f".{normalized}."
+        or normalized.endswith("metadata.version")
+        or leaf == "support_ref"
+        or leaf in {"dest_content", "src_content"}
+    )
+
+
+def _is_quantity(path: str) -> bool:
+    leaf = _leaf_name(path)
+    tokens = _tokens(path)
+    return leaf in _QUANTITY_TOKENS or bool(tokens & _QUANTITY_TOKENS)
+
+
+def _numeric_semantic_value(path: str, value: int | float) -> str:
+    """Normalize quantities without erasing exact protocol/status semantics."""
+
+    leaf = _SEMANTIC_LEAF_ALIASES.get(_leaf_name(path), _leaf_name(path))
+    path_tokens = _tokens(path)
+    source_port = leaf == "src_port" or (leaf == "port" and bool(path_tokens & {"src", "source"}))
+    if source_port:
+        numeric = float(value)
+        if not numeric.is_integer() or numeric < 0 or numeric > 65535:
+            return "<port:invalid>"
+        port = int(numeric)
+        if port < 1024:
+            return f"<port:privileged:{port}>"
+        if port < 49152:
+            return "<port:registered>"
+        return "<port:dynamic>"
+    if leaf in _SEMANTIC_UID_KEYS or leaf == "dst_port" or leaf == "port":
+        return str(value)
+    if not _is_quantity(path):
+        return str(value)
+    numeric = float(value)
+    if numeric == 0:
+        return "<quantity:zero>"
+    sign = "negative-" if numeric < 0 else ""
+    magnitude = int(math.floor(math.log10(abs(numeric))))
+    return f"<quantity:{sign}1e{magnitude}>"
+
+
+def _semantic_entries(
+    entries: list[tuple[str, Any]],
+) -> list[tuple[str, Any]]:
+    """Select behavior-bearing leaves with typed fields preferred to closure bags."""
+
+    typed_leaf_names = {
+        _SEMANTIC_LEAF_ALIASES.get(_leaf_name(path), _leaf_name(path))
+        for path, value in entries
+        if ".unmapped." not in f".{_LIST_INDEX_RE.sub('', path).lower()}."
+        and value is not None
+        and not _is_time(path)
+        and not _is_volatile(path)
+        and not _is_positional_raw_token(path)
+        and not _is_semantic_noise(path)
+    }
+    selected: list[tuple[str, Any]] = []
+    for path, value in entries:
+        normalized = f".{_LIST_INDEX_RE.sub('', path).lower()}."
+        if (
+            value is None
+            or _is_time(path)
+            or _is_volatile(path)
+            or _is_positional_raw_token(path)
+            or _is_semantic_noise(path)
+            or (
+                _is_identifier(path)
+                and _leaf_name(path) not in _SEMANTIC_IDENTIFIER_PLACEHOLDERS
+            )
+            or (
+                ".unmapped." in normalized
+                and _SEMANTIC_LEAF_ALIASES.get(_leaf_name(path), _leaf_name(path))
+                in typed_leaf_names
+            )
+        ):
+            continue
+        selected.append((path, value))
+    return selected
+
+
 def _bounded(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -461,6 +721,8 @@ def _sanitize_free_text(value: str) -> str:
     text = _BEARER_RE.sub("Bearer <redacted:secret>", text)
     text = _ACCESS_KEY_RE.sub("<redacted:cloud-credential>", text)
     text = _CLOUD_IDENTIFIER_RE.sub("<redacted:cloud-identifier>", text)
+    text = _JWT_RE.sub("<redacted:jwt>", text)
+    text = _MAC_RE.sub("<redacted:mac-address>", text)
     text = _EMAIL_RE.sub("<redacted:email-address>", text)
     text = _IPV4_RE.sub("<redacted:ip-address>", text)
     text = _UUID_RE.sub("<redacted:uuid>", text)
@@ -477,6 +739,8 @@ def _sanitize_structured_identifier(value: str) -> str:
     )
     text = _BEARER_RE.sub("Bearer <redacted:secret>", text)
     text = _ACCESS_KEY_RE.sub("<redacted:cloud-credential>", text)
+    text = _JWT_RE.sub("<redacted:jwt>", text)
+    text = _MAC_RE.sub("<redacted:mac-address>", text)
     return _bounded(" ".join(text.split()), MAX_VALUE_CHARS)
 
 
@@ -497,39 +761,78 @@ def _flatten(
     output: list[tuple[str, str | int | float | bool | None]] | None = None,
     state: dict[str, bool] | None = None,
 ) -> list[tuple[str, str | int | float | bool | None]]:
-    """Flatten JSON deterministically while enforcing hard cardinality bounds."""
+    """Collect bounded leaves, then reserve the output budget for typed semantics.
 
-    if output is None:
-        output = []
-    if state is None:
-        state = {"truncated": False}
-    if len(output) >= MAX_LEAVES:
-        state["truncated"] = True
-        return output
-    if isinstance(value, Mapping):
-        for original_key, child in sorted(value.items(), key=lambda item: str(item[0])):
-            if len(output) >= MAX_LEAVES:
-                state["truncated"] = True
-                break
-            key = str(original_key)
-            child_path = f"{path}.{key}" if path else key
-            _flatten(child, path=child_path, output=output, state=state)
-        if not value and path:
-            output.append((path, None))
-        return output
-    if isinstance(value, (list, tuple)):
-        if len(value) > MAX_LIST_ITEMS:
+    Traversal visits behavior-bearing typed subtrees before generic context and
+    visits ``unmapped`` closure bags last.  Selection then performs a second
+    deterministic priority pass, so a large vendor bag cannot crowd a typed
+    action, target, outcome, state, free-text command, or event time out of the
+    semantic projection.
+    """
+
+    if output is not None or path:
+        raise ValueError("_flatten is a root-only deterministic projection helper")
+    state = state if state is not None else {"truncated": False}
+    candidates: list[tuple[str, str | int | float | bool | None]] = []
+    scanned = 0
+
+    def subtree_order(item: tuple[Any, Any]) -> tuple[int, str]:
+        key = str(item[0])
+        normalized = _normalise_key(key)
+        tokens = set(normalized.split("_")) | {normalized}
+        if "unmapped" in tokens or "raw" in tokens:
+            priority = 2
+        elif tokens & _PRIORITY_SUBTREE_TOKENS:
+            priority = 0
+        else:
+            priority = 1
+        return priority, normalized
+
+    def visit(node: Any, current_path: str) -> None:
+        nonlocal scanned
+        if scanned >= MAX_PROJECTION_SCALARS_SCANNED:
             state["truncated"] = True
-        for index, item in enumerate(value[:MAX_LIST_ITEMS]):
-            if len(output) >= MAX_LEAVES:
+            return
+        if isinstance(node, Mapping):
+            for original_key, child in sorted(node.items(), key=subtree_order):
+                if scanned >= MAX_PROJECTION_SCALARS_SCANNED:
+                    state["truncated"] = True
+                    break
+                key = str(original_key)
+                child_path = f"{current_path}.{key}" if current_path else key
+                visit(child, child_path)
+            if not node and current_path:
+                scanned += 1
+                candidates.append((current_path, None))
+            return
+        if isinstance(node, (list, tuple)):
+            if len(node) > MAX_LIST_ITEMS:
                 state["truncated"] = True
-                break
-            _flatten(item, path=f"{path}[{index}]", output=output, state=state)
-        if not value and path:
-            output.append((path, None))
-        return output
-    output.append((path or "value", _json_safe_scalar(value)))
-    return output
+            for index, item in enumerate(node[:MAX_LIST_ITEMS]):
+                visit(item, f"{current_path}[{index}]")
+            if not node and current_path:
+                scanned += 1
+                candidates.append((current_path, None))
+            return
+        scanned += 1
+        candidates.append((current_path or "value", _json_safe_scalar(node)))
+
+    def leaf_priority(item: tuple[str, Any]) -> tuple[int, str]:
+        candidate_path, _ = item
+        normalized = f".{_LIST_INDEX_RE.sub('', candidate_path).lower()}."
+        if _is_time(candidate_path) or _role(candidate_path) != "context" or _is_free_text(candidate_path):
+            priority = 0
+        elif ".unmapped." not in normalized and not _is_positional_raw_token(candidate_path):
+            priority = 1
+        else:
+            priority = 2
+        return priority, candidate_path
+
+    visit(value, "")
+    candidates.sort(key=leaf_priority)
+    if len(candidates) > MAX_LEAVES:
+        state["truncated"] = True
+    return candidates[:MAX_LEAVES]
 
 
 def _redacted_structured_value(path: str, value: Any) -> Any:
@@ -549,7 +852,7 @@ def _redacted_structured_value(path: str, value: Any) -> Any:
 def _has_unsafe_credential_text(value: str) -> bool:
     return any(
         pattern.search(value) is not None
-        for pattern in (_SECRET_ASSIGNMENT_RE, _BEARER_RE, _ACCESS_KEY_RE)
+        for pattern in (_SECRET_ASSIGNMENT_RE, _BEARER_RE, _ACCESS_KEY_RE, _JWT_RE)
     )
 
 
@@ -672,8 +975,14 @@ def _semantic_value(path: str, value: Any) -> str:
     if isinstance(safe, bool):
         return "true" if safe else "false"
     if isinstance(safe, (int, float)):
-        return str(safe)
+        return _numeric_semantic_value(path, safe)
     return _sanitize_free_text(safe)
+
+
+def semantic_safe_value(path: str, value: Any) -> str:
+    """Return the policy-bound identifier/secret-safe semantic scalar form."""
+
+    return _semantic_value(path, value)
 
 
 def _role(path: str) -> str:
@@ -697,11 +1006,33 @@ def _facet_text(entries: list[tuple[str, Any]], role: str) -> str:
         f"{_label(path)}={_semantic_value(path, value)}"
         for path, value in entries
         if _role(path) == role
-        and not _is_time(path)
-        and not _is_volatile(path)
-        and not _is_positional_raw_token(path)
     ]
     return _bounded("; ".join(fragments), MAX_FACET_TEXT_CHARS)
+
+
+def _compose_semantic_text(
+    document_kind: str,
+    relation: str,
+    role_texts: Mapping[str, str],
+    *,
+    unavailable: bool,
+) -> str:
+    """Compose embedding text with an independent guaranteed budget per role."""
+
+    fragments = [
+        f"kind: {document_kind.replace('_', ' ')}",
+        f"relation: {_bounded(relation, 128)}",
+    ]
+    for role in _ROLE_PRECEDENCE:
+        text = role_texts.get(role, "")
+        if text:
+            fragments.append(f"{role}: {_bounded(text, _SEMANTIC_ROLE_BUDGETS[role])}")
+    if unavailable:
+        fragments.append("content: unavailable typed event")
+    result = " | ".join(fragments)
+    if len(result) > MAX_SEMANTIC_TEXT_CHARS:
+        raise AssertionError("semantic role budgets exceed the total text contract")
+    return result
 
 
 def _find_leaf(entries: list[tuple[str, Any]], names: tuple[str, ...]) -> tuple[str, Any] | None:
@@ -832,25 +1163,22 @@ def project_event(
     )
     document_kind = RELATION_DOCUMENT_KINDS.get(relation, "structured_only")
 
-    action_text = _facet_text(entries, "action")
-    target_text = _facet_text(entries, "target")
-    context_text = _facet_text(entries, "context")
-    outcome_text = _facet_text(entries, "outcome")
-    facets = [
-        f"kind: {document_kind.replace('_', ' ')}",
-        f"relation: {relation}",
-    ]
-    for name, text in (
-        ("action", action_text),
-        ("target", target_text),
-        ("context", context_text),
-        ("outcome", outcome_text),
-    ):
-        if text:
-            facets.append(f"{name}: {text}")
-    if parse_error is not None:
-        facets.append("content: unavailable typed event")
-    semantic_text = _bounded(" | ".join(facets), MAX_SEMANTIC_TEXT_CHARS)
+    semantic_entries = _semantic_entries(entries)
+    action_text = _facet_text(semantic_entries, "action")
+    target_text = _facet_text(semantic_entries, "target")
+    context_text = _facet_text(semantic_entries, "context")
+    outcome_text = _facet_text(semantic_entries, "outcome")
+    semantic_text = _compose_semantic_text(
+        document_kind,
+        relation,
+        {
+            "action": action_text,
+            "target": target_text,
+            "context": context_text,
+            "outcome": outcome_text,
+        },
+        unavailable=parse_error is not None,
+    )
 
     structured_fields = {
         path: _redacted_structured_value(path, value) for path, value in entries
@@ -886,15 +1214,13 @@ def project_event(
         "target_text": target_text,
         "context_text": context_text,
         "outcome_text": outcome_text,
-        "structured_fields": {
-            path: value
-            for path, value in structured_fields.items()
-            if not _is_time(path)
-            and not _is_volatile(path)
-            and not _is_positional_raw_token(path)
+        "semantic_leaves": [
+            [path, _semantic_value(path, value)]
+            for path, value in semantic_entries
+            if not _is_positional_raw_token(path)
             and not _is_identifier(path)
             and not _is_secret(path)
-        },
+        ],
     }
     semantic_group_sha256 = _digest(group_material)
     result: dict[str, Any] = {
@@ -927,4 +1253,5 @@ __all__ = [
     "project_event",
     "projection_policy_material",
     "projection_policy_ref",
+    "semantic_safe_value",
 ]
