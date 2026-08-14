@@ -132,6 +132,9 @@ The next large-index design separates parallel Rust preparation, replaceable
 local or cloud embedding, and streaming final assembly. Its implementation
 contract and staged test plan are in
 [`docs/portable-embedding-pipeline.md`](docs/portable-embedding-pipeline.md).
+The execution plan now proves and measures LM Studio locally before any Runpod
+work; see
+[`docs/local-first-embedding-scale-plan.md`](docs/local-first-embedding-scale-plan.md).
 
 The first modular dataset path is implemented. For example, one relation can be
 prepared, embedded, assembled, and queried without rebuilding any other index:

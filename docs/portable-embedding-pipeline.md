@@ -9,6 +9,11 @@ tests. The new commands now prove the split pipeline on an independent real
 dataset. Later milestones extend preparation beyond the current 600,000
 deduplicated-document memory limit and add cloud workers.
 
+The detailed execution order is in
+[`local-first-embedding-scale-plan.md`](local-first-embedding-scale-plan.md).
+That plan requires completing the local LM Studio measurements, recovery tests,
+dataset builds, and multi-index CLI proof before any Runpod-specific work.
+
 ## 1. Outcome
 
 Prepare searchable text once per dataset, then generate embeddings with any
@@ -446,9 +451,10 @@ requests in flight, retry policy, and lease duration are executor settings. They
 do not change plan identity. The task receipt records the executor and actual
 loaded artifacts so a mismatch is detectable.
 
-A local Q4 GGUF model and a cloud BF16 Safetensors model use different semantic
-profiles unless a separately versioned compatibility test proves that they may
-share an index. Model names alone never establish compatibility.
+A local Q4 GGUF model and a cloud Safetensors model served at a different
+verified runtime dtype use different semantic profiles unless a separately
+versioned compatibility test proves that they may share an index. Model names
+alone never establish compatibility.
 
 ### 8.2 Plan contents
 
@@ -629,9 +635,10 @@ Prepared documents are portable; embeddings are not automatically portable
 between model builds.
 
 The present local profile uses a Q4 GGUF model through LM Studio. A Runpod TEI
-deployment normally uses BF16 Safetensors. These create separate embedding
-profiles and, initially, separate indexes. Queries must use the profile that
-matches the indexed documents.
+deployment uses Safetensors with a runtime dtype that must be observed and
+recorded rather than assumed. These create separate embedding profiles and,
+initially, separate indexes. Queries must use the profile that matches the
+indexed documents.
 
 An exact GGUF worker on Runpod may later be declared compatible with local LM
 Studio only after a fixed comparison proves acceptable vector and ranked-result
@@ -785,13 +792,11 @@ Measure:
 - one, two, four, and eight projection workers;
 - peak resident memory and temporary disk;
 - local LM Studio batch size and model parallelism;
-- Runpod GPU cold-start and warm throughput;
 - documents and tokens per second;
 - retries and errors;
-- upload, download, and assembly time;
-- total cloud cost;
 - vector dimensions, norms, and numeric repeatability;
-- nearest-neighbor and frozen-query result overlap between profiles.
+- local query latency; and
+- frozen-query result stability.
 
 Preparation keeps its parallel implementation only if it is at least 1.5 times
 as fast as one worker, uses no more than twice the memory, and produces
@@ -800,14 +805,13 @@ worker count within 10% of the fastest setting.
 
 Tune LM Studio first on 2,000 of these documents using request batches 4, 8,
 16, and 32. Enable multiple requests in flight only when LM Studio is loaded
-with genuine model parallelism and the 10,000-document confirmation improves
-sustained throughput by at least 50%.
+with explicit model parallelism and the 2,000-document confirmation improves
+sustained throughput by at least 15%. Confirm the selected setting on all
+10,000 documents.
 
-The cloud test uses at least 20 embedding tasks and measures one, two, and four
-workers. Two workers should achieve at least 1.7-times speedup and four should
-achieve at least 3-times speedup, with retry work below 5%, duplicate compute
-below 1%, and cost no more than 20% above ideal linear scaling. If it misses
-those gates, use one larger GPU instead of more workers.
+Runpod cold-start, warm throughput, transfer time, cost, and cross-profile
+result measurements occur only after every local gate in the local-first scale
+plan passes. The cloud phase reuses this exact 10,000-document input.
 
 ### Step E: one complete large dataset or relation
 
@@ -879,29 +883,23 @@ estimates before the full build.
 
 ## 15. Delivery sequence and Git strategy
 
-All work is based on current `main` in `feature/portable-embedding-pipeline`.
-Do not add it to the completed readiness branch. One integrator owns this spec,
-the shared contracts, and the commits; parallel agents own disjoint reviews or
-implementation areas and do not commit overlapping work.
+The portable pipeline implementation is merged into `main`. The detailed
+local-first feature and commit sequence is maintained in
+[`local-first-embedding-scale-plan.md`](local-first-embedding-scale-plan.md).
 
-Proposed reviewable commits, created only after each vertical slice passes:
+Local implementation belongs on `feature/local-rag-scale`, based on the merged
+portable pipeline. It covers count reconciliation, benchmark selection, exact
+token measurement, LM Studio tuning, parallel preparation, scalable assembly,
+and multi-index CLI search.
 
-1. Portable pipeline specification and remote-build data boundary.
-2. Prepared-corpus and embedding-result contracts.
-3. Deterministic serial preparation and the synthetic dataset vertical slice.
-4. LM Studio executor, assembly, and CLI search for one real dataset.
-5. Parallel Arrow preparation, external merge, and the fixed benchmark lock.
-6. Backend-neutral embedding scheduler and multi-worker restart tests.
-7. Tantivy lexical index, representative-index parity, and dataset catalogue.
-8. Sanitized 10,000-document local benchmark report.
+Merge that branch only after the local gate passes. Then create
+`feature/runpod-embedding-workers` from the merged local implementation. Keep
+Runpod containers, storage adapters, credentials, and cloud reports off the
+local branch.
 
-Merge this branch after the real detection dataset passes prepare, LM Studio
-embedding, assembly, all three search modes, and a restart with the model
-endpoint unavailable. Then build the 10,000-document performance test and
-parallel preparation on a new feature branch. Develop the Runpod container,
-object-storage adapter, and cloud benchmark afterward on
-`feature/runpod-embedding-workers`, branched from the merged modular pipeline.
-This keeps cloud deployment changes separate from the proven local path.
+One integrator owns shared contracts and final commits. Parallel agents may own
+disjoint implementation or review areas but do not create overlapping contract
+commits.
 
 Generated corpora, vectors, indexes, credentials, and benchmark raw output stay
 ignored and are never committed. Specifications, schemas, source, deterministic
