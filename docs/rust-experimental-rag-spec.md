@@ -1,5 +1,10 @@
 # Rust experimental RAG specification
 
+For the next full-size index, the performance plan has moved to
+[`portable-embedding-pipeline.md`](portable-embedding-pipeline.md). That design
+keeps this document's query and tool boundary while splitting preparation,
+embedding, and assembly into independently resumable stages.
+
 Status: implemented experimental vertical slice; representative-corpus build
 and production authority admission remain
 
@@ -287,7 +292,8 @@ query ID to the evaluator. Missing ranking rows then remain explicit zero-score
 queries instead of disappearing from macro metrics.
 
 The package command emits a content-closed SDK plugin bundle. The loadout
-command verifies and wraps the physical index in an SDK index manifest, binds
+command leaves the physical index unchanged and atomically creates a separate
+same-filesystem wrapper with hard links to its verified objects. It binds
 the exact snapshot and mapping-pack components from its admitted build receipt,
 and emits a local-test admission receipt, tool-binding lock, four declared
 read-only mount bindings, and a provider transcript. OS immutability is enforced

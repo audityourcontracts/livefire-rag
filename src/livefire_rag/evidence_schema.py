@@ -42,6 +42,14 @@ GENERIC_EVIDENCE_SCHEMA_NAMES = (
     "fast-document-row.v1.schema.json",
     "fast-occurrence-row.v1.schema.json",
     "fast-build-report.v1.schema.json",
+    "portable-component-ref.v1.schema.json",
+    "portable-dataset-identity.v1.schema.json",
+    "prepared-document-row.v1.schema.json",
+    "prepared-occurrence-row.v1.schema.json",
+    "prepared-corpus-manifest.v1.schema.json",
+    "embedding-plan.v1.schema.json",
+    "embedding-task-receipt.v1.schema.json",
+    "embedding-result-set.v1.schema.json",
 )
 
 

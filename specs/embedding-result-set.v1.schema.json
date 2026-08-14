@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-result-set.v1.schema.json",
+  "title": "Embedding result set manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "plan_sha256", "prepared_corpus_sha256", "embedding_profile_sha256", "document_count", "document_order_sha256", "receipts"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.embedding-result-set/1"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "prepared_corpus_sha256": {"$ref": "#/$defs/sha256"},
+    "embedding_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "document_count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "document_order_sha256": {"$ref": "#/$defs/sha256"},
+    "receipts": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["task_id", "path", "sha256"], "properties": {"task_id": {"type": "string", "minLength": 1}, "path": {"$ref": "#/$defs/path"}, "sha256": {"$ref": "#/$defs/sha256"}}}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\)(?!.*:)(?!.*[/]$).+$"}
+  },
+  "$comment": "Contract validation loads receipts and enforces exactly one receipt per plan task plus exact plan, corpus, profile, order, range, vector path, row, dimension, and dtype bindings."
+}

@@ -1253,6 +1253,7 @@ dependencies = [
  "rag-embedding",
  "rag-index",
  "rag-ocsf",
+ "rag-pipeline",
  "rag-projection",
  "serde",
  "serde_json",
@@ -1279,6 +1280,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2",
  "tempfile",
  "thiserror",
@@ -1313,6 +1315,21 @@ dependencies = [
  "rag-contracts",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "rag-pipeline"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "parquet",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
  "sha2",
  "tempfile",
  "thiserror",

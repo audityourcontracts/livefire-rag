@@ -73,7 +73,7 @@
         "selected_document_order_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
-    "accounting": {
+    "legacy_accounting": {
       "type": "object", "additionalProperties": false,
       "required": [
         "coverage_semantics", "semantic_source_coverage_complete",
@@ -95,6 +95,50 @@
         "indexed_timestamps": {"$ref": "#/$defs/timestamps"},
         "sampling": {"$ref": "#/$defs/sampling"}
       }
+    },
+    "stream_accounting": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "coverage_semantics", "semantic_source_coverage_complete",
+        "input_documents", "input_occurrences", "input_vectors"
+      ],
+      "properties": {
+        "coverage_semantics": {"const": "assembled_input_stream_only_not_source_row_coverage"},
+        "semantic_source_coverage_complete": {"const": false},
+        "input_documents": {"type": "integer", "minimum": 1},
+        "input_occurrences": {"type": "integer", "minimum": 1},
+        "input_vectors": {"type": "integer", "minimum": 1}
+      }
+    },
+    "dataset_accounting": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "coverage_semantics", "semantic_source_coverage_complete",
+        "dataset_id", "dataset_version", "source_records",
+        "source_records_by_relation", "indexed_occurrences",
+        "structured_only_occurrences", "structured_only_by_relation",
+        "excluded_by_scope_occurrences", "excluded_by_scope_by_relation"
+      ],
+      "properties": {
+        "coverage_semantics": {"const": "dataset_scope_only_not_source_corpus_coverage"},
+        "semantic_source_coverage_complete": {"const": false},
+        "dataset_id": {"type": "string", "minLength": 1},
+        "dataset_version": {"type": "string", "minLength": 1},
+        "source_records": {"type": "integer", "minimum": 1},
+        "source_records_by_relation": {"$ref": "#/$defs/count_map"},
+        "indexed_occurrences": {"type": "integer", "minimum": 1},
+        "structured_only_occurrences": {"type": "integer", "minimum": 0},
+        "structured_only_by_relation": {"$ref": "#/$defs/count_map"},
+        "excluded_by_scope_occurrences": {"type": "integer", "minimum": 0},
+        "excluded_by_scope_by_relation": {"$ref": "#/$defs/count_map"}
+      }
+    },
+    "accounting": {
+      "oneOf": [
+        {"$ref": "#/$defs/legacy_accounting"},
+        {"$ref": "#/$defs/stream_accounting"},
+        {"$ref": "#/$defs/dataset_accounting"}
+      ]
     }
   }
 }

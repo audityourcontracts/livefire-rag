@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/prepared-corpus-manifest.v1.schema.json",
+  "title": "Prepared corpus manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "dataset", "projection_policy", "document_schema", "occurrence_schema", "preparation_implementation", "document_count", "occurrence_count", "document_order_sha256", "embedding_input_order_sha256", "documents", "occurrences", "relation_accounting"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.prepared-corpus/1"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "dataset": {"$ref": "portable-dataset-identity.v1.schema.json"},
+    "projection_policy": {"$ref": "portable-component-ref.v1.schema.json"},
+    "document_schema": {"$ref": "portable-component-ref.v1.schema.json"},
+    "occurrence_schema": {"$ref": "portable-component-ref.v1.schema.json"},
+    "preparation_implementation": {"$ref": "portable-component-ref.v1.schema.json"},
+    "document_count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "occurrence_count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "document_order_sha256": {"$ref": "#/$defs/sha256"},
+    "embedding_input_order_sha256": {"$ref": "#/$defs/sha256"},
+    "documents": {"type": "array", "items": {"$ref": "#/$defs/document_object"}},
+    "occurrences": {"type": "array", "items": {"$ref": "#/$defs/occurrence_object"}},
+    "relation_accounting": {"type": "object", "additionalProperties": {"$ref": "#/$defs/accounting"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\)(?!.*:)(?!.*[/]$).+$"},
+    "object": {"type": "object", "required": ["path", "rows", "bytes", "sha256", "logical_order_sha256"], "properties": {"path": {"$ref": "#/$defs/path"}, "rows": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "sha256": {"$ref": "#/$defs/sha256"}, "logical_order_sha256": {"$ref": "#/$defs/sha256"}}},
+    "document_object": {"allOf": [{"$ref": "#/$defs/object"}, {"type": "object", "additionalProperties": false, "required": ["ordinal", "first_document_id", "last_document_id", "embedding_input_order_sha256"], "properties": {"path": true, "rows": true, "bytes": true, "sha256": true, "logical_order_sha256": true, "ordinal": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "first_document_id": {"type": "string", "minLength": 1}, "last_document_id": {"type": "string", "minLength": 1}, "embedding_input_order_sha256": {"$ref": "#/$defs/sha256"}}}]},
+    "occurrence_object": {"allOf": [{"$ref": "#/$defs/object"}, {"type": "object", "additionalProperties": false, "required": ["ordinal", "relation"], "properties": {"path": true, "rows": true, "bytes": true, "sha256": true, "logical_order_sha256": true, "ordinal": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "relation": {"type": "string", "minLength": 1}}}]},
+    "accounting": {"type": "object", "additionalProperties": false, "required": ["source_rows", "searchable_occurrences", "selected_occurrences", "excluded_rows"], "properties": {"source_rows": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "searchable_occurrences": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "selected_occurrences": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "excluded_rows": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}}}
+  },
+  "$comment": "Contract validation enforces ordered object ordinals, unique contained paths, exact row-count closure, per-object logical metadata, exact relation-accounting key and total closure, and the RFC 8785 digest with component_sha256 omitted."
+}

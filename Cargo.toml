@@ -5,6 +5,7 @@ members = [
     "crates/rag-ocsf",
     "crates/rag-projection",
     "crates/rag-embedding",
+    "crates/rag-pipeline",
     "crates/rag-index",
     "crates/rag-builder",
     "crates/rag-provider",
@@ -22,6 +23,7 @@ rag-contracts = { path = "crates/rag-contracts" }
 rag-ocsf = { path = "crates/rag-ocsf" }
 rag-projection = { path = "crates/rag-projection" }
 rag-embedding = { path = "crates/rag-embedding" }
+rag-pipeline = { path = "crates/rag-pipeline" }
 rag-index = { path = "crates/rag-index" }
 arrow-array = "58"
 arrow-schema = "58"

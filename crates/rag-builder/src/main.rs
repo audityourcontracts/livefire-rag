@@ -24,6 +24,8 @@ use rag_projection::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod portable;
+
 #[derive(Parser)]
 #[command(name = "rag", about = "Fast experimental RAG builder and query CLI")]
 struct Cli {
@@ -33,6 +35,64 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Project one dataset into reusable, model-independent Parquet shards.
+    Prepare {
+        #[arg(long)]
+        snapshot: PathBuf,
+        #[arg(long)]
+        dataset_id: String,
+        #[arg(long, default_value = "1")]
+        dataset_version: String,
+        /// Include exactly these typed OCSF relations. Repeat the option for
+        /// additional relations.
+        #[arg(long, required = true)]
+        relation: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 2_048)]
+        document_shard_rows: usize,
+    },
+    /// Freeze model-specific embedding tasks over a prepared dataset.
+    PlanEmbeddings {
+        #[arg(long)]
+        prepared: PathBuf,
+        #[arg(long)]
+        embedding_profile: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 2_048)]
+        task_documents: usize,
+    },
+    /// Execute unfinished embedding tasks against local LM Studio.
+    Embed {
+        #[arg(long)]
+        prepared: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        embedding_profile: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:1234")]
+        embedding_endpoint: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 16)]
+        batch_size: usize,
+        #[arg(long, default_value_t = 1)]
+        requests_in_flight: usize,
+    },
+    /// Assemble one prepared dataset and complete embedding set into an index.
+    Assemble {
+        #[arg(long)]
+        prepared: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        embeddings: PathBuf,
+        #[arg(long)]
+        embedding_profile: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     Build {
         #[arg(long)]
         snapshot: PathBuf,
@@ -433,6 +493,8 @@ enum Error {
     #[error(transparent)]
     Index(#[from] rag_index::IndexError),
     #[error(transparent)]
+    Pipeline(#[from] rag_pipeline::PipelineError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -462,6 +524,65 @@ async fn main() {
 }
 async fn run() -> Result<()> {
     match Cli::parse().command {
+        Command::Prepare {
+            snapshot,
+            dataset_id,
+            dataset_version,
+            relation,
+            out,
+            document_shard_rows,
+        } => portable::prepare(portable::PrepareOptions {
+            snapshot,
+            dataset_id,
+            dataset_version,
+            relations: relation,
+            out,
+            document_shard_rows,
+        }),
+        Command::PlanEmbeddings {
+            prepared,
+            embedding_profile,
+            out,
+            task_documents,
+        } => portable::plan_embeddings(portable::PlanOptions {
+            prepared,
+            embedding_profile,
+            out,
+            task_documents,
+        }),
+        Command::Embed {
+            prepared,
+            plan,
+            embedding_profile,
+            embedding_endpoint,
+            out,
+            batch_size,
+            requests_in_flight,
+        } => {
+            portable::embed(portable::EmbedOptions {
+                prepared,
+                plan,
+                embedding_profile,
+                embedding_endpoint,
+                out,
+                batch_size,
+                requests_in_flight,
+            })
+            .await
+        }
+        Command::Assemble {
+            prepared,
+            plan,
+            embeddings,
+            embedding_profile,
+            out,
+        } => portable::assemble(portable::AssembleOptions {
+            prepared,
+            plan,
+            embeddings,
+            embedding_profile,
+            out,
+        }),
         Command::Build {
             snapshot,
             out,

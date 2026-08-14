@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/portable-dataset-identity.v1.schema.json",
+  "title": "Portable dataset identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "source_snapshot", "mapping", "included_relations", "excluded_relations", "structured_only_relations"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "source_snapshot": {"$ref": "portable-component-ref.v1.schema.json"},
+    "mapping": {"$ref": "portable-component-ref.v1.schema.json"},
+    "included_relations": {"$ref": "#/$defs/relations"},
+    "excluded_relations": {"$ref": "#/$defs/relations"},
+    "structured_only_relations": {"$ref": "#/$defs/relations"}
+  },
+  "$defs": {
+    "relations": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  },
+  "$comment": "Contract validation additionally requires each relation list to be sorted and the three lists to be disjoint."
+}

@@ -42,6 +42,6 @@
   "conformance": {
     "mode": "exact_digest",
     "fixture_sha256": "2f1d18d17f3c09b507bee0698a476a1b7f81c898a21f20ed5982cba0fd776c78",
-    "normalized_output_sha256": "f6aea8e8ec5711d0a3e73cc21a53519d7195a13f40e509f040411ef24930ea36"
+    "normalized_output_sha256": "a57162dcfaf99a79ac3b05581db657c683e6ddc582cd660a210efc72dd8cc73d"
   }
 }

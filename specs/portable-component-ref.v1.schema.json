@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/portable-component-ref.v1.schema.json",
+  "title": "Portable component reference v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "sha256"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "$comment": "A containing component computes its RFC 8785 SHA-256 after omitting the top-level self-digest field."
+}

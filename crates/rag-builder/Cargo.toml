@@ -16,6 +16,7 @@ clap.workspace = true
 rag-embedding.workspace = true
 rag-index.workspace = true
 rag-ocsf.workspace = true
+rag-pipeline.workspace = true
 rag-projection.workspace = true
 serde.workspace = true
 serde_json.workspace = true

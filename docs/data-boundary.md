@@ -24,14 +24,25 @@ PowerShell decoding and parsing are static. The builder may decode bounded
 representations and invoke a parser, but it must never execute a command, script,
 macro, decompressed payload, shell expansion, or PowerShell expression.
 
-Model access is one of:
+The combined v1 builder permits model access through:
 
 - a pre-admitted local model artifact; or
 - an explicitly allowed loopback LM Studio instance serving that artifact.
 
-No remote embedding endpoint is permitted in v1. Build output and intermediate
-embeddings inherit the source telemetry's tenant, confidentiality, encryption,
-retention, revocation, and deletion policy.
+The v1 combined builder does not permit a remote embedding endpoint. A later
+portable offline-build pipeline may use explicitly authorized remote embedding
+workers only after it has produced a sealed prepared corpus. That exception is
+limited to the build stage: it does not grant the runtime provider general
+network access. Upload only the prepared document shards required by the
+worker; source occurrence rows remain local unless a separate policy permits
+them. Remote storage and workers must use private access, encryption in transit
+and at rest, bounded retention, deletion on completion, tenant isolation, and
+credentials supplied through the host secret mechanism rather than manifests
+or logs.
+
+Build output, prepared semantic text, and intermediate embeddings inherit the
+source telemetry's tenant, confidentiality, encryption, retention, revocation,
+and deletion policy.
 
 ## Runtime provider
 

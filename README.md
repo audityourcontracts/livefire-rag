@@ -110,6 +110,12 @@ uv run --extra analysis python -m livefire_rag_analysis evaluate \
   --planned-query-id q-1 --planned-query-id q-2
 ```
 
+Tool preparation does not modify `INDEX`. It atomically creates a separate
+`LOCAL_TEST_LOADOUT/evidence-index` wrapper using hard links to the verified
+physical files, so the loadout must be created on the same filesystem. The
+external host remains responsible for keeping both paths read-only while the
+provider runs.
+
 `--representative-sample` bounds retained documents and embedding calls per
 searchable relation, but still scans and projects the typed snapshot twice: the
 first pass selects documents and the second spills all occurrences for them.
@@ -122,6 +128,37 @@ Production authority admission, a concrete Livefire desktop/server composition
 root, and a Wasmtime guest remain separate integration gates. The exact contracts,
 implemented status, and remaining gaps are in
 [`docs/rust-experimental-rag-spec.md`](docs/rust-experimental-rag-spec.md).
+The next large-index design separates parallel Rust preparation, replaceable
+local or cloud embedding, and streaming final assembly. Its implementation
+contract and staged test plan are in
+[`docs/portable-embedding-pipeline.md`](docs/portable-embedding-pipeline.md).
+
+The first modular dataset path is implemented. For example, one relation can be
+prepared, embedded, assembled, and queried without rebuilding any other index:
+
+```sh
+cargo run -p rag-builder --bin rag -- prepare \
+  --snapshot SNAPSHOT --dataset-id DATASET --relation ocsf_detection_finding \
+  --out PREPARED
+cargo run -p rag-builder --bin rag -- plan-embeddings \
+  --prepared PREPARED --embedding-profile PROFILE --out PLAN
+cargo run -p rag-builder --bin rag -- embed \
+  --prepared PREPARED --plan PLAN --embedding-profile PROFILE \
+  --embedding-endpoint http://127.0.0.1:1234 --out EMBEDDINGS
+cargo run -p rag-builder --bin rag -- assemble \
+  --prepared PREPARED --plan PLAN --embeddings EMBEDDINGS \
+  --embedding-profile PROFILE --out INDEX
+cargo run -p rag-builder --bin rag -- query \
+  --index INDEX --mode fused --query 'encoded PowerShell' \
+  --embedding-endpoint http://127.0.0.1:1234
+```
+
+Occurrence rows and vectors stream in bounded chunks. Preparation currently
+keeps the deduplicated document table in memory and refuses more than 600,000
+documents; external document merging is the next scale milestone. LM Studio is
+the only implemented executor in this branch. Runpod support will consume the
+same prepared Parquet and produce the same binary vector shards rather than
+changing the index format.
 
 ## Implemented standalone POC commands
 

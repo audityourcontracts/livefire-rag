@@ -1,6 +1,8 @@
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use clap::Parser;
@@ -30,11 +32,61 @@ struct Arguments {
     query: String,
 }
 
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct StagedOutput {
+    path: PathBuf,
+    destination: PathBuf,
+    published: bool,
+}
+
+impl StagedOutput {
+    fn new(destination: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let parent = destination.parent().ok_or("loadout output parent")?;
+        fs::create_dir_all(parent)?;
+        let name = destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or("loadout output name")?;
+        let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".{name}.livefire-rag-partial-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&path)?;
+        Ok(Self {
+            path,
+            destination: destination.to_owned(),
+            published: false,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn publish(mut self) -> Result<(), Box<dyn std::error::Error>> {
+        fs::rename(&self.path, &self.destination)?;
+        self.published = true;
+        Ok(())
+    }
+}
+
+impl Drop for StagedOutput {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let a = Arguments::parse();
     if a.out.exists() {
         return Err("refusing to overwrite loadout output".into());
     }
+    let staging = StagedOutput::new(&a.out)?;
+    let output = staging.path();
     let embedding_endpoint = normalize_loopback_http_endpoint(&a.embedding_endpoint)?;
     let physical = read_json(&a.index.join("index.json"))?;
     if physical["schema_version"] != "livefire.rag.fast-index/2" {
@@ -116,15 +168,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       "query_time_contract":{"mode":"local_component","network":[format!("loopback:{embedding_endpoint}")],"secret_handles":[],"vendor_services":[],"required_local_components":[profile_ref]},
       "governance":{"inherits_source_confidentiality":true,"inherits_source_retention":true}
     });
-    write_canonical(a.index.join("sdk-index-manifest.json"), &sdk_index)?;
+    let wrapped_index = output.join("evidence-index");
+    copy_physical_index(&a.index, &wrapped_index, &objects)?;
+    write_canonical(wrapped_index.join("sdk-index-manifest.json"), &sdk_index)?;
     let index_ref = json!({"id":sdk_index["index_id"],"version":sdk_index["index_version"],"sha256":canonical_sha256(&sdk_index)});
-    fs::create_dir_all(&a.out)?;
     let checks = json!({"object_digests":true,"source_binding":true,"safe_paths":true,"schema_profiles":true,"coverage_closure":true,"pointer_closure":true,"offline_query_conformance":true,"conformance":true,"deterministic_rebuild":false});
     let unsigned = json!({"schema_version":"livefire.index-admission/1","receipt_id":"com.ayc.livefire-rag.local-test-index-admission","receipt_version":"1","build_request_sha256":canonical_sha256(&json!({"index":index_ref,"scope":"local-test"})),"build_report_sha256":sha256(&fs::read(a.index.join("build-report.json"))?),"index_manifest_sha256":index_ref["sha256"],"verifier":material_ref("com.ayc.livefire-rag.local-test-index-verifier",&checks),"checks":checks,"disposition":"admitted","reason_codes":["local_test_only_not_production_admitted"]});
     let mut receipt = unsigned.clone();
     receipt["authority_signature"] =
         Value::String(format!("local-test:{}", canonical_sha256(&unsigned)));
-    write_canonical(a.out.join("index-admission-receipt.json"), &receipt)?;
+    write_canonical(output.join("index-admission-receipt.json"), &receipt)?;
     let receipt_ref = json!({"id":"com.ayc.livefire-rag.local-test-index-admission","version":"1","sha256":canonical_sha256(&receipt)});
     let contract = json!({"mode":"local_component","network":[format!("loopback:{embedding_endpoint}")],"secret_handles":[],"vendor_services":[]});
     // Search data is currently loaded once into the provider process. The
@@ -132,13 +185,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // index instead of a misleading 256 MiB sandbox claim.
     let limits = json!({"request_bytes":65536,"result_bytes":1048576,"wall_time_ms":30000,"memory_bytes":2147483648_u64,"max_candidates":100});
     let lock = json!({"schema_version":"livefire.tool-binding-lock/1","descriptor":tool_ref(),"provider":provider,"executable":executable,"input_schema":input_schema_ref(),"output_schema":output_schema_ref(),"index":index_ref,"index_format":format_ref(),"index_admission_receipt":receipt_ref,"source_snapshots":[snapshot],"retrieval_policy":retrieval_policy_ref(),"query_time_contract":contract,"protocol":PROTOCOL,"limits":limits});
-    write_canonical(a.out.join("tool-binding-lock.json"), &lock)?;
+    write_canonical(output.join("tool-binding-lock.json"), &lock)?;
     let lock_sha = canonical_sha256(&lock);
     let lock_ref = json!({"id":"com.ayc.livefire-rag.local-test-tool-binding","version":"1","sha256":lock_sha});
     let mounts = json!([
-      {"logical_name":"evidence-index","role":"index","component":index_ref,"access":"read_only","process_path":absolute(&a.index)?},
-      {"logical_name":"tool-binding-lock","role":"policy","component":lock_ref,"access":"read_only","process_path":absolute(&a.out.join("tool-binding-lock.json"))?},
-      {"logical_name":"index-admission-receipt","role":"policy","component":receipt_ref,"access":"read_only","process_path":absolute(&a.out.join("index-admission-receipt.json"))?},
+      {"logical_name":"evidence-index","role":"index","component":index_ref,"access":"read_only","process_path":future_absolute(&a.out.join("evidence-index"))?},
+      {"logical_name":"tool-binding-lock","role":"policy","component":lock_ref,"access":"read_only","process_path":future_absolute(&a.out.join("tool-binding-lock.json"))?},
+      {"logical_name":"index-admission-receipt","role":"policy","component":receipt_ref,"access":"read_only","process_path":future_absolute(&a.out.join("index-admission-receipt.json"))?},
       {"logical_name":"embedding-profile","role":"model","component":profile_ref,"access":"read_only","process_path":absolute(&a.embedding_profile)?}
     ]);
     let deadline = 4_102_444_800_000_u64;
@@ -174,7 +227,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lines.extend(serde_json_canonicalizer::to_vec(&row)?);
         lines.push(b'\n');
     }
-    fs::write(a.out.join("requests.jsonl"), lines)?;
+    fs::write(output.join("requests.jsonl"), lines)?;
+    staging.publish()?;
     println!(
         "{}",
         serde_json::to_string_pretty(
@@ -234,14 +288,32 @@ fn source_mapping_component(
     Ok(json!({"id":id,"version":version,"sha256":expected_sha}))
 }
 fn coverage(physical: &Value, report: &Value) -> Result<Value, Box<dyn std::error::Error>> {
-    let source = report
-        .pointer("/accounting/source_rows_scanned")
-        .and_then(Value::as_u64)
-        .ok_or("build report has no source_rows_scanned")?;
-    let selected = report
-        .pointer("/accounting/sampling/selected_occurrences")
-        .and_then(Value::as_u64)
-        .ok_or("build report has no selected_occurrences")?;
+    let semantics = report
+        .pointer("/accounting/coverage_semantics")
+        .and_then(Value::as_str)
+        .ok_or("build report has no coverage semantics")?;
+    let source = match semantics {
+        "searchable_projection_only_not_source_row_coverage" => report
+            .pointer("/accounting/source_rows_scanned")
+            .and_then(Value::as_u64)
+            .ok_or("build report has no source_rows_scanned")?,
+        "dataset_scope_only_not_source_corpus_coverage" => report
+            .pointer("/accounting/source_records")
+            .and_then(Value::as_u64)
+            .ok_or("portable build report has no source_records")?,
+        _ => return Err("build report coverage is not source-aware".into()),
+    };
+    let selected = match semantics {
+        "searchable_projection_only_not_source_row_coverage" => report
+            .pointer("/accounting/sampling/selected_occurrences")
+            .and_then(Value::as_u64)
+            .ok_or("build report has no selected_occurrences")?,
+        "dataset_scope_only_not_source_corpus_coverage" => report
+            .pointer("/accounting/indexed_occurrences")
+            .and_then(Value::as_u64)
+            .ok_or("portable build report has no indexed_occurrences")?,
+        _ => return Err("build report coverage is not source-aware".into()),
+    };
     let structured = report
         .pointer("/accounting/structured_only_occurrences")
         .and_then(Value::as_u64)
@@ -261,12 +333,21 @@ fn coverage(physical: &Value, report: &Value) -> Result<Value, Box<dyn std::erro
             Value::from(structured),
         );
     }
-    let sampled = excluded.saturating_sub(structured);
-    if sampled > 0 {
-        reasons.insert(
-            "scenario_blind_sample_exclusion".into(),
-            Value::from(sampled),
-        );
+    let remaining = excluded.saturating_sub(structured);
+    if remaining > 0 {
+        let reason = if semantics == "dataset_scope_only_not_source_corpus_coverage" {
+            let scoped = report
+                .pointer("/accounting/excluded_by_scope_occurrences")
+                .and_then(Value::as_u64)
+                .ok_or("portable build report has no scoped exclusion count")?;
+            if scoped != remaining {
+                return Err("portable scope exclusions do not close".into());
+            }
+            "dataset_scope_exclusion"
+        } else {
+            "scenario_blind_sample_exclusion"
+        };
+        reasons.insert(reason.into(), Value::from(remaining));
     }
     Ok(
         json!({"source_records":source,"indexed_documents":physical["documents"]["rows"],"excluded_records":excluded,"reason_counts":reasons}),
@@ -307,9 +388,54 @@ fn physical_objects(root: &Path, p: &Value) -> Result<Vec<Value>, Box<dyn std::e
     }
     Ok(v)
 }
+fn copy_physical_index(
+    source: &Path,
+    destination: &Path,
+    objects: &[Value],
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir(destination)?;
+    for object in objects {
+        let relative = object["path"].as_str().ok_or("physical object path")?;
+        if relative.starts_with('/')
+            || relative
+                .split('/')
+                .any(|part| matches!(part, "" | "." | ".."))
+        {
+            return Err("physical object path is unsafe".into());
+        }
+        let from = source.join(relative);
+        let to = destination.join(relative);
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::hard_link(&from, &to)?;
+        let (bytes, digest) = file_identity(&to)?;
+        if object["bytes"].as_u64() != Some(bytes)
+            || object["sha256"].as_str() != Some(digest.as_str())
+        {
+            return Err("copied physical object identity differs".into());
+        }
+    }
+    Ok(())
+}
 fn artifact(path: &Path, relative: &str, media: &str) -> Result<Value, Box<dyn std::error::Error>> {
-    let b = fs::read(path)?;
-    Ok(json!({"path":relative,"media_type":media,"sha256":sha256(&b),"bytes":b.len()}))
+    let (bytes, digest) = file_identity(path)?;
+    Ok(json!({"path":relative,"media_type":media,"sha256":digest,"bytes":bytes}))
+}
+fn file_identity(path: &Path) -> Result<(u64, String), Box<dyn std::error::Error>> {
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut bytes = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        bytes = bytes.checked_add(read as u64).ok_or("file is too large")?;
+        digest.update(&buffer[..read]);
+    }
+    Ok((bytes, format!("{:x}", digest.finalize())))
 }
 fn material_ref(id: &str, v: &Value) -> Value {
     json!({"id":id,"version":"1","sha256":canonical_sha256(v)})
@@ -329,4 +455,17 @@ fn sha256(b: &[u8]) -> String {
 }
 fn absolute(p: &Path) -> Result<String, Box<dyn std::error::Error>> {
     Ok(p.canonicalize()?.to_string_lossy().into_owned())
+}
+fn future_absolute(p: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let mut cursor = p;
+    let mut missing = Vec::new();
+    while !cursor.exists() {
+        missing.push(cursor.file_name().ok_or("future path name")?.to_owned());
+        cursor = cursor.parent().ok_or("future path parent")?;
+    }
+    let mut resolved = cursor.canonicalize()?;
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved.to_string_lossy().into_owned())
 }
