@@ -357,9 +357,9 @@ A fixed benchmark on 13 August 2026 found:
 | batch 8, concurrency 4 | 16.58 embeddings/s |
 
 All responses were HTTP 200 and repeated float32 vectors were byte-identical.
-Increasing client concurrency increased latency but did not materially improve
-throughput; the server accepted and queued concurrent work rather than
-executing it in parallel.
+This paragraph describes the legacy single-command `rag build` path. Increasing
+client concurrency there increased latency without materially improving
+throughput; the server accepted and queued concurrent work.
 
 The implemented Rust client therefore defaults to:
 
@@ -375,15 +375,15 @@ validates every vector's dimensions, finiteness, and configured normalization
 before writing it to the SQLite cache. It preserves input order and the cache
 key binds embedding profile, document ID/digest, and semantic-text digest.
 
-Automatic retries, retry classification, multi-request scheduling, and a
-bounded backpressure queue are not implemented. A failed request stops the
-build; vectors from earlier completed batches remain cached and the operator can
-rerun it. These features should be added only when representative builds show
-that they improve the experiment loop without obscuring failures.
+That legacy path has no retry scheduler. The preferred portable `rag embed`
+path does implement bounded concurrent batches, temporary-failure retries,
+crash-safe task parts, explicit recovery, and restart from sealed receipts.
 
-LM Studio's model-worker `--parallel` option is a separate controlled
-experiment because it changes external model state and memory consumption. It
-is not assumed by the client.
+LM Studio 0.4.20+1 accepted an embedding-model load request with `--parallel
+2`, but neither `lms ps` nor the local REST model configuration exposed the
+setting. The experiment therefore did not claim a parallel-2 or parallel-4
+embedding run. The supported measured default remains four inputs and one
+request in flight.
 
 ## 9. Current Python run postmortem
 
@@ -430,7 +430,7 @@ every query or cached rebuild.
 The Rust query command emits one JSON result. The smoke runner converts a query
 set into a stable JSONL retrieval run, and Python consumes only the index/run
 artifacts. The implemented analysis package provides configurable-cutoff macro
-nDCG and Recall, MRR, per-query metrics when qrels are supplied, explicit
+nDCG and Recall, MRR, per-query metrics when human relevance labels (qrels) are supplied, explicit
 diagnostics when they are not, and PCA plots with original-space centroid
 distance markers.
 
@@ -446,20 +446,22 @@ anomaly statistic. An embedding-space outlier is not called malicious.
 
 1. **Implemented — contracts and current snapshot reader.** The Rust workspace
    reads the present embedded build receipt and scans manifested typed Parquet.
-2. **Partly implemented — generic projection.** Direct activity, state, and
-   detection projection, grouping, redaction, and accounting exist with Rust
-   fixtures. Broader Python-oracle parity and representative OCSF class coverage
-   remain.
+2. **Implemented for the admitted relation set — generic projection.** Direct
+   activity, state, and detection projection, grouping, redaction, and
+   accounting have Rust fixtures. A deterministic 4,128-row comparison across
+   all 17 searchable relation types matched the Python implementation exactly.
 3. **Implemented for the experiment — direct writer.** The builder emits
    document/occurrence Parquet, `vectors.f32`, lexical JSON, and bound manifests
    without JSONL, DuckDB insertion, or parent replay. Build memory remains
    proportional to the retained set.
-4. **Implemented — embedding client.** LM Studio batching, strict response
-   validation, and a persistent resumable cache exist. Cached-rebuild and
-   response-order preservation are covered by focused tests; the recorded local
-   concurrency benchmark found no useful gain beyond one in-flight batch. The
-   implementation is sequential and has no automatic retry scheduler or
-   backpressure queue. Representative-corpus throughput still needs measurement.
+4. **Implemented — embedding clients.** The legacy `rag build` path has LM
+   Studio batching, strict response validation, and a persistent resumable
+   cache, but remains sequential. The preferred portable `rag embed` path adds
+   bounded requests in flight, retries temporary failures with backoff, validates
+   returned model identity and vector order, publishes one restart-safe shard
+   per task, and finalizes only complete result sets. The 512-, 2,000-, and
+   10,000-document local runs measure throughput and show that extra client
+   requests did not help while LM Studio had one prediction slot.
 5. **Implemented — retrieval.** Exact streamed dense scoring, BM25, relation/time
    filters, deterministic ordering, and bound reciprocal-rank fusion exist.
 6. **Implemented and SDK-tested locally — provider.** The native executable
@@ -508,15 +510,15 @@ uv run --extra analysis python tools/run_rust_smoke.py \
 
 On 13 August 2026 the fused smoke produced six documents, six occurrences, six
 vectors, 36 run rows, a provider pointer response, and rank-one retrieval for
-all six synthetic qrels (MRR, Recall@1, and nDCG@1 all `1.0`). This is an
+all six synthetic relevance labels (MRR, Recall@1, and nDCG@1 all `1.0`). This is an
 interface and binding sanity check only. The runner also performs a cached
 rebuild against an unreachable model endpoint, requires zero embedding calls,
 compares stable index artifacts byte-for-byte, and validates the actual provider
-pointer output against the packaged fast-search schema. The fixture and qrels
+pointer output against the packaged fast-search schema. The fixture and relevance labels
 are generated together, the corpus is tiny, and the result must not be presented
 as evidence that retrieval improved. The effectiveness decision requires a
-blinded, representative candidate universe with adjudicated qrels and lexical/
-dense/fused comparison.
+representative result pool whose system labels are hidden from reviewers,
+human-reviewed relevance labels, and lexical/dense/fused comparison.
 
 ## 13. Acceptance gates
 

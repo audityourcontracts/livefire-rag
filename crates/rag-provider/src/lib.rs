@@ -15,8 +15,9 @@ use std::{
 };
 
 use rag_embedding::{
-    Embedder, EmbeddingError, LmStudioEmbedder, normalize_loopback_http_endpoint,
-    try_compose_query, validate_embedding_profile, validate_vector,
+    EmbeddingError, EmbeddingProfile, IdentifiedEmbedder, LmStudioEmbedder, adapt_model_vector,
+    normalize_loopback_http_endpoint, try_compose_query, validate_embedding_profile,
+    validate_vector,
 };
 use rag_index::{FastIndex, IndexError, SearchFilters, SearchHit, SearchMode};
 use serde_json::{Map, Value, json};
@@ -27,6 +28,7 @@ pub const PROVIDER_ID: &str = "com.ayc.livefire-rag.fast-evidence-provider";
 pub const TOOL_ID: &str = "com.ayc.livefire-rag.fast-evidence.search";
 pub const FORMAT_ID: &str = "com.ayc.livefire-rag.fast-index-format";
 pub const VERSION: &str = "0.2.0";
+pub const FORMAT_VERSION_V3: &str = "0.3.0";
 
 #[must_use]
 pub fn provider_ref() -> Value {
@@ -71,6 +73,16 @@ pub fn tool_ref() -> Value {
 #[must_use]
 pub fn format_ref() -> Value {
     index_format_descriptor()["format"].clone()
+}
+
+#[must_use]
+pub fn format_ref_v3() -> Value {
+    index_format_descriptor_v3()["format"].clone()
+}
+
+#[must_use]
+pub fn supported_format_refs() -> Vec<Value> {
+    vec![format_ref(), format_ref_v3()]
 }
 
 fn component(id: &str, version: &str, sha256: &str) -> Value {
@@ -135,6 +147,29 @@ pub fn physical_profile_ref() -> Value {
 }
 
 #[must_use]
+pub fn physical_profile_v3() -> Value {
+    json!({
+        "schema_version":"livefire.rag.fast-index-physical-profile/2",
+        "manifest":"livefire.rag.fast-index/3",
+        "document_order":"document_id_asc",
+        "vector_dtype":"f32le",
+        "vector_header_bytes":64,
+        "lexical_tokenizer":"ascii_camel_lower_v1",
+        "lexical_storage":"sqlite-inverted-bm25-v1",
+        "pointer_table":"sqlite-occurrence-lookup-v1"
+    })
+}
+
+#[must_use]
+pub fn physical_profile_ref_v3() -> Value {
+    component(
+        "com.ayc.livefire-rag.fast-index-physical-profile",
+        "2",
+        &canonical_sha256(&physical_profile_v3()),
+    )
+}
+
+#[must_use]
 pub fn validator_profile() -> Value {
     json!({
         "schema_version":"livefire.rag.fast-index-validator/1",
@@ -185,7 +220,7 @@ pub fn tool_descriptor() -> Value {
         "output_schema":output_schema_ref(),
         "result_semantics":"candidate_pointer",
         "evidence_policy":"pointer_only",
-        "required_indexes":[{"format_id":FORMAT_ID,"accepted_versions":[VERSION]}],
+        "required_indexes":[{"format_id":FORMAT_ID,"accepted_versions":[VERSION,FORMAT_VERSION_V3]}],
         "limits":{"request_bytes":65536,"result_bytes":1048576,"wall_time_ms":30000,"max_candidates":100},
         "determinism":"ranked_deterministic"
     });
@@ -240,6 +275,70 @@ pub fn index_format_descriptor() -> Value {
     let digest = canonical_sha256_omitting(&value, "/format/sha256");
     value["format"]["sha256"] = Value::String(digest);
     value
+}
+
+#[must_use]
+pub fn index_format_descriptor_v3() -> Value {
+    let manifest_schema = schema_ref(include_str!(
+        "../../../specs/fast-index-manifest.v3.schema.json"
+    ));
+    let document_schema = schema_ref(include_str!(
+        "../../../specs/fast-document-row.v1.schema.json"
+    ));
+    let occurrence_schema = schema_ref(include_str!(
+        "../../../specs/fast-occurrence-row.v1.schema.json"
+    ));
+    let report_schema = schema_ref(include_str!(
+        "../../../specs/fast-build-report.v1.schema.json"
+    ));
+    let vector_profile = profile_ref(
+        "com.ayc.livefire-rag.fast-vector-binary-profile",
+        include_str!("../../../specs/fast-vector-binary-profile.v1.json"),
+    );
+    let lexical_profile = profile_ref_version(
+        "com.ayc.livefire-rag.fast-lexical-profile",
+        "2",
+        include_str!("../../../specs/fast-lexical-profile.v2.json"),
+    );
+    let lookup_profile = profile_ref(
+        "com.ayc.livefire-rag.fast-occurrence-lookup-profile",
+        include_str!("../../../specs/fast-occurrence-lookup-profile.v1.json"),
+    );
+    let mut value = json!({
+        "schema_version":"livefire.index-format-descriptor/1",
+        "format":{"id":FORMAT_ID,"version":FORMAT_VERSION_V3,"sha256":""},
+        "compatibility":{"rule":"exact_format_id_and_listed_version","accepted_versions":[FORMAT_VERSION_V3]},
+        "objects":[
+            {"role":"fast_manifest","required":true,"media_type":"application/json","row_schema":manifest_schema},
+            {"role":"documents","required":true,"media_type":"application/vnd.apache.parquet","row_schema":document_schema},
+            {"role":"occurrences","required":true,"media_type":"application/vnd.apache.parquet","row_schema":occurrence_schema},
+            {"role":"vectors","required":true,"media_type":"application/octet-stream","row_schema":vector_profile},
+            {"role":"lexical","required":true,"media_type":"application/vnd.sqlite3","row_schema":lexical_profile},
+            {"role":"occurrence_lookup","required":true,"media_type":"application/vnd.sqlite3","row_schema":lookup_profile},
+            {"role":"build_report","required":true,"media_type":"application/json","row_schema":report_schema}
+        ],
+        "pointer_table":{"required":true,"schema":hydration_ref_schema_ref()},
+        "physical_profile":physical_profile_ref_v3(),
+        "validator":validator_ref()
+    });
+    let digest = canonical_sha256_omitting(&value, "/format/sha256");
+    value["format"]["sha256"] = Value::String(digest);
+    value
+}
+
+fn profile_ref_version(id: &str, version: &str, material: &str) -> Value {
+    let value: Value = serde_json::from_str(material).expect("embedded profile");
+    component(id, version, &canonical_sha256(&value))
+}
+
+fn manifest_schema_for_format(format: &Value) -> Option<&'static str> {
+    if format == &format_ref() {
+        Some("livefire.rag.fast-index/2")
+    } else if format == &format_ref_v3() {
+        Some("livefire.rag.fast-index/3")
+    } else {
+        None
+    }
 }
 
 fn canonical_sha256(value: &Value) -> String {
@@ -465,7 +564,7 @@ impl Provider {
             "provider":self.provider_ref,
             "protocol":PROTOCOL,
             "tools":[tool_ref()],
-            "accepted_index_formats":[format_ref()]
+            "accepted_index_formats":supported_format_refs()
         }))
     }
 
@@ -562,7 +661,7 @@ impl Provider {
             || lock["input_schema"] != input_schema_ref()
             || lock["output_schema"] != output_schema_ref()
             || lock["index"] != index_ref
-            || lock["index_format"] != format_ref()
+            || manifest_schema_for_format(&lock["index_format"]).is_none()
             || lock["retrieval_policy"] != retrieval_policy_ref()
             || lock["protocol"] != PROTOCOL
             || lock["source_snapshots"] != params["source_snapshots"]
@@ -620,7 +719,7 @@ impl Provider {
 
         let index_path = string(index_mount, "process_path", "index mount")?;
         let sdk_index = verify_sdk_index_wrapper(index_path, &index_ref)?;
-        if sdk_index["format"] != format_ref()
+        if sdk_index["format"] != lock["index_format"]
             || sdk_index.pointer("/source_bindings/0/source_snapshot") != Some(&source_snapshots[0])
         {
             return Err(ProviderError::new(
@@ -629,7 +728,9 @@ impl Provider {
             ));
         }
         let physical_manifest = read_json_mount(index_path, "index.json")?;
-        if physical_manifest["schema_version"] != "livefire.rag.fast-index/2"
+        refuse_test_only_index(&physical_manifest)?;
+        if physical_manifest["schema_version"]
+            != manifest_schema_for_format(&lock["index_format"]).expect("validated format")
             || sdk_index.pointer("/policies/physical_index/sha256")
                 != physical_manifest.get("component_sha256")
         {
@@ -838,36 +939,15 @@ impl Provider {
                 .map_err(|_| {
                     ProviderError::new("invalid_binding", "query composition contract is invalid")
                 })?;
-            let embedded = tokio::time::timeout(timeout, embedder.embed(&[composed]))
-                .await
-                .map_err(|_| {
-                    ProviderError::new(
-                        "deadline_exceeded",
-                        "query embedding exceeded the call deadline",
-                    )
-                })?
-                .map_err(|error| {
-                    if matches!(&error, EmbeddingError::Http(source) if source.is_timeout()) {
-                        ProviderError::new(
-                            "deadline_exceeded",
-                            "query embedding exceeded the call deadline",
-                        )
-                    } else {
-                        ProviderError::retryable("unavailable", "query embedding failed")
-                    }
-                })?;
-            let vector = embedded.into_iter().next().ok_or_else(|| {
-                ProviderError::new("unavailable", "query embedding response was empty")
-            })?;
-            validate_vector(
-                &vector,
-                session.index.manifest.embedding_profile.dimensions as usize,
-                &session.index.manifest.embedding_profile.normalization,
+            Some(
+                embed_bound_query(
+                    &embedder,
+                    &session.index.manifest.embedding_profile,
+                    composed,
+                    timeout,
+                )
+                .await?,
             )
-            .map_err(|_| {
-                ProviderError::retryable("unavailable", "query embedding violated its profile")
-            })?;
-            Some(vector)
         } else {
             None
         };
@@ -942,6 +1022,49 @@ impl Provider {
             ))
         }
     }
+}
+
+async fn embed_bound_query<E: IdentifiedEmbedder>(
+    embedder: &E,
+    profile: &EmbeddingProfile,
+    composed_query: String,
+    timeout: Duration,
+) -> Result<Vec<f32>, ProviderError> {
+    let response = tokio::time::timeout(timeout, embedder.embed_identified(&[composed_query]))
+        .await
+        .map_err(|_| {
+            ProviderError::new(
+                "deadline_exceeded",
+                "query embedding exceeded the call deadline",
+            )
+        })?
+        .map_err(|error| {
+            if matches!(&error, EmbeddingError::Http(source) if source.is_timeout()) {
+                ProviderError::new(
+                    "deadline_exceeded",
+                    "query embedding exceeded the call deadline",
+                )
+            } else {
+                ProviderError::retryable("unavailable", "query embedding failed")
+            }
+        })?;
+    if response.returned_model != profile.model || response.vectors.len() != 1 {
+        return Err(ProviderError::new(
+            "invalid_binding",
+            "query embedding response differs from the bound model",
+        ));
+    }
+    let vector =
+        response.vectors.into_iter().next().ok_or_else(|| {
+            ProviderError::new("unavailable", "query embedding response was empty")
+        })?;
+    let vector = adapt_model_vector(profile, vector).map_err(|_| {
+        ProviderError::retryable("unavailable", "query embedding violated its profile")
+    })?;
+    validate_vector(&vector, profile.dimensions as usize, &profile.normalization).map_err(
+        |_| ProviderError::retryable("unavailable", "query embedding violated its profile"),
+    )?;
+    Ok(vector)
 }
 
 fn search_output(session: &Session, query: &str, top_n: usize, hits: Vec<SearchHit>) -> Value {
@@ -1411,6 +1534,16 @@ fn validate_sha256(value: &str, label: &str) -> Result<(), ProviderError> {
     Ok(())
 }
 
+fn refuse_test_only_index(manifest: &Value) -> Result<(), ProviderError> {
+    if manifest.get("test_only").and_then(Value::as_bool) == Some(true) {
+        return Err(ProviderError::new(
+            "invalid_binding",
+            "test-only indexes cannot be opened by the provider",
+        ));
+    }
+    Ok(())
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1418,4 +1551,298 @@ fn now_millis() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rag_embedding::{Embedder, IdentifiedEmbeddingBatch};
+    use rag_index::{
+        BuildScope, FastDocument, FastOccurrence, OrderedVector, SourceBinding,
+        write_scalable_fast_index_from_streams,
+    };
+
+    struct WrongModelEmbedder;
+
+    impl Embedder for WrongModelEmbedder {
+        async fn embed(&self, _texts: &[String]) -> rag_embedding::Result<Vec<Vec<f32>>> {
+            Ok(vec![vec![1.0, 0.0]])
+        }
+    }
+
+    impl IdentifiedEmbedder for WrongModelEmbedder {
+        async fn embed_identified(
+            &self,
+            texts: &[String],
+        ) -> rag_embedding::Result<IdentifiedEmbeddingBatch> {
+            Ok(IdentifiedEmbeddingBatch {
+                vectors: self.embed(texts).await?,
+                returned_model: "different-model".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_rejects_query_vector_returned_by_a_different_model() {
+        let profile = EmbeddingProfile {
+            id: "fixture.embedding".into(),
+            version: "1".into(),
+            sha256: "a".repeat(64),
+            model: "bound-model".into(),
+            dimensions: 2,
+            normalization: "l2".into(),
+            vector_derivation: None,
+            query_instruction: None,
+            query_composition: None,
+        };
+        let error = embed_bound_query(
+            &WrongModelEmbedder,
+            &profile,
+            "query".into(),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_binding");
+    }
+
+    #[test]
+    fn provider_advertises_both_exact_index_formats() {
+        let response = Provider::new().handshake(&json!({})).unwrap();
+        assert_eq!(
+            response["accepted_index_formats"],
+            Value::Array(vec![format_ref(), format_ref_v3()])
+        );
+        assert_eq!(
+            manifest_schema_for_format(&format_ref()),
+            Some("livefire.rag.fast-index/2")
+        );
+        assert_eq!(
+            manifest_schema_for_format(&format_ref_v3()),
+            Some("livefire.rag.fast-index/3")
+        );
+        assert_eq!(
+            manifest_schema_for_format(
+                &json!({"id":FORMAT_ID,"version":"0.3.0","sha256":"0".repeat(64)})
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_refuses_test_only_index_manifest() {
+        let error = refuse_test_only_index(&json!({"test_only":true})).unwrap_err();
+        assert_eq!(error.code, "invalid_binding");
+        assert!(refuse_test_only_index(&json!({})).is_ok());
+    }
+
+    #[test]
+    fn v2_and_v3_descriptors_name_their_real_lexical_storage() {
+        let v2 = index_format_descriptor();
+        let v3 = index_format_descriptor_v3();
+        assert_eq!(v2.pointer("/format/version"), Some(&json!(VERSION)));
+        assert_eq!(
+            v3.pointer("/format/version"),
+            Some(&json!(FORMAT_VERSION_V3))
+        );
+        assert_eq!(
+            v2.pointer("/objects/4/media_type"),
+            Some(&json!("application/json"))
+        );
+        assert_eq!(
+            v3.pointer("/objects/4/media_type"),
+            Some(&json!("application/vnd.sqlite3"))
+        );
+        assert_eq!(v3.pointer("/physical_profile/version"), Some(&json!("2")));
+    }
+
+    #[test]
+    fn provider_opens_a_synthetic_v3_index_without_a_model_server() {
+        let root = tempfile::tempdir().unwrap();
+        let index_root = root.path().join("index");
+        let profile_path = root.path().join("embedding-profile.json");
+        let profile_bytes = serde_json_canonicalizer::to_vec(&json!({
+            "id":"fixture.embedding",
+            "version":"1",
+            "model":"fixture",
+            "dimensions":2,
+            "normalization":"l2"
+        }))
+        .unwrap();
+        fs::write(&profile_path, &profile_bytes).unwrap();
+        let profile_sha256 = sha256(&profile_bytes);
+        let snapshot_sha256 = "a".repeat(64);
+        let mapping_sha256 = "b".repeat(64);
+        let manifest = write_scalable_fast_index_from_streams(
+            &index_root,
+            SourceBinding {
+                snapshot_sha256: snapshot_sha256.clone(),
+                mapping_sha256: mapping_sha256.clone(),
+            },
+            BuildScope::Sample,
+            [Ok(FastDocument {
+                document_id: "doc-1".into(),
+                document_sha256: "c".repeat(64),
+                document_kind: "activity".into(),
+                semantic_text: "PowerShell logging bypass".into(),
+                facets_json: "{}".into(),
+                relations_json: "[\"events\"]".into(),
+                occurrence_count: 1,
+                vector_ordinal: 0,
+            })],
+            [Ok(FastOccurrence {
+                occurrence_id: "occ-1".into(),
+                document_id: "doc-1".into(),
+                event_time_ms: Some(1),
+                relation: "events".into(),
+                exact_attributes_json: "{}".into(),
+                snapshot_sha256: snapshot_sha256.clone(),
+                mapping_sha256: mapping_sha256.clone(),
+                event_id: "event-1".into(),
+                support_ref: "events/0".into(),
+            })],
+            [Ok(OrderedVector {
+                vector_ordinal: 0,
+                values: vec![1.0, 0.0],
+            })],
+            EmbeddingProfile {
+                id: "fixture.embedding".into(),
+                version: "1".into(),
+                sha256: profile_sha256.clone(),
+                model: "fixture".into(),
+                dimensions: 2,
+                normalization: "l2".into(),
+                vector_derivation: None,
+                query_instruction: None,
+                query_composition: None,
+            },
+        )
+        .unwrap();
+        fs::write(index_root.join("build-report.json"), b"{}\n").unwrap();
+
+        let object = |path: &str, media_type: &str| {
+            let bytes = fs::read(index_root.join(path)).unwrap();
+            json!({
+                "path":path,
+                "media_type":media_type,
+                "sha256":sha256(&bytes),
+                "bytes":bytes.len()
+            })
+        };
+        let objects = vec![
+            object("index.json", "application/json"),
+            object(&manifest.documents.path, "application/vnd.apache.parquet"),
+            object(&manifest.occurrences.path, "application/vnd.apache.parquet"),
+            object(&manifest.vectors.path, "application/octet-stream"),
+            object(&manifest.lexical.path, "application/vnd.sqlite3"),
+            object(&manifest.occurrence_lookup.path, "application/vnd.sqlite3"),
+            object("build-report.json", "application/json"),
+        ];
+        let pointer = objects[2].clone();
+        let source_ref = component("fixture.snapshot", "1", &snapshot_sha256);
+        let mapping_ref = component("fixture.mapping", "1", &mapping_sha256);
+        let sdk_index = json!({
+            "schema_version":"livefire.index/1",
+            "index_id":"fixture.index",
+            "index_version":"0.3.0",
+            "format":format_ref_v3(),
+            "source_bindings":[{"source_snapshot":source_ref}],
+            "policies":{
+                "physical_index":{"sha256":manifest.component_sha256},
+                "mapping_pack":mapping_ref
+            },
+            "objects":objects,
+            "source_pointer_table":pointer
+        });
+        fs::write(
+            index_root.join("sdk-index-manifest.json"),
+            serde_json_canonicalizer::to_vec(&sdk_index).unwrap(),
+        )
+        .unwrap();
+        let index_ref = component("fixture.index", "0.3.0", &canonical_sha256(&sdk_index));
+
+        let receipt_path = root.path().join("index-admission-receipt.json");
+        let receipt = json!({
+            "schema_version":"livefire.index-admission/1",
+            "receipt_id":"fixture.admission",
+            "receipt_version":"1",
+            "index_manifest_sha256":index_ref["sha256"],
+            "disposition":"admitted",
+            "authority_signature":"fixture",
+            "checks":{
+                "object_digests":true,
+                "source_binding":true,
+                "safe_paths":true,
+                "schema_profiles":true,
+                "coverage_closure":true,
+                "pointer_closure":true,
+                "offline_query_conformance":true,
+                "conformance":true
+            }
+        });
+        fs::write(
+            &receipt_path,
+            serde_json_canonicalizer::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        let receipt_ref = component("fixture.admission", "1", &canonical_sha256(&receipt));
+        let query_contract = json!({
+            "mode":"offline_closed",
+            "network":[],
+            "secret_handles":[],
+            "vendor_services":[]
+        });
+        let limits = json!({
+            "request_bytes":65_536,
+            "result_bytes":1_048_576,
+            "wall_time_ms":30_000,
+            "memory_bytes":268_435_456,
+            "max_candidates":100
+        });
+        let executable_path = std::env::current_exe().unwrap();
+        let executable_bytes = fs::read(&executable_path).unwrap();
+        let mut provider = Provider::new();
+        let provider_component = provider.provider_ref.clone();
+        let lock = json!({
+            "schema_version":"livefire.tool-binding-lock/1",
+            "descriptor":tool_ref(),
+            "provider":provider_component,
+            "executable":{"sha256":sha256(&executable_bytes),"bytes":executable_bytes.len()},
+            "input_schema":input_schema_ref(),
+            "output_schema":output_schema_ref(),
+            "index":index_ref,
+            "index_format":format_ref_v3(),
+            "index_admission_receipt":receipt_ref,
+            "source_snapshots":[source_ref],
+            "retrieval_policy":retrieval_policy_ref(),
+            "query_time_contract":query_contract,
+            "protocol":PROTOCOL,
+            "limits":limits
+        });
+        let lock_path = root.path().join("tool-binding-lock.json");
+        fs::write(&lock_path, serde_json_canonicalizer::to_vec(&lock).unwrap()).unwrap();
+        let lock_sha256 = canonical_sha256(&lock);
+        let embedding_ref = component("fixture.embedding", "1", &profile_sha256);
+        let mounts = json!([
+            {"logical_name":"evidence-index","role":"index","component":index_ref,"access":"read_only","process_path":index_root},
+            {"logical_name":"tool-binding-lock","role":"policy","component":component("fixture.lock","1",&lock_sha256),"access":"read_only","process_path":lock_path},
+            {"logical_name":"index-admission-receipt","role":"policy","component":receipt_ref,"access":"read_only","process_path":receipt_path},
+            {"logical_name":"embedding-profile","role":"model","component":embedding_ref,"access":"read_only","process_path":profile_path}
+        ]);
+
+        provider.handshake(&json!({})).unwrap();
+        let opened = provider
+            .open(&json!({
+                "provider":provider_component,
+                "tools":[tool_ref()],
+                "indexes":[index_ref],
+                "source_snapshots":[source_ref],
+                "binding_lock_sha256":lock_sha256,
+                "query_time_contract":query_contract,
+                "limits":limits,
+                "mounts":mounts
+            }))
+            .unwrap();
+        assert_eq!(opened["response_kind"], "open");
+    }
 }

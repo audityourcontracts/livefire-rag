@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/fast-build-report.v2.schema.json",
+  "title": "Deterministic test-vector fast index build report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source", "build_scope", "complete", "document_count", "occurrence_count", "vector_count", "embedding_profile_sha256", "accounting", "cache_hits", "embedded", "test_only"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.fast-build-report/2"},
+    "source": {"$ref": "fast-build-report.v1.schema.json#/$defs/source"},
+    "build_scope": {"enum": ["full", "sample"]},
+    "complete": {"type": "boolean"},
+    "document_count": {"type": "integer", "minimum": 1},
+    "occurrence_count": {"type": "integer", "minimum": 1},
+    "vector_count": {"type": "integer", "minimum": 1},
+    "embedding_profile_sha256": {"$ref": "fast-build-report.v1.schema.json#/$defs/sha256"},
+    "cache_hits": {"const": 0},
+    "embedded": {"const": 0},
+    "accounting": {"$ref": "fast-build-report.v1.schema.json#/$defs/accounting"},
+    "test_only": {"const": true}
+  },
+  "$comment": "Version 2 records assembly from deterministic test vectors. It is not evidence that an embedding model ran."
+}

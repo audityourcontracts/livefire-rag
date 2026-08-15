@@ -121,6 +121,7 @@ fn direct_unadmitted_lifecycle_returns_lexical_pointer_and_explicit_miss() {
             model: "fixture-not-called-for-lexical".into(),
             dimensions: 2,
             normalization: "l2".into(),
+            vector_derivation: None,
             query_instruction: None,
             query_composition: None,
         },

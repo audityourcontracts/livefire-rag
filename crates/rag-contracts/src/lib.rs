@@ -11,6 +11,38 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub const DOCUMENT_INPUT_TOKEN: &str = "{semantic_text}";
+pub const MAX_DOCUMENT_FORMAT_BYTES: usize = 4_096;
+pub const MAX_FORMATTED_DOCUMENT_BYTES: usize = 1_048_576;
+
+/// Apply the closed document-input format shared by planning and execution.
+/// Length limits are UTF-8 bytes, not Unicode scalar-value counts.
+pub fn format_document_input(
+    document_format: &str,
+    semantic_text: &str,
+) -> Result<String, ContractError> {
+    if semantic_text.is_empty()
+        || document_format.is_empty()
+        || document_format.len() > MAX_DOCUMENT_FORMAT_BYTES
+        || document_format.matches(DOCUMENT_INPUT_TOKEN).count() != 1
+    {
+        return Err(ContractError::InvalidDocumentFormat);
+    }
+    let remaining = document_format.replace(DOCUMENT_INPUT_TOKEN, "");
+    if remaining.contains('{') || remaining.contains('}') {
+        return Err(ContractError::InvalidDocumentFormat);
+    }
+    let size = document_format
+        .len()
+        .checked_sub(DOCUMENT_INPUT_TOKEN.len())
+        .and_then(|fixed| fixed.checked_add(semantic_text.len()))
+        .ok_or(ContractError::InvalidDocumentFormat)?;
+    if size > MAX_FORMATTED_DOCUMENT_BYTES {
+        return Err(ContractError::InvalidDocumentFormat);
+    }
+    Ok(document_format.replace(DOCUMENT_INPUT_TOKEN, semantic_text))
+}
+
 /// A lowercase, 64-character SHA-256 digest.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
@@ -140,6 +172,8 @@ pub struct SearchHit {
 pub enum ContractError {
     #[error("SHA-256 digest must contain exactly 64 lowercase hexadecimal characters")]
     InvalidSha256,
+    #[error("document input format is invalid or exceeds its UTF-8 byte limit")]
+    InvalidDocumentFormat,
 }
 
 #[cfg(test)]
@@ -165,5 +199,43 @@ mod tests {
         let encoded = serde_json::to_string(&reference).expect("serialize");
         let decoded: EvidenceRef = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded, reference);
+    }
+
+    #[test]
+    fn document_formatter_is_closed_and_byte_bounded() {
+        assert_eq!(
+            format_document_input("passage: {semantic_text}", "évent").unwrap(),
+            "passage: évent"
+        );
+        for format in [
+            "no placeholder",
+            "{semantic_text} {semantic_text}",
+            "{semantic_text} {unknown}",
+            "left {semantic_text} right }",
+            "left { {semantic_text} right",
+        ] {
+            assert!(format_document_input(format, "text").is_err(), "{format}");
+        }
+        assert!(format_document_input(DOCUMENT_INPUT_TOKEN, "").is_err());
+        let exact = "x".repeat(MAX_FORMATTED_DOCUMENT_BYTES);
+        assert_eq!(
+            format_document_input(DOCUMENT_INPUT_TOKEN, &exact)
+                .unwrap()
+                .len(),
+            MAX_FORMATTED_DOCUMENT_BYTES
+        );
+        assert!(
+            format_document_input(
+                DOCUMENT_INPUT_TOKEN,
+                &"x".repeat(MAX_FORMATTED_DOCUMENT_BYTES + 1)
+            )
+            .is_err()
+        );
+        let maximum_format = format!(
+            "{}{DOCUMENT_INPUT_TOKEN}",
+            "x".repeat(MAX_DOCUMENT_FORMAT_BYTES - DOCUMENT_INPUT_TOKEN.len())
+        );
+        assert!(format_document_input(&maximum_format, "x").is_ok());
+        assert!(format_document_input(&format!("x{maximum_format}"), "x").is_err());
     }
 }

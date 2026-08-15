@@ -34,6 +34,22 @@ fn native_bundle_closes_license_and_profiles_without_fake_sbom_entries() {
             .iter()
             .all(|item| item["kind"] != "sbom")
     );
+    let format_versions = plugin["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "index_format")
+        .map(|item| item["component"]["version"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(format_versions, ["0.2.0", "0.3.0"]);
+    let v3_descriptor: Value = serde_json::from_slice(
+        &fs::read(bundle.join("descriptors/fast-index-format.v3.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        v3_descriptor.pointer("/objects/4/media_type"),
+        Some(&Value::String("application/vnd.sqlite3".into()))
+    );
     let lock: Value =
         serde_json::from_slice(&fs::read(bundle.join("provider.objects.lock.json")).unwrap())
             .expect("provider object lock");
@@ -49,9 +65,11 @@ fn native_bundle_closes_license_and_profiles_without_fake_sbom_entries() {
             "LICENSE",
             "bin/rag-provider",
             "profiles/fast-lexical-profile.v1.json",
+            "profiles/fast-lexical-profile.v2.json",
             "profiles/fast-occurrence-lookup-profile.v1.json",
             "profiles/fast-vector-binary-profile.v1.json",
             "profiles/physical-profile.json",
+            "profiles/physical-profile.v3.json",
             "profiles/retrieval-policy.json",
             "profiles/validator-profile.json",
         ]

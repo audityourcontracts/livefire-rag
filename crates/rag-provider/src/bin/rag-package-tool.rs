@@ -6,7 +6,8 @@ use std::{
 use clap::Parser;
 use rag_provider::{
     FORMAT_ID, PROTOCOL, PROVIDER_ID, VERSION, hydration_ref_schema_ref, index_format_descriptor,
-    input_schema_ref, output_schema_ref, physical_profile, physical_profile_ref, retrieval_policy,
+    index_format_descriptor_v3, input_schema_ref, output_schema_ref, physical_profile,
+    physical_profile_ref, physical_profile_ref_v3, physical_profile_v3, retrieval_policy,
     retrieval_policy_ref, tool_descriptor, validator_profile, validator_ref,
 };
 use serde_json::{Value, json};
@@ -85,6 +86,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_artifact,
         target,
     ));
+    let format_v3 = index_format_descriptor_v3();
+    let format_v3_artifact = write_json_artifact(
+        &arguments.out,
+        "descriptors/fast-index-format.v3.json",
+        &format_v3,
+        "application/json",
+    )?;
+    inventory.push(item(
+        format_v3["format"].clone(),
+        "index_format",
+        format_v3_artifact,
+        target,
+    ));
 
     let repo_specs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs");
     for name in [
@@ -92,6 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "fast-evidence-search.output.v1.schema.json",
         "ocsf-hydration-ref.v1.schema.json",
         "fast-index-manifest.v2.schema.json",
+        "fast-index-manifest.v3.schema.json",
         "fast-document-row.v1.schema.json",
         "fast-occurrence-row.v1.schema.json",
         "fast-build-report.v1.schema.json",
@@ -113,6 +128,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "com.ayc.livefire-rag.fast-index-physical-profile",
             physical_profile(),
             physical_profile_ref(),
+        ),
+        (
+            "physical-profile.v3.json",
+            "com.ayc.livefire-rag.fast-index-physical-profile",
+            physical_profile_v3(),
+            physical_profile_ref_v3(),
         ),
         (
             "validator-profile.json",
@@ -147,12 +168,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "com.ayc.livefire-rag.fast-lexical-profile",
         ),
         (
+            "fast-lexical-profile.v2.json",
+            "com.ayc.livefire-rag.fast-lexical-profile",
+        ),
+        (
             "fast-occurrence-lookup-profile.v1.json",
             "com.ayc.livefire-rag.fast-occurrence-lookup-profile",
         ),
     ] {
         let value = read_json(&repo_specs.join(name))?;
-        let reference = component(id, "1", &canonical_sha256(&value));
+        let version = if name == "fast-lexical-profile.v2.json" {
+            "2"
+        } else {
+            "1"
+        };
+        let reference = component(id, version, &canonical_sha256(&value));
         let artifact = write_json_artifact(
             &arguments.out,
             &format!("profiles/{name}"),
@@ -210,7 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"bundle":arguments.out,"plugin":manifest["plugin"],"provider":provider_ref,"tool":tool["tool"],"index_format":format["format"],"hydration_ref":hydration_ref_schema_ref(),"admission":"bundle_only_not_index_admission"})
+            &json!({"bundle":arguments.out,"plugin":manifest["plugin"],"provider":provider_ref,"tool":tool["tool"],"index_formats":[format["format"],format_v3["format"]],"hydration_ref":hydration_ref_schema_ref(),"admission":"bundle_only_not_index_admission"})
         )?
     );
     Ok(())

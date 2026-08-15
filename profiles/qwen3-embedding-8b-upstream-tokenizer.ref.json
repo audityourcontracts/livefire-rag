@@ -1,0 +1,16 @@
+{
+  "artifact": {
+    "id": "hf.Qwen.Qwen3-Embedding-8B.tokenizer-json",
+    "version": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af",
+    "sha256": "83cdf8c3a34f68862319cb1810ee7b1e2c0a44e0864ae930194ddb76bb7feb8d"
+  },
+  "format": "hugging_face_tokenizer_json",
+  "model_revision": "69d0e58a13e463cd99a9b83e3f5fee7c10265fab",
+  "target_tokenizer": {
+    "id": "hf.Qwen.Qwen3-Embedding-8B.tokenizer",
+    "version": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af",
+    "sha256": "83cdf8c3a34f68862319cb1810ee7b1e2c0a44e0864ae930194ddb76bb7feb8d"
+  },
+  "add_special_tokens": true,
+  "maximum_input_bytes": 16384
+}

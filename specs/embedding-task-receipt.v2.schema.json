@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-task-receipt.v2.schema.json",
+  "title": "Locally derived embedding vector receipt v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "plan_sha256", "prepared_corpus_sha256", "embedding_profile_sha256", "task_id", "ordinal_start", "ordinal_end", "embedding_input_order_sha256", "vector", "executor", "derivation", "finite_values_validated", "normalization_validated"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.vector-result-receipt/2"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "prepared_corpus_sha256": {"$ref": "#/$defs/sha256"},
+    "embedding_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "task_id": {"type": "string", "minLength": 1},
+    "ordinal_start": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "ordinal_end": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "embedding_input_order_sha256": {"$ref": "#/$defs/sha256"},
+    "vector": {"type": "object", "additionalProperties": false, "required": ["path", "rows", "bytes", "sha256", "dimensions", "dtype", "embedding_input_order_sha256"], "properties": {"path": {"$ref": "#/$defs/path"}, "rows": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "bytes": {"type": "integer", "minimum": 68, "maximum": 9007199254740991}, "sha256": {"$ref": "#/$defs/sha256"}, "dimensions": {"enum": [1024, 2048]}, "dtype": {"const": "f32le"}, "embedding_input_order_sha256": {"$ref": "#/$defs/sha256"}}},
+    "executor": {"type": "object", "additionalProperties": false, "required": ["implementation", "runtime", "returned_model", "requests", "retries", "input_bytes_upper_bound", "elapsed_ms", "conformance_passed"], "properties": {"implementation": {"$ref": "portable-component-ref.v1.schema.json"}, "runtime": {"$ref": "portable-component-ref.v1.schema.json"}, "returned_model": {"type": "string", "minLength": 1}, "requests": {"const": 0}, "retries": {"const": 0}, "input_bytes_upper_bound": {"const": 0}, "elapsed_ms": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "conformance_passed": {"const": false}}},
+    "derivation": {"$ref": "#/$defs/derivation"},
+    "finite_values_validated": {"const": true},
+    "normalization_validated": {"const": true}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\)(?!.*:)(?!.*[/]$).+$"},
+    "derivation": {"type": "object", "additionalProperties": false, "required": ["parent_embedding_profile_sha256", "parent_result_set_sha256", "parent_receipt_sha256", "parent_vector_sha256", "parent_dimensions", "transformation"], "properties": {"parent_embedding_profile_sha256": {"$ref": "#/$defs/sha256"}, "parent_result_set_sha256": {"$ref": "#/$defs/sha256"}, "parent_receipt_sha256": {"$ref": "#/$defs/sha256"}, "parent_vector_sha256": {"$ref": "#/$defs/sha256"}, "parent_dimensions": {"const": 4096}, "transformation": {"const": "prefix_then_l2_normalize_v1"}}}
+  },
+  "$comment": "The executor makes no model calls. Runtime validation also checks the parent receipt and vector digests against the completed parent result set."
+}

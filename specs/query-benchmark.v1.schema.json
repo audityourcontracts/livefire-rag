@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/query-benchmark.v1.schema.json",
+  "title": "Local query benchmark report v1",
+  "description": "A content-free local query timing report that separates model time from index-only search time.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "query_id", "query_sha256", "source_snapshot_sha256",
+    "index_component_sha256", "index_schema_version", "embedding_profile_id",
+    "embedding_profile_version", "embedding_profile_sha256", "configured_model",
+    "returned_model", "git", "machine", "lm_studio", "resource_usage",
+    "artifact_sizes", "transport_bytes", "top_n", "relation_filters", "warmups",
+    "repeats", "embedding_warmups", "embedding_repeats", "query_embedding",
+    "dense_index_only", "fused_index_only", "lexical_index_only",
+    "end_to_end_fused", "total_model_calls"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.query-benchmark/1"},
+    "query_id": {"type": "string", "minLength": 1},
+    "query_sha256": {"$ref": "#/$defs/sha256"},
+    "source_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "index_component_sha256": {"$ref": "#/$defs/sha256"},
+    "index_schema_version": {"type": "string", "minLength": 1},
+    "embedding_profile_id": {"type": "string", "minLength": 1},
+    "embedding_profile_version": {"type": "string", "minLength": 1},
+    "embedding_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "configured_model": {"type": "string", "minLength": 1},
+    "returned_model": {"type": "string", "minLength": 1},
+    "git": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/git"},
+    "machine": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/machine"},
+    "lm_studio": {"$ref": "#/$defs/lm_studio_query"},
+    "resource_usage": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/resource_usage"},
+    "artifact_sizes": {"$ref": "#/$defs/artifact_sizes"},
+    "transport_bytes": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/transport_bytes"},
+    "top_n": {"type": "integer", "minimum": 1, "maximum": 100},
+    "relation_filters": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "warmups": {"type": "integer", "minimum": 0},
+    "repeats": {"type": "integer", "minimum": 1},
+    "embedding_warmups": {"type": "integer", "minimum": 0},
+    "embedding_repeats": {"type": "integer", "minimum": 1},
+    "query_embedding": {"$ref": "#/$defs/query_embedding"},
+    "dense_index_only": {"$ref": "#/$defs/stage"},
+    "fused_index_only": {"$ref": "#/$defs/stage"},
+    "lexical_index_only": {"$ref": "#/$defs/stage"},
+    "end_to_end_fused": {"oneOf": [{"$ref": "#/$defs/stage"}, {"type": "null"}]},
+    "total_model_calls": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "nullable_count": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
+    "latency": {
+      "type": "object", "additionalProperties": false,
+      "required": ["warmups", "samples", "min_micros", "p50_micros", "p95_micros", "max_micros"],
+      "properties": {
+        "warmups": {"$ref": "#/$defs/count"},
+        "samples": {"type": "integer", "minimum": 1},
+        "min_micros": {"$ref": "#/$defs/count"},
+        "p50_micros": {"$ref": "#/$defs/count"},
+        "p95_micros": {"$ref": "#/$defs/count"},
+        "max_micros": {"$ref": "#/$defs/count"}
+      }
+    },
+    "stage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["latency", "hits", "result_sha256"],
+      "properties": {
+        "latency": {"$ref": "#/$defs/latency"},
+        "hits": {"$ref": "#/$defs/count"},
+        "result_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "query_embedding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["calls", "latency", "returned_model", "vector_dimensions", "vector_sha256"],
+      "properties": {
+        "calls": {"type": "integer", "minimum": 1},
+        "latency": {"$ref": "#/$defs/latency"},
+        "returned_model": {"type": "string", "minLength": 1},
+        "vector_dimensions": {"type": "integer", "minimum": 1},
+        "vector_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "lm_studio_query": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "version", "configured_model", "returned_model", "endpoint_kind", "batch_size", "requests_in_flight", "cold_load_micros"],
+      "properties": {
+        "status": {"enum": ["observed", "partial", "caller_supplied", "not_measured", "unavailable"]},
+        "version": {"type": ["string", "null"], "minLength": 1},
+        "configured_model": {"type": "string", "minLength": 1},
+        "returned_model": {"type": "string", "minLength": 1},
+        "endpoint_kind": {"const": "local_openai_compatible"},
+        "batch_size": {"type": ["integer", "null"], "minimum": 1},
+        "requests_in_flight": {"type": ["integer", "null"], "minimum": 1},
+        "cold_load_micros": {"$ref": "#/$defs/nullable_count"}
+      }
+    },
+    "artifact_sizes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "index_bytes"],
+      "properties": {
+        "status": {"enum": ["observed", "partial", "not_measured", "unavailable"]},
+        "index_bytes": {"$ref": "#/$defs/nullable_count"}
+      }
+    }
+  },
+  "$comment": "The runtime checks sorted relation filters, stable result digests across repeats, stable query vectors, matching configured and returned model identities, and monotonic latency summaries. Query text, endpoint URL, request/response bodies, and backend error messages are never included."
+}

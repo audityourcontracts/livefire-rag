@@ -1,27 +1,20 @@
-# Agent guidance
+# Working style
 
-## Communication
+Use clear, ordinary language in plans, progress updates, documentation, commit
+messages, and handoffs. Prefer a short explanation of what a technical step
+does over internal project shorthand.
 
-Use clear, direct language that a technically informed reader can understand without knowing this project's internal vocabulary.
+When a specialist term is necessary, define it on first use. In particular:
 
-- Lead with the practical outcome: what works, what does not, and what the user can do next.
-- Prefer ordinary words over acronyms, milestone codes, and governance terminology.
-- If a precise technical term is necessary, explain it immediately in plain language.
-- Do not compress several unfinished items into a dense phrase. State each remaining task and why it matters.
-- Distinguish clearly between a working local prototype, something integrated into Livefire, and something ready for production.
-- Describe tests in terms of what they proved. Do not imply that passing plumbing tests proves search quality.
-- Keep status updates concise, but never make them cryptic.
+- Say "people review the search results and mark which are relevant" before
+  using "qrel review".
+- Say "confirm returned event references through the released OCSF query
+  service" before using a release-gate name such as "E9 hydration".
+- Say "run the provider with enforced file, network, memory, and process
+  limits" before using "production admission" or "sandboxing".
+- Say "connect the browser UI to the server-side tool process" before using
+  "browser IPC integration".
 
-Examples:
-
-- Instead of "blinded qrel adjudication," say "people still need to review the search results without knowing which search method produced them, then mark which results are relevant."
-- Instead of "qualified E9 hydration," say "we still need to test that each returned event reference can be opened through the final OCSF data service."
-- Instead of "production admission and sandboxing," say "before production use, the tool still needs formal approval and operating-system limits on its file, network, and memory access."
-- Instead of "browser IPC integration," say "the browser interface still needs a safe way to send requests to the local RAG service."
-
-When reporting completion, use a short structure such as:
-
-1. What is ready now.
-2. What was tested.
-3. What remains, in plain language.
-4. Whether the remaining work blocks local use, Livefire use, or production use.
+Do not use an acronym or milestone label as a substitute for the outcome it
+represents. Clearly distinguish what works locally now, what has been measured,
+and what still depends on another service or release.

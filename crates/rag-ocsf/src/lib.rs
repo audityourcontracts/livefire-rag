@@ -6,16 +6,20 @@
 #![forbid(unsafe_code)]
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::Read,
     path::{Component, Path, PathBuf},
 };
 
 use arrow_array::RecordBatch;
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Schema};
 use parquet::{
-    arrow::arrow_reader::ParquetRecordBatchReaderBuilder, file::metadata::ParquetMetaData,
+    arrow::{
+        ProjectionMask,
+        arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder},
+    },
+    file::metadata::ParquetMetaData,
 };
 use rag_contracts::Sha256;
 use serde::Deserialize;
@@ -79,6 +83,125 @@ pub enum RelationKind {
 pub type RecordBatchStream =
     Box<dyn Iterator<Item = Result<RecordBatch, OcsfError>> + Send + 'static>;
 
+/// One physical Parquet row group in admitted file order.
+///
+/// `first_row` is the zero-based relation row ordinal of this group's first
+/// row. The next group always starts at `first_row + rows`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcsfRowGroup {
+    pub ordinal: usize,
+    pub first_row: u64,
+    pub rows: u64,
+    pub compressed_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CachedParquetObject {
+    path: PathBuf,
+    metadata: ArrowReaderMetadata,
+    row_groups: Vec<OcsfRowGroup>,
+}
+
+/// A content-admitted Parquet object whose digest and footer were validated
+/// once before any row-group readers are created.
+///
+/// Each scan opens an independent file descriptor and reuses the cached footer.
+/// Snapshot objects must therefore remain immutable for the lifetime of this
+/// handle, as required by the snapshot boundary.
+#[derive(Debug, Clone)]
+pub struct AdmittedParquetObject {
+    relation: OcsfRelation,
+    object: CachedParquetObject,
+    batch_size: usize,
+    #[cfg(test)]
+    digest_validations: usize,
+}
+
+impl AdmittedParquetObject {
+    pub fn relation(&self) -> &OcsfRelation {
+        &self.relation
+    }
+
+    pub fn schema(&self) -> &Schema {
+        self.object.metadata.schema().as_ref()
+    }
+
+    pub fn row_groups(&self) -> &[OcsfRowGroup] {
+        &self.object.row_groups
+    }
+
+    #[cfg(test)]
+    fn digest_validation_count(&self) -> usize {
+        self.digest_validations
+    }
+
+    /// Scan all row groups while reading only the named root columns.
+    pub fn scan_projected(
+        &self,
+        required_columns: &[&str],
+    ) -> Result<RecordBatchStream, OcsfError> {
+        self.open_reader(None, Some(required_columns))
+    }
+
+    /// Scan one row group while reading only the named root columns.
+    pub fn scan_row_group(
+        &self,
+        row_group_ordinal: usize,
+        required_columns: &[&str],
+    ) -> Result<RecordBatchStream, OcsfError> {
+        if row_group_ordinal >= self.object.row_groups.len() {
+            return Err(OcsfError::UnknownRowGroup {
+                relation: self.relation.name.clone(),
+                ordinal: row_group_ordinal,
+            });
+        }
+        self.open_reader(Some(vec![row_group_ordinal]), Some(required_columns))
+    }
+
+    fn scan_all_columns(&self) -> Result<RecordBatchStream, OcsfError> {
+        self.open_reader(None, None)
+    }
+
+    fn open_reader(
+        &self,
+        row_groups: Option<Vec<usize>>,
+        required_columns: Option<&[&str]>,
+    ) -> Result<RecordBatchStream, OcsfError> {
+        let mut builder = ParquetRecordBatchReaderBuilder::new_with_metadata(
+            File::open(&self.object.path)?,
+            self.object.metadata.clone(),
+        )
+        .with_batch_size(self.batch_size);
+        if let Some(row_groups) = row_groups {
+            builder = builder.with_row_groups(row_groups);
+        }
+        if let Some(required_columns) = required_columns {
+            if required_columns.is_empty() {
+                return Err(OcsfError::InvalidProjection(
+                    "at least one required column must be named",
+                ));
+            }
+            let schema = self.object.metadata.schema();
+            let mut roots = BTreeSet::new();
+            for column in required_columns {
+                let ordinal = schema
+                    .index_of(column)
+                    .map_err(|_| OcsfError::ProjectionColumn {
+                        relation: self.relation.name.clone(),
+                        column: (*column).to_owned(),
+                    })?;
+                roots.insert(ordinal);
+            }
+            builder = builder.with_projection(ProjectionMask::roots(
+                self.object.metadata.parquet_schema(),
+                roots,
+            ));
+        }
+        let reader = builder.build()?;
+        Ok(Box::new(reader.map(|batch| batch.map_err(OcsfError::from))))
+    }
+}
+
 /// Read-only boundary used by builders. Implementations validate inexpensive
 /// metadata when opened and stream rows without staging JSONL.
 pub trait SnapshotReader {
@@ -97,8 +220,8 @@ pub trait SnapshotReader {
 /// Adapter for the current schema-version-1 `livefire-ocsf` local snapshot.
 #[derive(Debug)]
 pub struct LocalSnapshotReader {
-    root: PathBuf,
     identity: OcsfSnapshot,
+    objects: BTreeMap<String, CachedParquetObject>,
     batch_size: usize,
 }
 
@@ -190,6 +313,7 @@ impl LocalSnapshotReader {
         let mut seen_paths = BTreeSet::new();
         let mut normalized_events = None;
         let mut relations = Vec::with_capacity(manifest.objects.len());
+        let mut objects = BTreeMap::new();
         let mut typed_rows = 0_u64;
         for object in manifest.objects {
             if !valid_relation_name(&object.relation) || !seen_names.insert(object.relation.clone())
@@ -205,17 +329,27 @@ impl LocalSnapshotReader {
             let kind = classify_relation(&object.relation, &relative_path)?;
             let object_path = resolve_beneath(&root, &relative_path)?;
             let file = File::open(&object_path)?;
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-            validate_row_count(&object.relation, object.rows, builder.metadata())?;
+            let metadata = ArrowReaderMetadata::load(&file, Default::default())?;
+            validate_row_count(&object.relation, object.rows, metadata.metadata())?;
             if kind == RelationKind::TypedSemantic {
-                validate_typed_schema(&object.relation, builder.schema().as_ref())?;
+                validate_typed_schema(&object.relation, metadata.schema().as_ref())?;
                 typed_rows = typed_rows
                     .checked_add(object.rows)
                     .ok_or(OcsfError::InvalidReceipt("typed row count overflow"))?;
             }
+            let row_groups =
+                validate_row_groups(&object.relation, object.rows, metadata.metadata())?;
             if object.relation == "events" {
                 normalized_events = Some(object.rows);
             }
+            objects.insert(
+                object.relation.clone(),
+                CachedParquetObject {
+                    path: object_path,
+                    metadata,
+                    row_groups,
+                },
+            );
             relations.push(OcsfRelation {
                 name: object.relation,
                 kind,
@@ -241,7 +375,6 @@ impl LocalSnapshotReader {
             return Err(OcsfError::InvalidReceipt("normalized event count closure"));
         }
         Ok(Self {
-            root,
             identity: OcsfSnapshot {
                 schema_version: manifest.schema_version,
                 snapshot_id: runnable_snapshot.component.id,
@@ -257,17 +390,37 @@ impl LocalSnapshotReader {
                 normalized_events,
                 relations,
             },
+            objects,
             batch_size,
         })
     }
-}
 
-impl SnapshotReader for LocalSnapshotReader {
-    fn identity(&self) -> &OcsfSnapshot {
-        &self.identity
+    /// Content-admit one receipt-bound Parquet object for independent projected
+    /// row-group reads. Its full object digest is checked exactly once here;
+    /// the already validated footer is reused by every reader from the handle.
+    pub fn admit_object(
+        &self,
+        relation: &OcsfRelation,
+    ) -> Result<AdmittedParquetObject, OcsfError> {
+        let admitted = self.bound_relation(relation)?;
+        let object = self
+            .objects
+            .get(&admitted.name)
+            .expect("every admitted relation has cached object metadata");
+        verify_object_digest(&object.path, &admitted.object_sha256)?;
+        Ok(AdmittedParquetObject {
+            relation: admitted.clone(),
+            object: object.clone(),
+            batch_size: self.batch_size,
+            #[cfg(test)]
+            digest_validations: 1,
+        })
     }
 
-    fn scan(&self, relation: &OcsfRelation) -> Result<RecordBatchStream, OcsfError> {
+    fn bound_relation<'a>(
+        &'a self,
+        relation: &OcsfRelation,
+    ) -> Result<&'a OcsfRelation, OcsfError> {
         let admitted = self
             .identity
             .relations
@@ -277,12 +430,17 @@ impl SnapshotReader for LocalSnapshotReader {
         if admitted != relation {
             return Err(OcsfError::RelationBinding(relation.name.clone()));
         }
-        let path = resolve_beneath(&self.root, &admitted.path)?;
-        verify_object_digest(&path, &admitted.object_sha256)?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?
-            .with_batch_size(self.batch_size)
-            .build()?;
-        Ok(Box::new(reader.map(|batch| batch.map_err(OcsfError::from))))
+        Ok(admitted)
+    }
+}
+
+impl SnapshotReader for LocalSnapshotReader {
+    fn identity(&self) -> &OcsfSnapshot {
+        &self.identity
+    }
+
+    fn scan(&self, relation: &OcsfRelation) -> Result<RecordBatchStream, OcsfError> {
+        self.admit_object(relation)?.scan_all_columns()
     }
 }
 
@@ -375,6 +533,51 @@ fn validate_row_count(
         });
     }
     Ok(())
+}
+
+fn validate_row_groups(
+    relation: &str,
+    expected_rows: u64,
+    metadata: &ParquetMetaData,
+) -> Result<Vec<OcsfRowGroup>, OcsfError> {
+    let mut first_row = 0_u64;
+    let mut groups = Vec::with_capacity(metadata.num_row_groups());
+    for (ordinal, group) in metadata.row_groups().iter().enumerate() {
+        let rows = u64::try_from(group.num_rows()).map_err(|_| OcsfError::InvalidParquet {
+            relation: relation.to_owned(),
+            reason: "negative row-group row count",
+        })?;
+        if rows == 0 {
+            return Err(OcsfError::InvalidParquet {
+                relation: relation.to_owned(),
+                reason: "empty row group",
+            });
+        }
+        let compressed_bytes =
+            u64::try_from(group.compressed_size()).map_err(|_| OcsfError::InvalidParquet {
+                relation: relation.to_owned(),
+                reason: "negative row-group compressed size",
+            })?;
+        groups.push(OcsfRowGroup {
+            ordinal,
+            first_row,
+            rows,
+            compressed_bytes,
+        });
+        first_row = first_row
+            .checked_add(rows)
+            .ok_or(OcsfError::InvalidParquet {
+                relation: relation.to_owned(),
+                reason: "row-group row count overflow",
+            })?;
+    }
+    if first_row != expected_rows {
+        return Err(OcsfError::InvalidParquet {
+            relation: relation.to_owned(),
+            reason: "row-group coverage differs from file row count",
+        });
+    }
+    Ok(groups)
 }
 
 fn validate_typed_schema(relation: &str, schema: &arrow_schema::Schema) -> Result<(), OcsfError> {
@@ -529,6 +732,12 @@ pub enum OcsfError {
     RelationBinding(String),
     #[error("snapshot object digest differs from the admitted receipt: {0}")]
     ObjectDigest(String),
+    #[error("relation {relation:?} has no row group {ordinal}")]
+    UnknownRowGroup { relation: String, ordinal: usize },
+    #[error("relation {relation:?} does not contain required projection column {column:?}")]
+    ProjectionColumn { relation: String, column: String },
+    #[error("invalid Parquet projection: {0}")]
+    InvalidProjection(&'static str),
 }
 
 #[cfg(test)]

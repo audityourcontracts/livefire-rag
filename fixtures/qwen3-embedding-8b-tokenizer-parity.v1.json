@@ -1,0 +1,78 @@
+{
+  "schema_version": "livefire.rag.tokenizer-parity-fixture/1",
+  "source": {
+    "runtime": "llama.cpp bundled with LM Studio 0.4.20+1",
+    "model_file": "Qwen3-Embedding-8B-Q4_K_M.gguf",
+    "model_revision": "69d0e58a13e463cd99a9b83e3f5fee7c10265fab",
+    "source_tokenizer_json_revision": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af",
+    "source_tokenizer_json_sha256": "83cdf8c3a34f68862319cb1810ee7b1e2c0a44e0864ae930194ddb76bb7feb8d",
+    "executable_tokenizer_json_sha256": "c939bedf6c07a8d8b0872069748b04194591c77e566d80201e46a07702a5f40c",
+    "add_special_tokens": true
+  },
+  "cases": [
+    {
+      "name": "empty",
+      "input": "",
+      "token_ids": [151643]
+    },
+    {
+      "name": "hello_world",
+      "input": "hello world",
+      "token_ids": [14990, 1879, 151643]
+    },
+    {
+      "name": "whitespace",
+      "input": "  alpha\tbeta\n\ngamma  ",
+      "token_ids": [220, 8287, 2233, 1915, 271, 32214, 256, 151643]
+    },
+    {
+      "name": "precomposed_unicode",
+      "input": "Café déjà vu — naïve",
+      "token_ids": [34, 2577, 963, 45839, 32514, 1959, 94880, 586, 151643]
+    },
+    {
+      "name": "decomposed_unicode",
+      "input": "Café déjà vu",
+      "token_ids": [34, 5645, 53839, 409, 53839, 5580, 96549, 32514, 151643]
+    },
+    {
+      "name": "cjk",
+      "input": "进程创建：编码的 PowerShell 命令",
+      "token_ids": [101556, 50377, 5122, 112950, 9370, 73962, 4891, 239, 121, 99738, 151643]
+    },
+    {
+      "name": "arabic",
+      "input": "تسجيل دخول غير معتاد من عنوان جديد",
+      "token_ids": [131051, 44330, 35244, 72804, 128478, 23364, 124675, 65398, 63237, 126195, 126277, 130461, 151643]
+    },
+    {
+      "name": "emoji_joiners",
+      "input": "analyst 👩‍💻 investigates 🔐🚨",
+      "token_ids": [48821, 597, 61804, 102, 378, 235, 145851, 83263, 95069, 238, 146040, 151643]
+    },
+    {
+      "name": "literal_placeholders",
+      "input": "literal {query} and {semantic_text} braces",
+      "token_ids": [35785, 314, 1631, 92, 323, 314, 47858, 4326, 92, 59191, 151643]
+    },
+    {
+      "name": "encoded_powershell",
+      "input": "powershell.exe -EncodedCommand SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkA",
+      "token_ids": [77304, 56095, 19399, 481, 46795, 4062, 51618, 33, 3627, 37, 70, 32, 5863, 98312, 13669, 19, 23563, 79958, 18, 1706, 15, 828, 86, 36096, 1890, 78, 23563, 79958, 73, 29923, 48, 15469, 1867, 46, 1890, 52, 2589, 6029, 84, 8276, 66, 23563, 48, 36096, 32, 2716, 5830, 1867, 79, 1890, 52, 5830, 70, 33, 15, 1706, 74, 32, 151643]
+    },
+    {
+      "name": "mixed_paths",
+      "input": "/home/service/.ssh/authorized_keys C:\\\\Windows\\\\System32\\\\cmd.exe",
+      "token_ids": [18215, 34186, 11930, 25537, 14, 19084, 12631, 356, 23817, 13164, 3422, 2320, 18, 17, 3422, 8710, 19399, 151643]
+    }
+  ],
+  "generated_cases": [
+    {
+      "name": "maximum_input_bytes_ascii",
+      "repeat": "a",
+      "count": 16384,
+      "token_count": 2049,
+      "token_ids_u32le_sha256": "d056060ba0d43e2ae6e6b713427363070722f5f3e3264618425fa2445f37b024"
+    }
+  ]
+}

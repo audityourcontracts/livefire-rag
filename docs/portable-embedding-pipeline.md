@@ -1,18 +1,19 @@
 # Portable embedding pipeline specification
 
-Status: first modular dataset milestone implemented; large-scale concurrency and
-cloud workers remain planned
+Status: local preparation, concurrency, embedding recovery, scalable assembly,
+and modular search implemented; cloud workers deferred
 
 This document replaces the single-command build path as the preferred path for
 large indexes. The existing `rag build` command remains useful for small smoke
-tests. The new commands now prove the split pipeline on an independent real
-dataset. Later milestones extend preparation beyond the current 600,000
-deduplicated-document memory limit and add cloud workers.
+tests. The commands prove the split pipeline on real M41 datasets and the fixed
+10,000-document benchmark. Bounded document runs and an external merge removed
+the former 600,000-document in-memory limit. Cloud workers are a deferred
+future design, not part of the current goal.
 
 The detailed execution order is in
 [`local-first-embedding-scale-plan.md`](local-first-embedding-scale-plan.md).
-That plan requires completing the local LM Studio measurements, recovery tests,
-dataset builds, and multi-index CLI proof before any Runpod-specific work.
+That plan records the completed local LM Studio measurements and recovery tests,
+plus the current dataset-build evidence. Runpod-specific work remains deferred.
 
 ## 1. Outcome
 
@@ -106,9 +107,9 @@ Expected M41 accounting from the current projection:
 |---|---:|
 | Source rows examined by the existing complete accounting | 13,905,577 |
 | Searchable non-network occurrences | 5,325,200 |
-| Distinct searchable non-network documents | 505,835 |
+| Distinct searchable non-network documents | 422,566 |
 | Raw network occurrences excluded | 1,042,076 |
-| Raw network documents excluded | 132,381 |
+| Raw network documents excluded | 138,276 |
 | Metric rows recorded as structured-only | 7,538,301 |
 | Searchable relation types included | 16 |
 
@@ -138,19 +139,25 @@ The implemented first-milestone commands are:
 
 ```text
 rag prepare --snapshot SNAPSHOT --dataset-id ID --relation RELATION --out PREPARED
-rag plan-embeddings --prepared PREPARED --embedding-profile PROFILE --out PLAN
+rag verify-prepared --prepared PREPARED
+rag plan-embeddings --prepared PREPARED --embedding-profile PROFILE \
+  --tokenizer-json TOKENIZER_JSON --tokenizer-ref TOKENIZER_REF \
+  --maximum-task-tokens 131072 --maximum-task-documents 256 --out PLAN
 rag embed --prepared PREPARED --plan PLAN --embedding-profile PROFILE --out EMBEDDINGS
+rag finalize-embeddings --prepared PREPARED --plan PLAN \
+  --embedding-profile PROFILE --embeddings EMBEDDINGS
 rag assemble --prepared PREPARED --plan PLAN --embeddings EMBEDDINGS \
-  --embedding-profile PROFILE --out INDEX
+  --embedding-profile PROFILE --index-format sqlite-v3 --out INDEX
 rag inspect --index INDEX
 rag query --index INDEX --mode fused --query QUERY
 ```
 
-Each later command rechecks the input manifests and object hashes, so standalone
-`verify-prepared` and `verify-embeddings` commands are convenient future aliases,
-not missing safety checks. The implemented embedding backend is LM Studio.
-Remote OpenAI-compatible and Runpod workers are later adapters that will write
-the same vector-shard and receipt format.
+Each command checks the files it can use. Planning and embedding check the
+prepared manifest and document files without opening occurrence files. The
+read-only `verify-prepared` command and assembly check every document and
+occurrence file. The implemented embedding backend is LM Studio.
+Remote OpenAI-compatible and Runpod workers are deferred adapters that would
+write the same vector-shard and receipt format.
 
 The checked-in first scope file is preferable to a loosely typed set of CLI
 flags. It declares the 16 included relations, raw network exclusion, and metric
@@ -177,12 +184,17 @@ No dataset build may modify another dataset's prepared files, embeddings, or
 index. Rebuilding one dataset publishes a new directory atomically, after which
 a catalogue or loadout may choose the new version.
 
-The first CLI milestone opens one assembled dataset index directly. A later
-catalogue command can register several completed indexes:
+The implemented catalogue commands register, validate, and search several
+completed dataset chains. Each repeated `--dataset` group supplies that
+dataset's prepared corpus, plan, embedding result, and assembled index:
 
 ```text
-rag catalogue create --index INDEX_A --index INDEX_B --out CATALOGUE
-rag query --catalogue CATALOGUE --mode fused --query QUERY
+rag catalogue build \
+  --dataset PREPARED_A PLAN_A RESULTS_A INDEX_A \
+  --dataset PREPARED_B PLAN_B RESULTS_B INDEX_B \
+  --out CATALOGUE
+rag catalogue validate --catalogue CATALOGUE
+rag catalogue search --catalogue CATALOGUE --mode fused --query QUERY
 ```
 
 The catalogue is a list of immutable index references, not a merged corpus. A
@@ -192,11 +204,11 @@ and index component identity. The stable hit identity is therefore
 `(dataset_component, document_id)`, so the same projected text in two source
 datasets does not lose either source history.
 
-This catalogue layer is not implemented yet. Fast-index v2 stores only source
-and mapping hashes and deliberately marks every portable dataset index as
-partial. The catalogue manifest must therefore bind the prepared dataset
-identity and assembled index digest itself; a self-describing index would need
-a v3 format. Do not infer dataset identity from a v2 index alone.
+The catalogue validates each complete prepared/plan/result/index chain and
+binds the dataset and index identities in its own sealed manifest. Scalable
+fast-index v3 is implemented with SQLite lexical postings; legacy v2 remains
+available for compatibility. Dataset identity is still catalogue-level rather
+than inferred from source and mapping hashes alone.
 
 Existing dataset indexes are not rebuilt. Indexes may share one query embedding
 only when they bind the exact same embedding profile. Different profiles
@@ -331,19 +343,25 @@ changing the meaning of the corpus.
 The component digest uses the repository's canonical JSON convention. It is
 not computed over pretty-printed bytes.
 
-## 7. Planned parallel Rust preparation
+One later cleanup is to narrow the preparation implementation identity. It
+currently hashes the whole `portable.rs` module, so changes confined to later
+planning or embedding stages give newly prepared datasets a new implementation
+digest even when preparation behavior is unchanged. Existing prepared
+artifacts remain valid because each carries its own sealed identity.
 
-The first milestone scans the chosen relations serially, keeps the deduplicated
-document table in a `BTreeMap` capped at 600,000 entries, and flushes occurrence
-Parquet every 8,192 rows. The design below is the next full-scale milestone; it
-is not implemented on this branch.
+## 7. Implemented parallel Rust preparation
+
+Preparation scans admitted Parquet row groups in bounded parallel waves and
+flushes occurrence Parquet every 8,192 rows. It writes bounded sorted document
+runs and merges them in document-ID order, so it no longer retains the complete
+deduplicated document table in memory.
 
 ### 7.1 Work units
 
 The unit of CPU work is an admitted Parquet row group, not an entire relation.
 This matters because configuration data is much larger than most relations.
 
-Full-scale preparation will perform these steps:
+Full-scale preparation performs these steps:
 
 1. Read and validate the source receipt.
 2. Resolve the included relation objects.
@@ -380,26 +398,24 @@ Use the existing Arrow 58 and Parquet 58 crates directly.
 - `rusqlite` stores mutable build progress only when a durable work ledger is
   needed; immutable Parquet and manifests remain the portable contract.
 
-The planned full-scale implementation uses these crates:
+The implemented local scale path uses these crates:
 
 | Purpose | Crate |
 |---|---|
 | Columnar input and output | Arrow and Parquet 58 |
-| CPU scheduling | Rayon 1.12 private thread pool |
-| Blocking backpressure | crossbeam-channel 0.5 |
-| HTTP scheduling | Tokio semaphore, channels, and `JoinSet` |
-| Lexical index | Tantivy 0.26 |
+| CPU scheduling | Rayon bounded thread pool |
+| HTTP scheduling | Tokio tasks plus bounded in-flight requests |
+| Lexical index | deterministic SQLite inverted BM25 index |
 | Occurrence lookup and work ledger | rusqlite 0.38 |
 | Hashing | sha2 with SHA-256 |
-| Timings and build reports | tracing plus machine-readable stage metrics |
+| Timings and build reports | machine-readable stage reports |
 
-Start with four projection workers, 8,192-row Arrow batches, a 128 MiB document
-candidate buffer per worker, 64 MiB Parquet row groups, and external-merge
-fan-in of 32. Benchmark one, two, four, and eight workers; 2,048, 4,096, and
-8,192-row batches; and Zstandard levels 1 and 3 on the 10,000-document test
-corpus. The default becomes the smallest worker count within 10% of the fastest
-result, provided peak memory stays below 4 GiB and disk contention remains
-acceptable. The target peak is below 2 GiB.
+The implementation uses a bounded Rayon pool and deterministic source-order
+merge. A clean one-row-group fixture produced identical output at every worker
+count. Median projection time improved from 1,792,597 microseconds with one
+worker to 836,900 with four workers and 705,621 with eight workers, or 2.14 and
+2.54 times faster. These fixture measurements prove useful CPU concurrency;
+they are not a whole-corpus forecast.
 
 Do not add Polars to the core path initially. Polars is valuable for analysis
 and ad hoc reports, but the core work consists of custom JSON projection,
@@ -408,18 +424,21 @@ assembly. Direct Arrow gives clearer row-group control and avoids a second
 execution engine. A benchmark may reconsider Polars for the external merge
 only if it demonstrates a material improvement on the fixed corpus.
 
-Each worker buffers document candidates only to its byte limit, sorts by
-`document_id`, combines adjacent identical candidates, and writes a sorted
-Parquet run. A bounded k-way merge uses a binary heap, at most 32 input runs,
-and 256- or 512-row read batches. Intermediate merge passes keep file handles
-and memory bounded. This uses the existing Parquet format rather than adding a
-second external-sort serialization.
+Preparation buffers at most a configured number of unique document candidates,
+sorts them by `document_id`, combines identical candidates, and writes a
+temporary sorted JSONL run. A deterministic heap merge opens the completed runs,
+deduplicates them, and streams the final Parquet document shards. The current
+implementation bounds rows per run but does not yet bound merge fan-in; building
+each M41 relation separately keeps the number of runs manageable.
 
 ### 7.3 Bounded memory
 
 No stage may retain all source occurrences or all vectors in memory.
 
-Configuration knobs have hard upper bounds:
+The implemented public controls with hard bounds are the preparation worker
+count and `LIVEFIRE_RAG_PREPARE_DOCUMENT_RUN_ROWS` for sorted-run rows. Other
+batch and shard bounds are internal constants. Future tuning may expose more of
+them, but the following are design targets rather than current CLI flags:
 
 - worker threads;
 - Arrow batch rows;
@@ -431,9 +450,8 @@ Configuration knobs have hard upper bounds:
 - embedding batch items and tokens.
 
 The build report records peak resident memory when the platform exposes it.
-The planned public preparation controls are `--prepare-workers`, `--read-batch-rows`,
-`--candidate-memory-mib`, `--parquet-row-group-mib`, `--merge-fan-in`, and
-`--verify-workers`, each with a closed safe range.
+In particular, byte-based candidate limits, Parquet row-group sizing, merge
+fan-in, and verification worker counts are not public controls yet.
 
 ## 8. Embedding plan contract
 
@@ -458,8 +476,10 @@ alone never establish compatibility.
 
 ### 8.2 Plan contents
 
-`rag plan-embeddings` validates a prepared corpus against one exact embedding
-profile and emits `livefire.rag.embedding-plan/1`.
+`rag plan-embeddings` validates the prepared manifest and document objects
+against one exact embedding profile and emits `livefire.rag.embedding-plan/2`.
+Occurrence objects are left to full verification and assembly because planning
+cannot use them.
 
 The plan binds:
 
@@ -490,6 +510,8 @@ rule. The first profile continues to reject over-length input.
 ```text
 embedding-set/
   manifest.json
+  summary.json
+  embedding-profile.json
   parts/
     part-000000.f32
     part-000001.f32
@@ -498,10 +520,18 @@ embedding-set/
     part-000000.json
     part-000001.json
     ...
-  objects.sha256
+  reports/
+    part-000000.json
+    part-000001.json
+    ...
 ```
 
 One result part corresponds to exactly one planned embedding task.
+The finalized directory keeps the exact embedding-profile input so later
+catalogue checks can reproduce every summary field without relying on a file
+outside the result set. The summary reports both the full calendar span and
+the union of active task intervals; pauses between resumed ranges do not lower
+the published active-throughput rate.
 
 ### 9.2 Binary vector part
 
@@ -523,14 +553,13 @@ embedding_task_order_sha[32]
 Document IDs are not repeated beside every vector. The planned task and its
 order digest provide the association.
 
-Before implementation, settle an existing mismatch: the checked-in final-vector
-profile declares magic `LFRVEC01`, while the Rust and Python readers use
-`LFRAGV1\0`. The new embedding-shard magic above intentionally does not choose
-between those existing values.
+The implemented portable embedding shards use the `LFREMB01` header shown
+above. Readers validate that header, dimensions, row count, task order, and
+payload length before accepting a shard.
 
-For 505,835 documents at 4,096 dimensions, the vector payload is approximately
-8.29 GB before filesystem overhead. JSON vectors are forbidden as durable
-output.
+For 422,566 documents at 4,096 dimensions, the vector payload is 6,923,321,344
+bytes, approximately 6.92 GB before headers and filesystem overhead. JSON
+vectors are forbidden as durable output.
 
 ### 9.3 Per-task receipt
 
@@ -576,9 +605,10 @@ It adds:
 - atomic completion per prepared shard;
 - optional import and export through the existing SQLite content cache.
 
-The first default remains one request in flight and 16 inputs per request until
-real-document benchmarks show a better setting. LM Studio model-level parallel
-workers are an external configuration and are benchmarked separately.
+The measured local default is one request in flight and four inputs per
+request. On the 512-document screen it reached 2.737 documents and 775.17
+tokens per second. Larger batches were slower, and two or four requests in
+flight only queued behind LM Studio's single prediction slot.
 
 The executor uses Tokio rather than Rayon: a producer reads prepared Parquet,
 a semaphore limits requests in flight, a `JoinSet` owns request tasks, and a
@@ -586,9 +616,9 @@ bounded reorder buffer restores task order before one atomic vector-shard
 writer. The queue holds no more than twice the configured in-flight request
 count.
 
-### 10.2 Generic OpenAI-compatible HTTPS
+### 10.2 Deferred generic OpenAI-compatible HTTPS design
 
-A separate remote adapter supports authenticated HTTPS endpoints. It must not
+A future remote adapter may support authenticated HTTPS endpoints. It must not
 weaken the local provider's loopback-only policy.
 
 The adapter accepts credentials only through an environment variable or host
@@ -599,9 +629,10 @@ This adapter is suitable for compatibility tests and query embedding. Sending
 the complete corpus and returning all vectors through ordinary JSON HTTP is not
 the preferred Runpod bulk path.
 
-### 10.3 Runpod bulk worker
+### 10.3 Deferred Runpod bulk-worker design
 
-The preferred first cloud implementation is a dedicated Runpod Pod:
+Runpod is outside the current goal. If a later cloud phase is approved, the
+preferred first implementation is a dedicated Runpod Pod:
 
 1. Upload the prepared manifest and document shards to private object storage or
    a network volume.
@@ -656,22 +687,20 @@ It:
 3. Streams documents in canonical order and assigns vector ordinals.
 4. Concatenates validated vector payloads without creating a vector matrix.
 5. Streams occurrence Parquet into the event-reference lookup.
-6. Builds the current v2 lexical index.
+6. Builds the selected v2 or scalable v3 lexical index.
 7. Writes the final manifest and build report.
 8. Atomically publishes the index.
 
-The implemented first milestone performs those outputs sequentially while
-streaming documents, occurrences, and vectors. Its v2 lexical JSON is still
-loaded as one object at query time, so the 600,000-document preparation limit
-is also an honest upper bound for this local format. Parallel assembly and a
-disk-backed lexical index are the next scale milestone.
+The implemented assembly streams documents, occurrences, and vectors. Version
+2 retains the original lexical JSON for compatibility. Version 3 builds a
+deterministic SQLite inverted index with the same `ascii_camel_lower_v1`
+tokenizer, BM25 formula, filtering, tie order, and hit results. Queries read
+only matching postings through independent read-only connections. The v3
+manifest binds the exact SQLite storage schema and object digest.
 
-The full-scale lexical format uses Tantivy rather than the current corpus-sized
-JSON object. It implements the existing `ascii_camel_lower_v1` behavior as a
-custom tokenizer, stores document ID and vector ordinal, and indexes semantic
-text without storing a second copy of the body. The manifest binds the Tantivy
-version, tokenizer, and BM25 settings. Start with two indexing workers, 256 MiB
-per worker, and one merge thread.
+Preparation's bounded sorted runs and external merge removed the former
+600,000-document in-memory ceiling. Assembly and version-3 query already stream
+their corpus-sized inputs.
 
 Occurrence lookup remains SQLite. Assembly bulk-loads rows in one exclusive
 transaction without secondary indexes, creates unique and query indexes after
@@ -763,55 +792,49 @@ vectors from the current SQLite cache. Assemble a new index and require:
 This is the migration gate. The old combined builder remains available until it
 passes.
 
-### Step D: fixed 10,000-document performance corpus
+### Step D: completed fixed 10,000-document performance corpus
 
-Freeze a scenario-blind corpus containing every included relation and the
-observed short, median, p90, p95, p99, and maximum text lengths. Retain all
-2,791 documents from relations with at most 1,000 documents, then allocate the
-remaining 7,209 documents as follows:
+The sealed scenario-blind corpus contains every included relation and covers
+the observed length strata. Its implemented per-relation allocation is:
 
 | Relation | Documents |
 |---|---:|
-| API activity | 415 |
-| Datastore activity | 786 |
-| Event log activity | 2,043 |
-| Configuration snapshot | 1,774 |
-| HTTP activity | 502 |
-| Inventory information | 245 |
-| Process activity | 1,444 |
+| API activity | 1,059 |
+| Application lifecycle | 235 |
+| Authentication | 695 |
+| Cloud inventory | 256 |
+| Datastore activity | 1,059 |
+| Detection findings | 53 |
+| DNS activity | 76 |
+| Email activity | 927 |
+| Entity management | 58 |
+| Event log activity | 1,059 |
+| Configuration snapshot | 1,059 |
+| File activity | 251 |
+| HTTP activity | 1,058 |
+| Inventory information | 1,057 |
+| Process activity | 1,057 |
+| User inventory | 41 |
 
-Within a large relation, divide its quota across deterministic semantic-text
-byte-length deciles, then select by SHA-256 of the snapshot identity,
-projection policy, relation, and document ID. Seal the selected IDs, digests,
-quotas, and algorithm before measuring a backend. Record exact document,
-occurrence, text-byte, and token counts.
+The selected IDs, quotas, length strata, source identities, and order digest
+are sealed before backend measurement. The prepared corpus contains 10,000
+documents, 192,011 event references, and 2,863,810 exact tokens.
 
-Measure:
+LM Studio produced 10,000 4,096-dimensional vectors in 2,500 requests with zero
+retries. Summed executor time corresponds to 2.282 documents and 653.64 tokens
+per second. The longer wall interval includes host-session pauses and is kept
+separate from model throughput. Repeating the frozen 15-query plan across
+lexical, dense, and fused search produced byte-identical result files.
 
-- preparation rows and documents per second;
-- one, two, four, and eight projection workers;
-- peak resident memory and temporary disk;
-- local LM Studio batch size and model parallelism;
-- documents and tokens per second;
-- retries and errors;
-- vector dimensions, norms, and numeric repeatability;
-- local query latency; and
-- frozen-query result stability.
+Reduced 2,048- and 1,024-dimensional profiles and indexes were derived locally
+without another model call. Mean top-20 dense/fused overlap with 4,096 dimensions
+was 75.67%/81.67% at 2,048 dimensions and 56%/71% at 1,024 dimensions. These are
+ranking-overlap diagnostics only. People have not yet reviewed the pooled
+results and marked which documents are relevant, so no search-quality or
+reduced-dimension default claim is made.
 
-Preparation keeps its parallel implementation only if it is at least 1.5 times
-as fast as one worker, uses no more than twice the memory, and produces
-identical logical output. A two-times speedup is the target. Choose the smallest
-worker count within 10% of the fastest setting.
-
-Tune LM Studio first on 2,000 of these documents using request batches 4, 8,
-16, and 32. Enable multiple requests in flight only when LM Studio is loaded
-with explicit model parallelism and the 2,000-document confirmation improves
-sustained throughput by at least 15%. Confirm the selected setting on all
-10,000 documents.
-
-Runpod cold-start, warm throughput, transfer time, cost, and cross-profile
-result measurements occur only after every local gate in the local-first scale
-plan passes. The cloud phase reuses this exact 10,000-document input.
+Runpod measurements are deferred and outside the current goal. A future cloud
+phase may reuse this exact 10,000-document input without changing its identity.
 
 ### Step E: one complete large dataset or relation
 
@@ -819,6 +842,19 @@ Build one large dataset, or one complete relation-scoped dataset such as process
 activity or event-log activity, without sampling. This tests hundreds of
 thousands of occurrences and catches assembly problems that a 10,000-document
 corpus cannot expose.
+
+All 16 non-network relation datasets are prepared, fully verified, and bound to
+exact-token plans containing 92,466,199 tokens in total. Real embedding has
+finished for the ten small relations plus API and HTTP activity: 23,636
+documents and 165,186 event references. The HTTP index contains 12,045
+documents and 25,114 event references and passed inspect plus lexical and fused
+search. Deterministic test-vector
+result sets and version-3 indexes cover the remaining four large datasets:
+398,930 documents and 5,160,014 event references. The test results occupy about
+6.1 GiB and their indexes about 12.5 GiB. The 7.1-GiB configuration index
+contains 4,448,673 references and assembled in 408.99 seconds. A four-index
+test-only catalogue validates and supports lexical search with the embedding
+endpoint unavailable, while normal consumers refuse those synthetic indexes.
 
 ### Step F: additional datasets and catalogue search
 
@@ -833,12 +869,27 @@ and prove that the CLI:
 - produces deterministic reciprocal-rank-fused ordering and tie handling; and
 - can add or remove one dataset by changing only the catalogue.
 
+Twelve independent real indexes have passed validation and fused search. Their
+sealed catalogue completed a frozen 45-search run over 15 queries with 15 model
+calls. A separate transformer deduplicated the results into 690 label-hidden
+review candidates, checked 1,275 unique returned event pointers against typed
+Parquet, and sealed the snapshot identity and count in a private receipt beside
+the modes, ranks, scores, and system identities. This proves modular local
+construction and a reviewer handoff; it
+does not claim corpus-wide search quality because people have not marked
+relevance yet.
+
+An exact census across all 422,566 formatted document inputs found 418,930
+distinct values, with 3,636 duplicate rows beyond the first occurrence
+(approximately 0.86%). This does not justify adding a cross-dataset embedding
+cache to the current implementation.
+
 ### Step G: full non-network corpus
 
 Start only after the 10,000-document benchmark predicts time and cost and the
 complete-dataset index passes. The full target may remain a set of independently
 assembled dataset indexes behind one catalogue rather than one physical index.
-Across the catalogue, require all 505,835 documents and 5,325,200 event
+Across the catalogue, require all 422,566 documents and 5,325,200 event
 references, then run the existing inspect, query, result-review, and event-open
 checks.
 
@@ -859,9 +910,9 @@ The first full build requires these measured gates:
 | Dataset isolation | Rebuilding or replacing one dataset does not change another dataset index |
 | Multi-index CLI | Catalogue search reports dataset identity and handles embedding-profile compatibility explicitly |
 | Cloud forecast | Warm 10,000-document rate, transfer time, and expected cost recorded before full execution |
-| Full corpus | Exactly 505,835 documents and 5,325,200 retained event references for the frozen M41 scope |
+| Full corpus | Exactly 422,566 documents and 5,325,200 retained event references for the frozen M41 scope |
 
-One-hour embedding would require about 140.5 documents per second. This is a
+One-hour embedding would require about 117.4 documents per second. This is a
 measurement target, not a promise.
 
 ## 14. Estimated storage
@@ -872,7 +923,7 @@ Initial estimates extrapolated from the current M41 representative index:
 |---|---:|
 | Prepared document text | 0.1-0.6 GB compressed |
 | Prepared occurrences | 1-2 GB compressed |
-| Float32 vectors | 8.29 GB |
+| Float32 vectors at 4,096 dimensions | 6.92 GB |
 | Final occurrence lookup | about 6 GB |
 | Final lexical data | below 1 GB target |
 | Final index | about 16 GB |
@@ -892,8 +943,9 @@ portable pipeline. It covers count reconciliation, benchmark selection, exact
 token measurement, LM Studio tuning, parallel preparation, scalable assembly,
 and multi-index CLI search.
 
-Merge that branch only after the local gate passes. Then create
-`feature/runpod-embedding-workers` from the merged local implementation. Keep
+Merge that branch after the local implementation and evidence are reviewed.
+Runpod is outside the current goal. A later approved goal may create
+`feature/runpod-embedding-workers` from the merged local implementation; keep
 Runpod containers, storage adapters, credentials, and cloud reports off the
 local branch.
 

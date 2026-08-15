@@ -5,6 +5,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use sha2::{Digest as _, Sha256};
+
 use crate::{EmbeddingError, Result, validate_vector};
 
 pub const EMBEDDING_SHARD_MAGIC: [u8; 8] = *b"LFREMB01";
@@ -28,6 +30,31 @@ pub struct EmbeddingShardExpectation {
     pub row_count: u64,
     pub dimensions: u32,
     pub order_sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedEmbeddingTaskPart {
+    pub metadata: EmbeddingShardMetadata,
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+}
+
+/// State returned before a higher layer decides whether a task needs to run.
+/// A structurally valid orphan is reported as verified, but is not proof of a
+/// completed task; durable receipt validation remains the caller's job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbeddingTaskPartPreparation {
+    Missing,
+    Verified {
+        part: VerifiedEmbeddingTaskPart,
+        /// A replacement was published after an earlier invalid part was
+        /// quarantined. Call `complete_embedding_task_part_recovery` only
+        /// after the higher layer has published its bound receipt.
+        recovery_pending: bool,
+    },
+    Quarantined {
+        quarantine_path: PathBuf,
+    },
 }
 
 impl From<EmbeddingShardExpectation> for EmbeddingShardMetadata {
@@ -247,6 +274,9 @@ impl EmbeddingShard {
         if normalization == "none" {
             return Ok(());
         }
+        if normalization != "l2" {
+            return Err(EmbeddingError::Invalid("embedding shard normalization"));
+        }
         let dimensions = usize::try_from(self.metadata.dimensions)
             .map_err(|_| EmbeddingError::Invalid("embedding shard dimensions"))?;
         for vector in self.vectors()? {
@@ -254,6 +284,173 @@ impl EmbeddingShard {
         }
         Ok(())
     }
+}
+
+/// Verify all bytes of a task part, including its fixed identity, finite
+/// values, normalization, and (when supplied) receipt-bound file digest.
+pub fn verify_embedding_task_part(
+    path: &Path,
+    expected: EmbeddingShardExpectation,
+    normalization: &str,
+    expected_sha256: Option<[u8; 32]>,
+) -> Result<VerifiedEmbeddingTaskPart> {
+    let shard = EmbeddingShard::open_expected(path, expected)?;
+    shard.validate_normalization(normalization)?;
+    let sha256 = file_sha256(path)?;
+    if expected_sha256.is_some_and(|expected| expected != sha256) {
+        return Err(EmbeddingError::Invalid("embedding shard digest"));
+    }
+    Ok(VerifiedEmbeddingTaskPart {
+        metadata: shard.metadata(),
+        bytes: fs::metadata(path)?.len(),
+        sha256,
+    })
+}
+
+/// Verify a task part or atomically move an invalid part to a deterministic
+/// sibling quarantine. The deterministic name makes a crash immediately after
+/// quarantine discoverable on the next run.
+pub fn prepare_embedding_task_part(
+    path: &Path,
+    expected: EmbeddingShardExpectation,
+    normalization: &str,
+    expected_sha256: Option<[u8; 32]>,
+) -> Result<EmbeddingTaskPartPreparation> {
+    if !matches!(normalization, "l2" | "none") {
+        return Err(EmbeddingError::Invalid("embedding shard normalization"));
+    }
+    let quarantine = embedding_task_part_quarantine_path(path)?;
+    let original_metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let quarantine_metadata = match fs::symlink_metadata(&quarantine) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    if original_metadata
+        .as_ref()
+        .is_some_and(|metadata| !metadata.is_file() || metadata.file_type().is_symlink())
+        || quarantine_metadata
+            .as_ref()
+            .is_some_and(|metadata| !metadata.is_file() || metadata.file_type().is_symlink())
+    {
+        return Err(EmbeddingError::Invalid("embedding task part path"));
+    }
+    let Some(_) = original_metadata else {
+        return Ok(if quarantine_metadata.is_some() {
+            EmbeddingTaskPartPreparation::Quarantined {
+                quarantine_path: quarantine,
+            }
+        } else {
+            EmbeddingTaskPartPreparation::Missing
+        });
+    };
+    match verify_embedding_task_part(path, expected, normalization, expected_sha256) {
+        Ok(part) => Ok(EmbeddingTaskPartPreparation::Verified {
+            part,
+            recovery_pending: quarantine_metadata.is_some(),
+        }),
+        Err(error) if quarantine_metadata.is_some() => {
+            let _ = error;
+            Err(EmbeddingError::Invalid(
+                "embedding task part and quarantine both exist",
+            ))
+        }
+        Err(_) => {
+            fs::rename(path, &quarantine)?;
+            sync_parent(path)?;
+            Ok(EmbeddingTaskPartPreparation::Quarantined {
+                quarantine_path: quarantine,
+            })
+        }
+    }
+}
+
+/// Verify a newly published replacement before deleting its quarantined
+/// predecessor. Higher layers should call this only after publishing the new
+/// receipt, so a crash never loses the evidence needed to diagnose replacement.
+pub fn complete_embedding_task_part_recovery(
+    path: &Path,
+    expected: EmbeddingShardExpectation,
+    normalization: &str,
+    expected_sha256: Option<[u8; 32]>,
+) -> Result<VerifiedEmbeddingTaskPart> {
+    let verified = verify_embedding_task_part(path, expected, normalization, expected_sha256)?;
+    let quarantine = embedding_task_part_quarantine_path(path)?;
+    match fs::symlink_metadata(&quarantine) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            fs::remove_file(quarantine)?;
+            sync_parent(path)?;
+        }
+        Ok(_) => {
+            return Err(EmbeddingError::Invalid(
+                "embedding task part quarantine path",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(verified)
+}
+
+/// Restore a quarantined part only when no replacement exists. The restored
+/// bytes are intentionally not treated as valid; callers must verify them or
+/// quarantine them again before reuse.
+pub fn restore_quarantined_embedding_task_part(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            return Err(EmbeddingError::Invalid(
+                "embedding task part already exists",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let quarantine = embedding_task_part_quarantine_path(path)?;
+    let metadata = fs::symlink_metadata(&quarantine)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(EmbeddingError::Invalid(
+            "embedding task part quarantine path",
+        ));
+    }
+    fs::rename(quarantine, path)?;
+    sync_parent(path)
+}
+
+fn embedding_task_part_quarantine_path(path: &Path) -> Result<PathBuf> {
+    let parent = path
+        .parent()
+        .ok_or(EmbeddingError::Invalid("embedding result parent"))?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or(EmbeddingError::Invalid("embedding result file name"))?;
+    Ok(parent.join(format!(".{file_name}.quarantine")))
+}
+
+fn file_sha256(path: &Path) -> Result<[u8; 32]> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn sync_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or(EmbeddingError::Invalid("embedding result parent"))?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 pub struct EmbeddingShardVectorReader {
@@ -440,5 +637,102 @@ mod tests {
             AtomicPublishOutcome::AlreadyExists
         );
         assert_eq!(fs::read(destination).unwrap(), b"original");
+    }
+
+    fn write_part(path: &Path, vectors: &[[f32; 2]]) {
+        File::create(path).unwrap();
+        let part_metadata = EmbeddingShardMetadata {
+            row_count: vectors.len() as u64,
+            ..metadata()
+        };
+        let mut writer = EmbeddingShardWriter::create(path, part_metadata).unwrap();
+        for vector in vectors {
+            writer.write_vector(vector).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn invalid_task_part_is_quarantined_and_recovery_is_verified() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("part.f32");
+        let expected: EmbeddingShardExpectation = metadata().into();
+        write_part(&path, &[[2.0, 0.0], [0.0, 2.0]]);
+
+        let state = prepare_embedding_task_part(&path, expected, "l2", None).unwrap();
+        let quarantine = match state {
+            EmbeddingTaskPartPreparation::Quarantined { quarantine_path } => quarantine_path,
+            other => panic!("expected quarantine, got {other:?}"),
+        };
+        assert!(!path.exists());
+        assert!(quarantine.is_file());
+
+        // A process restart rediscovers the deterministic quarantine.
+        assert!(matches!(
+            prepare_embedding_task_part(&path, expected, "l2", None).unwrap(),
+            EmbeddingTaskPartPreparation::Quarantined { .. }
+        ));
+
+        write_part(&path, &[[1.0, 0.0], [0.0, 1.0]]);
+        assert!(matches!(
+            prepare_embedding_task_part(&path, expected, "l2", None).unwrap(),
+            EmbeddingTaskPartPreparation::Verified {
+                recovery_pending: true,
+                ..
+            }
+        ));
+        let verified = complete_embedding_task_part_recovery(&path, expected, "l2", None).unwrap();
+        assert_eq!(verified.bytes, 80);
+        assert!(!quarantine.exists());
+        assert!(matches!(
+            prepare_embedding_task_part(&path, expected, "l2", Some(verified.sha256)).unwrap(),
+            EmbeddingTaskPartPreparation::Verified {
+                recovery_pending: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn corrupt_task_part_can_be_restored_for_forensics_but_not_reused() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("part.f32");
+        fs::write(&path, b"corrupt").unwrap();
+        let expected: EmbeddingShardExpectation = metadata().into();
+        assert!(matches!(
+            prepare_embedding_task_part(&path, expected, "none", None).unwrap(),
+            EmbeddingTaskPartPreparation::Quarantined { .. }
+        ));
+        restore_quarantined_embedding_task_part(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"corrupt");
+        assert!(verify_embedding_task_part(&path, expected, "none", None).is_err());
+        assert!(matches!(
+            prepare_embedding_task_part(&path, expected, "none", None).unwrap(),
+            EmbeddingTaskPartPreparation::Quarantined { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_part_recovery_rejects_symlink_paths() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let target = root.path().join("target");
+        fs::write(&target, b"target").unwrap();
+        let path = root.path().join("part.f32");
+        symlink(&target, &path).unwrap();
+        assert!(prepare_embedding_task_part(&path, metadata().into(), "none", None).is_err());
+        assert_eq!(fs::read(target).unwrap(), b"target");
+    }
+
+    #[test]
+    fn invalid_normalization_contract_does_not_quarantine_a_part() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("part.f32");
+        write_part(&path, &[[1.0, 0.0], [0.0, 1.0]]);
+        assert!(prepare_embedding_task_part(&path, metadata().into(), "mystery", None).is_err());
+        assert!(path.is_file());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 }

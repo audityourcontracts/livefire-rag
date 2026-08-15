@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/index-overlap.v1.schema.json",
+  "title": "Livefire RAG index overlap report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "full_index_sha256", "reduced_index_sha256", "full_profile_sha256", "reduced_profile_sha256", "reduced_dimensions", "top_n", "dense", "fused"],
+  "properties": {
+    "schema_version": { "const": "livefire.rag.index-overlap/1" },
+    "query_id": { "type": "string", "minLength": 1 },
+    "full_index_sha256": { "$ref": "#/$defs/sha256" },
+    "reduced_index_sha256": { "$ref": "#/$defs/sha256" },
+    "full_profile_sha256": { "$ref": "#/$defs/sha256" },
+    "reduced_profile_sha256": { "$ref": "#/$defs/sha256" },
+    "reduced_dimensions": { "enum": [1024, 2048] },
+    "top_n": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "dense": { "$ref": "#/$defs/overlap" },
+    "fused": { "$ref": "#/$defs/overlap" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "document_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "overlap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["full_hits", "reduced_hits", "shared_hits", "overlap_fraction_of_full", "jaccard", "full_document_ids", "reduced_document_ids"],
+      "properties": {
+        "full_hits": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "reduced_hits": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "shared_hits": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "overlap_fraction_of_full": { "type": "number", "minimum": 0, "maximum": 1 },
+        "jaccard": { "type": "number", "minimum": 0, "maximum": 1 },
+        "full_document_ids": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "$ref": "#/$defs/document_id" } },
+        "reduced_document_ids": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "$ref": "#/$defs/document_id" } }
+      }
+    }
+  }
+}

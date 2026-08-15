@@ -177,7 +177,11 @@ fn write_batch(path: PathBuf, schema: Arc<Schema>, batch: RecordBatch) {
     let mut writer = ArrowWriter::try_new(
         File::create(path).expect("Parquet file"),
         schema,
-        Some(WriterProperties::builder().build()),
+        Some(
+            WriterProperties::builder()
+                .set_max_row_group_row_count(Some(1))
+                .build(),
+        ),
     )
     .expect("Parquet writer");
     writer.write(&batch).expect("write batch");
@@ -219,7 +223,7 @@ fn opens_current_receipt_discovers_typed_relations_and_streams_batches() {
 }
 
 #[test]
-fn scan_rehashes_each_typed_object_against_the_admitted_receipt() {
+fn object_admission_and_legacy_scan_reject_post_open_digest_drift() {
     let fixture = Fixture::write();
     let reader = LocalSnapshotReader::open(fixture.root.path()).expect("snapshot opens");
     let relation = reader.typed_relations().next().expect("typed relation");
@@ -231,8 +235,129 @@ fn scan_rehashes_each_typed_object_against_the_admitted_receipt() {
         .write_all(b"post-admission mutation")
         .expect("mutate typed object");
     assert!(matches!(
+        reader.admit_object(relation),
+        Err(OcsfError::ObjectDigest(_))
+    ));
+    assert!(matches!(
         reader.scan(relation),
         Err(OcsfError::ObjectDigest(_))
+    ));
+}
+
+#[test]
+fn admitted_object_exposes_exact_row_groups_and_projects_required_columns() {
+    let fixture = Fixture::write();
+    let reader =
+        LocalSnapshotReader::open_with_batch_size(fixture.root.path(), 1).expect("snapshot opens");
+    let relation = reader.typed_relations().next().expect("typed relation");
+    let object = reader.admit_object(relation).expect("object admits");
+
+    assert_eq!(object.relation(), relation);
+    assert_eq!(object.digest_validation_count(), 1);
+    assert_eq!(
+        object
+            .row_groups()
+            .iter()
+            .map(|group| (group.ordinal, group.first_row, group.rows))
+            .collect::<Vec<_>>(),
+        [(0, 0, 1), (1, 1, 1)]
+    );
+    assert!(
+        object
+            .row_groups()
+            .iter()
+            .all(|group| group.compressed_bytes > 0)
+    );
+    assert_eq!(
+        object
+            .row_groups()
+            .iter()
+            .map(|group| group.rows)
+            .sum::<u64>(),
+        relation.rows
+    );
+
+    let batches = object
+        .scan_projected(&["support_ref", "event_id"])
+        .expect("projected scan opens")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("projected scan succeeds");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    for batch in &batches {
+        assert_eq!(batch.num_columns(), 2);
+        assert!(batch.column_by_name("event_id").is_some());
+        assert!(batch.column_by_name("support_ref").is_some());
+        assert!(batch.column_by_name("typed_event_json").is_none());
+    }
+    let second = object
+        .scan_row_group(1, &["event_id"])
+        .expect("second group opens")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("second group succeeds");
+    let ids = second[0]
+        .column_by_name("event_id")
+        .expect("event id")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("UTF-8");
+    assert_eq!(ids.value(0), "evt_2");
+    assert_eq!(object.digest_validation_count(), 1);
+}
+
+#[test]
+fn admitted_row_group_readers_are_independent_and_concurrent() {
+    let fixture = Fixture::write();
+    let reader = LocalSnapshotReader::open(fixture.root.path()).expect("snapshot opens");
+    let relation = reader.typed_relations().next().expect("typed relation");
+    let object = Arc::new(reader.admit_object(relation).expect("object admits"));
+
+    let values = std::thread::scope(|scope| {
+        let readers = (0..2)
+            .map(|ordinal| {
+                let object = Arc::clone(&object);
+                scope.spawn(move || {
+                    let batches = object
+                        .scan_row_group(ordinal, &["event_id"])
+                        .expect("row group opens")
+                        .collect::<Result<Vec<_>, _>>()
+                        .expect("row group succeeds");
+                    let ids = batches[0]
+                        .column_by_name("event_id")
+                        .expect("event id")
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .expect("UTF-8");
+                    ids.value(0).to_owned()
+                })
+            })
+            .collect::<Vec<_>>();
+        readers
+            .into_iter()
+            .map(|reader| reader.join().expect("reader thread"))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(values, ["evt_1", "evt_2"]);
+    assert_eq!(object.digest_validation_count(), 1);
+}
+
+#[test]
+fn admitted_object_rejects_unknown_groups_and_incomplete_projection() {
+    let fixture = Fixture::write();
+    let reader = LocalSnapshotReader::open(fixture.root.path()).expect("snapshot opens");
+    let relation = reader.typed_relations().next().expect("typed relation");
+    let object = reader.admit_object(relation).expect("object admits");
+
+    assert!(matches!(
+        object.scan_row_group(2, &["event_id"]),
+        Err(OcsfError::UnknownRowGroup { ordinal: 2, .. })
+    ));
+    assert!(matches!(
+        object.scan_projected(&["missing"]),
+        Err(OcsfError::ProjectionColumn { column, .. }) if column == "missing"
+    ));
+    assert!(matches!(
+        object.scan_projected(&[]),
+        Err(OcsfError::InvalidProjection(_))
     ));
 }
 

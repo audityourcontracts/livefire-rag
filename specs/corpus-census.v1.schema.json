@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/corpus-census.v1.schema.json",
+  "title": "Projected corpus census v1",
+  "description": "Counts the semantic documents, semantic occurrences, and structured-only source rows produced by one projection policy over a declared set of typed OCSF relations. This report performs no embedding and builds no search index.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "component_sha256",
+    "source_snapshot",
+    "mapping",
+    "projection_policy",
+    "relations_counted",
+    "source_rows",
+    "semantic_occurrences",
+    "structured_only_occurrences",
+    "distinct_documents",
+    "document_order_sha256",
+    "document_kinds",
+    "relations"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.corpus-census/1"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "source_snapshot": {"$ref": "portable-component-ref.v1.schema.json"},
+    "mapping": {"$ref": "portable-component-ref.v1.schema.json"},
+    "projection_policy": {"$ref": "portable-component-ref.v1.schema.json"},
+    "relations_counted": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/relation_name"},
+      "uniqueItems": true
+    },
+    "source_rows": {"$ref": "#/$defs/count"},
+    "semantic_occurrences": {"$ref": "#/$defs/count"},
+    "structured_only_occurrences": {"$ref": "#/$defs/count"},
+    "distinct_documents": {"$ref": "#/$defs/count"},
+    "document_order_sha256": {"$ref": "#/$defs/sha256"},
+    "document_kinds": {"$ref": "#/$defs/document_kind_counts"},
+    "relations": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/relation_name"},
+      "additionalProperties": {"$ref": "#/$defs/relation_report"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "relation_name": {"type": "string", "minLength": 1},
+    "document_kind_counts": {
+      "type": "object",
+      "propertyNames": {"enum": ["activity", "state", "detection"]},
+      "additionalProperties": {"$ref": "#/$defs/count"}
+    },
+    "relation_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_rows",
+        "semantic_occurrences",
+        "structured_only_occurrences",
+        "distinct_documents",
+        "document_kinds"
+      ],
+      "properties": {
+        "source_rows": {"$ref": "#/$defs/count"},
+        "semantic_occurrences": {"$ref": "#/$defs/count"},
+        "structured_only_occurrences": {"$ref": "#/$defs/count"},
+        "distinct_documents": {"$ref": "#/$defs/count"},
+        "document_kinds": {"$ref": "#/$defs/document_kind_counts"}
+      }
+    }
+  },
+  "$comment": "The runtime additionally enforces: relations_counted is sorted and exactly matches the relations keys; source_rows equals semantic_occurrences plus structured_only_occurrences globally and per relation; each document_kinds map sums to its distinct_documents count; global distinct_documents and document kinds deduplicate documents that appear in more than one relation; document_order_sha256 covers the globally sorted distinct document IDs; and component_sha256 is the RFC 8785 SHA-256 of this object with only component_sha256 omitted."
+}

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use once_cell::sync::Lazy;
-use regex::Regex;
+use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -219,6 +219,7 @@ struct FlattenState {
 }
 
 static LIST_INDEX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[\d+\]").unwrap());
+static WORD_CHAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\w$").unwrap());
 static CAMEL_BOUNDARY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([a-z0-9])([A-Z])").unwrap());
 static NON_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-z0-9]+").unwrap());
 static POSITIONAL_TOKEN_RE: Lazy<Regex> =
@@ -240,16 +241,15 @@ static UUID_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
         .unwrap()
 });
-static LONG_HEX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b[0-9a-f]{32,}\b").unwrap());
+static LONG_HEX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)[0-9a-f]{32,}").unwrap());
 static CLOUD_IDENTIFIER_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\barn:[a-z0-9-]+:[^\s,;]+").unwrap());
 static ACCESS_KEY_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b").unwrap());
-static JWT_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b").unwrap()
-});
+static JWT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}").unwrap());
 static MAC_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b").unwrap());
+    Lazy::new(|| Regex::new(r"(?i)(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}").unwrap());
 
 pub fn project(input: ProjectionInput<'_>) -> Result<ProjectionOutput, ProjectionError> {
     let core = project_core(input.relation_name, input.typed_event_json, input.context);
@@ -894,6 +894,100 @@ fn digest_value(value: &Value) -> String {
     format!("{:x}", Sha256::digest(canonical))
 }
 
+fn replace_with_boundaries(
+    text: &str,
+    pattern: &Regex,
+    replacement: &str,
+    left_forbidden: fn(char) -> bool,
+    right_forbidden: fn(char) -> bool,
+) -> String {
+    pattern
+        .replace_all(text, |captures: &Captures<'_>| {
+            let matched = captures.get(0).expect("whole regex match");
+            let invalid_left = text[..matched.start()]
+                .chars()
+                .next_back()
+                .is_some_and(left_forbidden);
+            let invalid_right = text[matched.end()..]
+                .chars()
+                .next()
+                .is_some_and(right_forbidden);
+            if invalid_left || invalid_right {
+                matched.as_str().to_owned()
+            } else {
+                replacement.to_owned()
+            }
+        })
+        .into_owned()
+}
+
+fn is_regex_word(value: char) -> bool {
+    let mut encoded = [0_u8; 4];
+    WORD_CHAR_RE.is_match(value.encode_utf8(&mut encoded))
+}
+
+fn email_left_forbidden(value: char) -> bool {
+    is_regex_word(value) || matches!(value, '.' | '+' | '-')
+}
+
+fn email_right_forbidden(value: char) -> bool {
+    is_regex_word(value) || matches!(value, '.' | '-')
+}
+
+fn word_or_dot(value: char) -> bool {
+    is_regex_word(value) || value == '.'
+}
+
+fn ascii_hex(value: char) -> bool {
+    value.is_ascii_hexdigit()
+}
+
+fn jwt_character(value: char) -> bool {
+    value.is_ascii_alphanumeric() || matches!(value, '_' | '-')
+}
+
+fn replace_in_band_identifiers(mut text: String, include_email_and_ip: bool) -> String {
+    text = replace_with_boundaries(
+        &text,
+        &JWT_RE,
+        "<redacted:jwt>",
+        jwt_character,
+        jwt_character,
+    );
+    text = replace_with_boundaries(
+        &text,
+        &MAC_RE,
+        "<redacted:mac-address>",
+        ascii_hex,
+        ascii_hex,
+    );
+    if include_email_and_ip {
+        text = replace_with_boundaries(
+            &text,
+            &EMAIL_RE,
+            "<redacted:email-address>",
+            email_left_forbidden,
+            email_right_forbidden,
+        );
+        text = replace_with_boundaries(
+            &text,
+            &IPV4_RE,
+            "<redacted:ip-address>",
+            word_or_dot,
+            word_or_dot,
+        );
+        text = replace_with_boundaries(&text, &UUID_RE, "<redacted:uuid>", ascii_hex, ascii_hex);
+        text = replace_with_boundaries(
+            &text,
+            &LONG_HEX_RE,
+            "<redacted:long-identifier>",
+            ascii_hex,
+            ascii_hex,
+        );
+    }
+    text
+}
+
 fn sanitize_free_text(value: &str) -> String {
     let mut text = value.replace(['\0', '\r', '\n'], " ");
     text = SECRET_ASSIGNMENT_RE
@@ -908,20 +1002,7 @@ fn sanitize_free_text(value: &str) -> String {
     text = CLOUD_IDENTIFIER_RE
         .replace_all(&text, "<redacted:cloud-identifier>")
         .into_owned();
-    text = JWT_RE.replace_all(&text, "<redacted:jwt>").into_owned();
-    text = MAC_RE
-        .replace_all(&text, "<redacted:mac-address>")
-        .into_owned();
-    text = EMAIL_RE
-        .replace_all(&text, "<redacted:email-address>")
-        .into_owned();
-    text = IPV4_RE
-        .replace_all(&text, "<redacted:ip-address>")
-        .into_owned();
-    text = UUID_RE.replace_all(&text, "<redacted:uuid>").into_owned();
-    text = LONG_HEX_RE
-        .replace_all(&text, "<redacted:long-identifier>")
-        .into_owned();
+    text = replace_in_band_identifiers(text, true);
     bounded(
         &text.split_whitespace().collect::<Vec<_>>().join(" "),
         MAX_VALUE_CHARS,
@@ -932,7 +1013,13 @@ fn has_unsafe_credential_text(value: &str) -> bool {
     SECRET_ASSIGNMENT_RE.is_match(value)
         || BEARER_RE.is_match(value)
         || ACCESS_KEY_RE.is_match(value)
-        || JWT_RE.is_match(value)
+        || replace_with_boundaries(
+            value,
+            &JWT_RE,
+            "<redacted:jwt>",
+            jwt_character,
+            jwt_character,
+        ) != value
 }
 
 fn is_secret(path: &str) -> bool {
@@ -1033,7 +1120,13 @@ fn leaf_name(path: &str) -> String {
     )
 }
 fn normalize_key(value: &str) -> String {
-    let camel = CAMEL_BOUNDARY_RE.replace_all(value, "$1_$2").to_lowercase();
+    // Braced capture references are required here: in Rust regex replacement
+    // syntax, `$1_` is parsed as one capture name rather than capture 1 plus
+    // an underscore. Without the braces, the character before each uppercase
+    // boundary was dropped, so time and identifier suffixes went unrecognized.
+    let camel = CAMEL_BOUNDARY_RE
+        .replace_all(value, "${1}_${2}")
+        .to_lowercase();
     NON_KEY_RE
         .replace_all(&camel, "_")
         .trim_matches('_')

@@ -832,6 +832,7 @@ class EvidenceBuilderTests(unittest.TestCase):
             "typed-parquet-record-profile.v1.json",
             "fast-vector-binary-profile.v1.json",
             "fast-lexical-profile.v1.json",
+            "fast-lexical-profile.v2.json",
             "fast-occurrence-lookup-profile.v1.json",
         }
         self.assertEqual({Path(destination).name for destination in forced.values()}, expected)

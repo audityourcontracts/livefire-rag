@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/catalogue-batch-search-result.v1.schema.json",
+  "title": "Catalogue batch-search raw result row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "query_id", "catalogue_sha256", "query", "mode", "top_n", "relations", "rank_merge", "hits"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.catalogue-batch-search-result/1"},
+    "query_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "\\S"},
+    "catalogue_sha256": {"$ref": "#/$defs/sha256"},
+    "query": {"type": "string", "minLength": 1, "maxLength": 8192, "pattern": "\\S"},
+    "mode": {"enum": ["dense", "lexical", "fused"]},
+    "top_n": {"type": "integer", "minimum": 1, "maximum": 100},
+    "relations": {"$ref": "#/$defs/relations"},
+    "rank_merge": {"const": "reciprocal_rank_fusion_v1"},
+    "hits": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/catalogue_hit"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "relations": {
+      "type": "array", "maxItems": 64, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"}
+    },
+    "catalogue_hit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rank", "reciprocal_rank_score", "dataset", "dataset_sha256", "index_sha256", "index_rank", "hit"],
+      "properties": {
+        "rank": {"type": "integer", "minimum": 1, "maximum": 100},
+        "reciprocal_rank_score": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "dataset": {"$ref": "portable-dataset-identity.v1.schema.json"},
+        "dataset_sha256": {"$ref": "#/$defs/sha256"},
+        "index_sha256": {"$ref": "#/$defs/sha256"},
+        "index_rank": {"type": "integer", "minimum": 1, "maximum": 100},
+        "hit": {"$ref": "#/$defs/index_hit"}
+      }
+    },
+    "index_hit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rank", "document_id", "semantic_text", "score", "dense_score", "lexical_score", "eligible_occurrence_count", "occurrences_exhausted", "occurrences"],
+      "properties": {
+        "rank": {"type": "integer", "minimum": 1, "maximum": 100},
+        "document_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "semantic_text": {"type": "string", "minLength": 1, "maxLength": 1048576},
+        "score": {"type": "number"},
+        "dense_score": {"type": ["number", "null"]},
+        "lexical_score": {"type": ["number", "null"]},
+        "eligible_occurrence_count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "occurrences_exhausted": {"type": "boolean"},
+        "occurrences": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/occurrence"}}
+      }
+    },
+    "occurrence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["event_time_ms", "relation", "snapshot_sha256", "mapping_sha256", "event_id", "support_ref"],
+      "properties": {
+        "event_time_ms": {"type": ["integer", "null"], "minimum": 0},
+        "relation": {"type": "string", "minLength": 1, "maxLength": 256},
+        "snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "mapping_sha256": {"$ref": "#/$defs/sha256"},
+        "event_id": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "support_ref": {"type": "string", "minLength": 1, "maxLength": 1024}
+      }
+    }
+  },
+  "$comment": "This is content-bearing raw retrieval output, not a label-hidden review artifact. The containing UTF-8 JSONL file must terminate every row, including its final row, with an LF byte (0A). Runtime validation binds each row to the corresponding request and admitted catalogue, checks sorted relations, contiguous merged ranks, index-rank equality, occurrence closure, and returned_count <= top_n."
+}

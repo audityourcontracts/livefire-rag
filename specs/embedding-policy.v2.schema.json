@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-policy.v2.schema.json",
+  "title": "Livefire RAG locally reduced embedding profile v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "model_artifact_set", "tokenizer", "runtime", "api_model_key", "dimensions", "pooling", "normalization", "maximum_tokens", "document_prefix", "query_instruction", "query_composition", "vector_derivation"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.embedding-policy/2"},
+    "admission_status": {"enum": ["development_only", "production_candidate"]},
+    "purpose": {"enum": ["semantic_search", "action_novelty", "target_novelty"]},
+    "model_repository": {"type": "string", "minLength": 1},
+    "model_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "upstream_checkpoint": {"type": "object"},
+    "model_artifact_set": {"$ref": "portable-component-ref.v1.schema.json"},
+    "model_objects": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "conversion": {"type": "object"},
+    "tokenizer": {"$ref": "portable-component-ref.v1.schema.json"},
+    "runtime": {"$ref": "portable-component-ref.v1.schema.json"},
+    "inference_engine": {"type": "object"},
+    "load_policy": {"type": "object"},
+    "runtime_mode": {"enum": ["pytorch_mps", "lmstudio_loopback"]},
+    "api_contract": {"const": "openai_compatible_v1_embeddings"},
+    "api_model_key": {"type": "string", "minLength": 1},
+    "dimensions": {"enum": [1024, 2048]},
+    "dtype": {"enum": ["float32", "float16", "bfloat16"]},
+    "quantization": {"enum": ["none", "f16", "q8_0", "q4_k_m"]},
+    "pooling": {"const": "last_token"},
+    "normalization": {"const": "l2"},
+    "maximum_tokens": {"type": "integer", "minimum": 1, "maximum": 8192},
+    "document_prefix": {"type": "string", "maxLength": 4096},
+    "query_instruction": {"type": "string", "maxLength": 4096},
+    "query_composition": {"type": "string", "minLength": 1},
+    "batching": {"type": "object"},
+    "output_processing": {"type": "object", "required": ["client_normalization"], "properties": {"client_normalization": {"const": "prefix_then_l2_normalize_v1"}}},
+    "conformance": {"type": "object", "additionalProperties": false, "required": ["mode", "parent_conformance_sha256", "transformation", "output_dimensions", "normalization"], "properties": {"mode": {"const": "parent_bound_local_derivation"}, "parent_conformance_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "transformation": {"const": "prefix_then_l2_normalize_v1"}, "output_dimensions": {"enum": [1024, 2048]}, "normalization": {"const": "l2"}}},
+    "vector_derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parent_embedding_profile_sha256", "parent_dimensions", "transformation"],
+      "properties": {
+        "parent_embedding_profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "parent_dimensions": {"const": 4096},
+        "transformation": {"const": "prefix_then_l2_normalize_v1"}
+      }
+    }
+  },
+  "$comment": "The profile is a new identity. Model calls still request the parent model's 4096-value output; stored and query vectors use the declared deterministic local transformation."
+}

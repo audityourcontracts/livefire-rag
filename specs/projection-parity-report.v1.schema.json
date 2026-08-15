@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/projection-parity-report.v1.schema.json",
+  "title": "Sanitized Python/Rust projection parity report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "component_sha256", "source_snapshot", "mapping",
+    "projection_policy", "sampler", "rust_implementation", "python_implementation",
+    "samples_per_relation", "relation_count", "sampled_rows", "matched_rows",
+    "mismatched_rows", "sample_membership_sha256", "rust_projection_sha256",
+    "python_projection_sha256", "relations", "parity"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.projection-parity-report/1"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "source_snapshot": {"$ref": "portable-component-ref.v1.schema.json"},
+    "mapping": {"$ref": "portable-component-ref.v1.schema.json"},
+    "projection_policy": {"$ref": "portable-component-ref.v1.schema.json"},
+    "sampler": {"$ref": "portable-component-ref.v1.schema.json"},
+    "rust_implementation": {"$ref": "portable-component-ref.v1.schema.json"},
+    "python_implementation": {"$ref": "portable-component-ref.v1.schema.json"},
+    "samples_per_relation": {"type": "integer", "minimum": 1, "maximum": 256},
+    "relation_count": {"$ref": "#/$defs/safe_positive"},
+    "sampled_rows": {"$ref": "#/$defs/safe_positive"},
+    "matched_rows": {"$ref": "#/$defs/safe_nonnegative"},
+    "mismatched_rows": {"$ref": "#/$defs/safe_nonnegative"},
+    "sample_membership_sha256": {"$ref": "#/$defs/sha256"},
+    "rust_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "python_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "relations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/relation"}},
+    "parity": {"type": "boolean"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "safe_nonnegative": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "safe_positive": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "mismatch_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "searchable", "document_kind", "document_id_sha256",
+        "semantic_group_id_sha256", "semantic_group_sha256_sha256",
+        "semantic_text_sha256", "facets_sha256", "event_time_summary_sha256"
+      ],
+      "properties": {
+        "searchable": {"$ref": "#/$defs/safe_nonnegative"},
+        "document_kind": {"$ref": "#/$defs/safe_nonnegative"},
+        "document_id_sha256": {"$ref": "#/$defs/safe_nonnegative"},
+        "semantic_group_id_sha256": {"$ref": "#/$defs/safe_nonnegative"},
+        "semantic_group_sha256_sha256": {"$ref": "#/$defs/safe_nonnegative"},
+        "semantic_text_sha256": {"$ref": "#/$defs/safe_nonnegative"},
+        "facets_sha256": {"$ref": "#/$defs/safe_nonnegative"},
+        "event_time_summary_sha256": {"$ref": "#/$defs/safe_nonnegative"}
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relation", "source_rows", "sampled_rows", "matched_rows", "mismatched_rows",
+        "sample_membership_sha256", "rust_projection_sha256", "python_projection_sha256",
+        "mismatch_field_counts"
+      ],
+      "properties": {
+        "relation": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "source_rows": {"$ref": "#/$defs/safe_positive"},
+        "sampled_rows": {"type": "integer", "minimum": 1, "maximum": 256},
+        "matched_rows": {"$ref": "#/$defs/safe_nonnegative"},
+        "mismatched_rows": {"$ref": "#/$defs/safe_nonnegative"},
+        "sample_membership_sha256": {"$ref": "#/$defs/sha256"},
+        "rust_projection_sha256": {"$ref": "#/$defs/sha256"},
+        "python_projection_sha256": {"$ref": "#/$defs/sha256"},
+        "mismatch_field_counts": {"$ref": "#/$defs/mismatch_counts"}
+      }
+    }
+  },
+  "$comment": "The report contains only component identities, relation names, counts, and SHA-256 digests. It contains no event IDs, support references, row ordinals, typed source JSON, semantic text, facets, or event times. Runtime validation additionally proves deterministic relation order, aggregate count closure, the closed mismatch-field set, parity disposition, and the RFC 8785 component self-digest."
+}

@@ -8,7 +8,8 @@ use std::{
 use clap::Parser;
 use rag_embedding::normalize_loopback_http_endpoint;
 use rag_provider::{
-    PROTOCOL, format_ref, input_schema_ref, output_schema_ref, retrieval_policy_ref, tool_ref,
+    PROTOCOL, format_ref, format_ref_v3, input_schema_ref, output_schema_ref, retrieval_policy_ref,
+    tool_ref,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -89,9 +90,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = staging.path();
     let embedding_endpoint = normalize_loopback_http_endpoint(&a.embedding_endpoint)?;
     let physical = read_json(&a.index.join("index.json"))?;
-    if physical["schema_version"] != "livefire.rag.fast-index/2" {
-        return Err("fast index v2 is required".into());
-    }
+    refuse_test_only_index(&physical)?;
+    let index_contract = index_contract(&physical)?;
     let plugin = read_json(&a.bundle.join("plugin.json"))?;
     let provider = plugin
         .pointer("/entrypoints/provider/component")
@@ -147,20 +147,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "com.ayc.livefire-rag.fast-projection-policy",
         &json!({"scope":"generic_ocsf_projection","incident_answers":false}),
     );
-    let physical_ref = json!({"id":"com.ayc.livefire-rag.fast-physical-index","version":"2","sha256":physical["component_sha256"]});
+    let physical_ref = json!({"id":"com.ayc.livefire-rag.fast-physical-index","version":index_contract.physical_version,"sha256":physical["component_sha256"]});
     let builder = material_ref(
         "com.ayc.livefire-rag.fast-builder",
-        &json!({"implementation":"rust","format":"livefire.rag.fast-index/2"}),
+        &json!({"implementation":"rust","format":index_contract.manifest_schema}),
     );
-    let objects = physical_objects(&a.index, &physical)?;
+    let objects = physical_objects(&a.index, &physical, index_contract.lexical_media_type)?;
     let pointer = objects
         .iter()
         .find(|object| object["path"] == "occurrences.parquet")
         .ok_or("pointer object")?
         .clone();
     let sdk_index = json!({
-      "schema_version":"livefire.index/1","index_id":"com.ayc.livefire-rag.fast-evidence.local-test","index_version":"0.2.0","index_kind":"generic_ocsf_evidence_candidates",
-      "format":format_ref(),"builder":builder,
+      "schema_version":"livefire.index/1","index_id":"com.ayc.livefire-rag.fast-evidence.local-test","index_version":index_contract.index_version,"index_kind":"generic_ocsf_evidence_candidates",
+      "format":index_contract.format,"builder":builder,
       "source_bindings":[{"source_snapshot":snapshot,"source_snapshot_profile":source_profile,"source_admission_receipt":source_admission,"record_identity_policy":record_identity}],
       "policies":{"embedding":profile_ref,"projection":projection,"retrieval":retrieval_policy_ref(),"physical_index":physical_ref,"mapping_pack":mapping},
       "objects":objects,"source_pointer_table":pointer,
@@ -184,7 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // local-test binding declares a realistic ceiling for a representative
     // index instead of a misleading 256 MiB sandbox claim.
     let limits = json!({"request_bytes":65536,"result_bytes":1048576,"wall_time_ms":30000,"memory_bytes":2147483648_u64,"max_candidates":100});
-    let lock = json!({"schema_version":"livefire.tool-binding-lock/1","descriptor":tool_ref(),"provider":provider,"executable":executable,"input_schema":input_schema_ref(),"output_schema":output_schema_ref(),"index":index_ref,"index_format":format_ref(),"index_admission_receipt":receipt_ref,"source_snapshots":[snapshot],"retrieval_policy":retrieval_policy_ref(),"query_time_contract":contract,"protocol":PROTOCOL,"limits":limits});
+    let lock = json!({"schema_version":"livefire.tool-binding-lock/1","descriptor":tool_ref(),"provider":provider,"executable":executable,"input_schema":input_schema_ref(),"output_schema":output_schema_ref(),"index":index_ref,"index_format":index_contract.format,"index_admission_receipt":receipt_ref,"source_snapshots":[snapshot],"retrieval_policy":retrieval_policy_ref(),"query_time_contract":contract,"protocol":PROTOCOL,"limits":limits});
     write_canonical(output.join("tool-binding-lock.json"), &lock)?;
     let lock_sha = canonical_sha256(&lock);
     let lock_ref = json!({"id":"com.ayc.livefire-rag.local-test-tool-binding","version":"1","sha256":lock_sha});
@@ -353,7 +353,11 @@ fn coverage(physical: &Value, report: &Value) -> Result<Value, Box<dyn std::erro
         json!({"source_records":source,"indexed_documents":physical["documents"]["rows"],"excluded_records":excluded,"reason_counts":reasons}),
     )
 }
-fn physical_objects(root: &Path, p: &Value) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+fn physical_objects(
+    root: &Path,
+    p: &Value,
+    lexical_media_type: &str,
+) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     let paths = [
         ("index.json", "application/json"),
         (
@@ -372,7 +376,7 @@ fn physical_objects(root: &Path, p: &Value) -> Result<Vec<Value>, Box<dyn std::e
         ),
         (
             p["lexical"]["path"].as_str().ok_or("lexical path")?,
-            "application/json",
+            lexical_media_type,
         ),
         (
             p["occurrence_lookup"]["path"]
@@ -388,6 +392,42 @@ fn physical_objects(root: &Path, p: &Value) -> Result<Vec<Value>, Box<dyn std::e
     }
     Ok(v)
 }
+
+struct IndexContract {
+    format: Value,
+    manifest_schema: &'static str,
+    index_version: &'static str,
+    physical_version: &'static str,
+    lexical_media_type: &'static str,
+}
+
+fn index_contract(physical: &Value) -> Result<IndexContract, Box<dyn std::error::Error>> {
+    match physical["schema_version"].as_str() {
+        Some("livefire.rag.fast-index/2") => Ok(IndexContract {
+            format: format_ref(),
+            manifest_schema: "livefire.rag.fast-index/2",
+            index_version: "0.2.0",
+            physical_version: "2",
+            lexical_media_type: "application/json",
+        }),
+        Some("livefire.rag.fast-index/3") => Ok(IndexContract {
+            format: format_ref_v3(),
+            manifest_schema: "livefire.rag.fast-index/3",
+            index_version: "0.3.0",
+            physical_version: "3",
+            lexical_media_type: "application/vnd.sqlite3",
+        }),
+        _ => Err("fast index version 2 or 3 is required".into()),
+    }
+}
+
+fn refuse_test_only_index(physical: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    if physical.get("test_only").and_then(Value::as_bool) == Some(true) {
+        return Err("test-only indexes cannot be prepared as provider loadouts".into());
+    }
+    Ok(())
+}
+
 fn copy_physical_index(
     source: &Path,
     destination: &Path,
@@ -468,4 +508,28 @@ fn future_absolute(p: &Path) -> Result<String, Box<dyn std::error::Error>> {
         resolved.push(component);
     }
     Ok(resolved.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn physical_manifest_selects_the_exact_sdk_format() {
+        let v2 = index_contract(&json!({"schema_version":"livefire.rag.fast-index/2"})).unwrap();
+        assert_eq!(v2.format, format_ref());
+        assert_eq!(v2.lexical_media_type, "application/json");
+
+        let v3 = index_contract(&json!({"schema_version":"livefire.rag.fast-index/3"})).unwrap();
+        assert_eq!(v3.format, format_ref_v3());
+        assert_eq!(v3.lexical_media_type, "application/vnd.sqlite3");
+
+        assert!(index_contract(&json!({"schema_version":"livefire.rag.fast-index/4"})).is_err());
+    }
+
+    #[test]
+    fn provider_loadout_preparation_refuses_test_only_index() {
+        assert!(refuse_test_only_index(&json!({"test_only":true})).is_err());
+        assert!(refuse_test_only_index(&json!({})).is_ok());
+    }
 }

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/catalogue-batch-search-request.v1.schema.json",
+  "title": "Catalogue batch-search request row v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query_id", "query", "mode", "top_n", "relations"],
+  "properties": {
+    "query_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "\\S"},
+    "query": {"type": "string", "minLength": 1, "maxLength": 8192, "pattern": "\\S"},
+    "mode": {"enum": ["dense", "lexical", "fused"]},
+    "top_n": {"type": "integer", "minimum": 1, "maximum": 100},
+    "relations": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"}
+    }
+  },
+  "$comment": "The containing UTF-8 JSONL file must terminate every row, including its final row, with an LF byte (0A). Runtime validation also requires relation filters to be sorted, every relation to belong to the admitted catalogue, at most 10000 rows, unique (mode, query_id) pairs, and identical query/top_n/relations whenever one query_id is used in more than one mode."
+}

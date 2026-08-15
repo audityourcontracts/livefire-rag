@@ -25,6 +25,41 @@
       }
     },
     {
+      "name": "process activity with camel-case source fields",
+      "relation_name": "ocsf_process_activity",
+      "event_id": "evt-camel",
+      "support_ref": "support:camel",
+      "typed_event": {
+        "semantic_class": "process",
+        "ocsf": {
+          "activity_id": 99,
+          "category_uid": 1,
+          "class_uid": 1007,
+          "severity_id": 1,
+          "time": 1534762063000,
+          "type_uid": 100799,
+          "unmapped": {
+            "action": "added",
+            "calendarTime": "Mon Aug 20 10:47:43 2018 UTC",
+            "hostIdentifier": "gacrux.i-0920036c8ca91e501",
+            "unixTime": 1534762063,
+            "columns": {
+              "cmdline": "\"awk\" --version",
+              "path": "/bin/gawk",
+              "status": ""
+            }
+          }
+        }
+      },
+      "expected": {
+        "document_kind": "activity",
+        "semantic_group_sha256": "cf2724a03bb342e7fa135f1526640b4bc96cfcfa1a6a343a2dbfdb3d9701856b",
+        "semantic_text": "kind: activity | relation: ocsf_process_activity | outcome: severity_id=1; unmapped.columns.status= | action: activity_id=99; unmapped.action=added | target: unmapped.columns.path=/bin/gawk | context: category_uid=1; class_uid=1007; type_uid=100799; semantic_class=process; unmapped.columns.cmdline=\"awk\" --version",
+        "event_time": "2018-08-20T10:47:43.000Z",
+        "terminal_disposition": "direct_semantic_document"
+      }
+    },
+    {
       "name": "inventory state",
       "relation_name": "ocsf_inventory_info",
       "event_id": "evt-2",
@@ -77,6 +112,60 @@
         "semantic_text": null,
         "event_time": "2024-03-09T16:00:00.000Z",
         "terminal_disposition": "structured_only_occurrence"
+      }
+    },
+    {
+      "name": "in-band identifier direct matches",
+      "relation_name": "ocsf_http_activity",
+      "event_id": "evt-5",
+      "support_ref": "support:5",
+      "typed_event": {
+        "activity_name": "Inspect",
+        "message": "1.2.3.4 123e4567-e89b-12d3-a456-426614174000 0123456789abcdef0123456789abcdef",
+        "status": "Observed"
+      },
+      "expected": {
+        "document_kind": "activity",
+        "semantic_group_sha256": "ab9cffac50c86be5b7f6637e095fe741666128af09a36260c4f039d81b4110ba",
+        "semantic_text": "kind: activity | relation: ocsf_http_activity | outcome: status=Observed | action: activity_name=Inspect | context: message=<redacted:ip-address> <redacted:uuid> <redacted:long-identifier>",
+        "event_time": null,
+        "terminal_disposition": "direct_semantic_document"
+      }
+    },
+    {
+      "name": "in-band identifier boundary near misses",
+      "relation_name": "ocsf_http_activity",
+      "event_id": "evt-6",
+      "support_ref": "support:6",
+      "typed_event": {
+        "activity_name": "Inspect",
+        "message": "host1.2.3.4name a123e4567-e89b-12d3-a456-426614174000b _0123456789abcdef0123456789abcdef_",
+        "status": "Observed"
+      },
+      "expected": {
+        "document_kind": "activity",
+        "semantic_group_sha256": "f0afbda30f87ec9025a9a4b9488c71881541856e54ea62e141c561056518b5e7",
+        "semantic_text": "kind: activity | relation: ocsf_http_activity | outcome: status=Observed | action: activity_name=Inspect | context: message=host1.2.3.4name a123e4567-e89b-12d3-a456-426614174000b _<redacted:long-identifier>_",
+        "event_time": null,
+        "terminal_disposition": "direct_semantic_document"
+      }
+    },
+    {
+      "name": "other in-band identifier boundaries",
+      "relation_name": "ocsf_http_activity",
+      "event_id": "evt-7",
+      "support_ref": "support:7",
+      "typed_event": {
+        "activity_name": "Inspect",
+        "message": "user@example.test user@example.test_ _aa:bb:cc:dd:ee:ff_ aaa:bb:cc:dd:ee:ffb abcdefgh.ijklmnop.qrstuvwx",
+        "status": "Observed"
+      },
+      "expected": {
+        "document_kind": "activity",
+        "semantic_group_sha256": "69008fe66836bdab06c4c124b656d299fabec78a9359b778805f764c4c6e0202",
+        "semantic_text": "kind: activity | relation: ocsf_http_activity | outcome: status=Observed | action: activity_name=Inspect | context: message=<redacted:email-address> user@example.test_ _<redacted:mac-address>_ aaa:bb:cc:dd:ee:ffb <redacted:jwt>",
+        "event_time": null,
+        "terminal_disposition": "direct_semantic_document"
       }
     }
   ]

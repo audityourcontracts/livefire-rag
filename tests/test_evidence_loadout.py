@@ -66,6 +66,20 @@ class EvidenceLoadoutTest(unittest.TestCase):
         )
         return destination
 
+    def test_prepare_refuses_test_only_fast_index_before_opening(self) -> None:
+        (self.index / "index.json").write_text(
+            json.dumps({
+                "schema_version": "livefire.rag.fast-index/4",
+                "test_only": True,
+            }),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            ValueError, "test-only indexes cannot be prepared as provider loadouts"
+        ):
+            self._prepare()
+        self.assertFalse((self.temp / "loadout").exists())
+
     def test_prepare_is_byte_deterministic_and_explicitly_local_test(self) -> None:
         destination = self._prepare()
         first = {

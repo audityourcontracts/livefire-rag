@@ -20,7 +20,9 @@ use parquet::{
     file::properties::WriterProperties,
 };
 use rag_embedding::{EmbeddingProfile, validate_embedding_profile};
-use rusqlite::{Connection, OpenFlags, TransactionBehavior, params, params_from_iter};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, TransactionBehavior, params, params_from_iter,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -31,6 +33,8 @@ pub const VECTOR_HEADER_BYTES: u32 = 64;
 pub const MAX_RETURNED_OCCURRENCES_PER_HIT: usize = 50;
 const PARQUET_WRITE_BATCH_ROWS: usize = 8_192;
 const OCCURRENCE_LOOKUP_SCHEMA: &str = "sqlite-occurrence-lookup-v1";
+const SQLITE_LEXICAL_SCHEMA: &str = "sqlite-inverted-bm25-v1";
+const SQLITE_LEXICAL_APPLICATION_ID: i64 = 0x4c_46_52_33;
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -126,9 +130,26 @@ pub struct LexicalSummary {
     pub document_count: u64,
     pub bytes: u64,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
     pub tokenizer: String,
     pub k1: f64,
     pub b: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LexicalFormat {
+    JsonV2,
+    SqliteV3,
+}
+
+struct IndexAssemblyOptions {
+    source: SourceBinding,
+    build_scope: BuildScope,
+    embedding_profile: EmbeddingProfile,
+    lexical_format: LexicalFormat,
+    pipeline_provenance: Option<PipelineProvenance>,
+    test_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +176,49 @@ pub enum BuildScope {
     Sample,
 }
 
+/// Immutable upstream identities used to assemble a dataset index.
+///
+/// General-purpose and legacy index writers may omit this value. Dataset
+/// catalogues require it so an otherwise valid index cannot be paired with the
+/// wrong prepared corpus or embedding results merely because their row counts
+/// and embedding profiles happen to match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineProvenance {
+    pub dataset_sha256: String,
+    pub prepared_corpus_sha256: String,
+    pub embedding_plan_sha256: String,
+    pub embedding_result_set_sha256: String,
+}
+
+/// Assembly settings for an index that will be admitted into a dataset
+/// catalogue.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineIndexOptions {
+    pub source: SourceBinding,
+    pub build_scope: BuildScope,
+    pub embedding_profile: EmbeddingProfile,
+    pub provenance: PipelineProvenance,
+    pub test_only: bool,
+}
+
+impl PipelineProvenance {
+    fn validate(&self) -> Result<()> {
+        for digest in [
+            &self.dataset_sha256,
+            &self.prepared_corpus_sha256,
+            &self.embedding_plan_sha256,
+            &self.embedding_result_set_sha256,
+        ] {
+            decode_sha256(digest)?;
+            if digest.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                return Err(IndexError::Invalid("pipeline provenance digest"));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FastIndexManifest {
@@ -169,6 +233,12 @@ pub struct FastIndexManifest {
     pub lexical: LexicalSummary,
     pub occurrence_lookup: OccurrenceLookupSummary,
     pub embedding_profile: EmbeddingProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_provenance: Option<PipelineProvenance>,
+    /// True only for deterministic diagnostic vectors that did not come from
+    /// the embedding model named by the profile.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub test_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +255,8 @@ pub struct BuildReport {
     pub accounting: serde_json::Value,
     pub cache_hits: u64,
     pub embedded: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub test_only: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -224,6 +296,30 @@ pub struct EvidenceOccurrence {
     pub mapping_sha256: String,
     pub event_id: String,
     pub support_ref: String,
+}
+
+/// A validated dense query vector bound to one embedding profile.
+///
+/// Create this once with [`FastIndex::validate_query_vector`] before starting
+/// an index-only timing measurement. The values are immutable and shared, so
+/// the same query can safely be used by concurrent searches without copying or
+/// validating the complete vector again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileBoundQueryVector {
+    values: Arc<[f32]>,
+    embedding_profile: EmbeddingProfile,
+}
+
+impl ProfileBoundQueryVector {
+    #[must_use]
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    #[must_use]
+    pub fn embedding_profile_sha256(&self) -> &str {
+        &self.embedding_profile.sha256
+    }
 }
 
 pub fn write_fast_index(
@@ -303,6 +399,139 @@ where
     O: IntoIterator<Item = Result<FastOccurrence>>,
     V: IntoIterator<Item = Result<OrderedVector>>,
 {
+    write_fast_index_from_streams_with_format(
+        output,
+        documents,
+        occurrences,
+        vectors,
+        IndexAssemblyOptions {
+            source,
+            build_scope,
+            embedding_profile,
+            lexical_format: LexicalFormat::JsonV2,
+            pipeline_provenance: None,
+            test_only: false,
+        },
+    )
+}
+
+/// Assemble a v2 dataset index and bind it to the exact validated pipeline
+/// components that supplied its documents, occurrences, and vectors.
+pub fn write_bound_fast_index_from_streams<D, O, V>(
+    output: &Path,
+    documents: D,
+    occurrences: O,
+    vectors: V,
+    options: PipelineIndexOptions,
+) -> Result<FastIndexManifest>
+where
+    D: IntoIterator<Item = Result<FastDocument>>,
+    O: IntoIterator<Item = Result<FastOccurrence>>,
+    V: IntoIterator<Item = Result<OrderedVector>>,
+{
+    options.provenance.validate()?;
+    write_fast_index_from_streams_with_format(
+        output,
+        documents,
+        occurrences,
+        vectors,
+        IndexAssemblyOptions {
+            source: options.source,
+            build_scope: options.build_scope,
+            embedding_profile: options.embedding_profile,
+            lexical_format: LexicalFormat::JsonV2,
+            pipeline_provenance: Some(options.provenance),
+            test_only: options.test_only,
+        },
+    )
+}
+
+/// Assemble a scalable v3 index whose lexical postings remain on disk.
+///
+/// This preserves the v2 tokenizer, BM25 formula, score ordering, document
+/// IDs, and occurrence-first filters. The v2 writer remains available for
+/// existing readers; callers must opt into this versioned format explicitly.
+pub fn write_scalable_fast_index_from_streams<D, O, V>(
+    output: &Path,
+    source: SourceBinding,
+    build_scope: BuildScope,
+    documents: D,
+    occurrences: O,
+    vectors: V,
+    embedding_profile: EmbeddingProfile,
+) -> Result<FastIndexManifest>
+where
+    D: IntoIterator<Item = Result<FastDocument>>,
+    O: IntoIterator<Item = Result<FastOccurrence>>,
+    V: IntoIterator<Item = Result<OrderedVector>>,
+{
+    write_fast_index_from_streams_with_format(
+        output,
+        documents,
+        occurrences,
+        vectors,
+        IndexAssemblyOptions {
+            source,
+            build_scope,
+            embedding_profile,
+            lexical_format: LexicalFormat::SqliteV3,
+            pipeline_provenance: None,
+            test_only: false,
+        },
+    )
+}
+
+/// Assemble a scalable v3 dataset index and bind it to the exact validated
+/// pipeline components that supplied its documents, occurrences, and vectors.
+pub fn write_bound_scalable_fast_index_from_streams<D, O, V>(
+    output: &Path,
+    documents: D,
+    occurrences: O,
+    vectors: V,
+    options: PipelineIndexOptions,
+) -> Result<FastIndexManifest>
+where
+    D: IntoIterator<Item = Result<FastDocument>>,
+    O: IntoIterator<Item = Result<FastOccurrence>>,
+    V: IntoIterator<Item = Result<OrderedVector>>,
+{
+    options.provenance.validate()?;
+    write_fast_index_from_streams_with_format(
+        output,
+        documents,
+        occurrences,
+        vectors,
+        IndexAssemblyOptions {
+            source: options.source,
+            build_scope: options.build_scope,
+            embedding_profile: options.embedding_profile,
+            lexical_format: LexicalFormat::SqliteV3,
+            pipeline_provenance: Some(options.provenance),
+            test_only: options.test_only,
+        },
+    )
+}
+
+fn write_fast_index_from_streams_with_format<D, O, V>(
+    output: &Path,
+    documents: D,
+    occurrences: O,
+    vectors: V,
+    options: IndexAssemblyOptions,
+) -> Result<FastIndexManifest>
+where
+    D: IntoIterator<Item = Result<FastDocument>>,
+    O: IntoIterator<Item = Result<FastOccurrence>>,
+    V: IntoIterator<Item = Result<OrderedVector>>,
+{
+    let IndexAssemblyOptions {
+        source,
+        build_scope,
+        embedding_profile,
+        lexical_format,
+        pipeline_provenance,
+        test_only,
+    } = options;
     if output.exists() {
         return Err(IndexError::Invalid("output/documents"));
     }
@@ -324,6 +553,7 @@ where
             &staging.join("documents.parquet"),
             documents.into_iter(),
             &mut lookup,
+            lexical_format == LexicalFormat::JsonV2,
         )?;
         let occurrence_rows = write_occurrences_streaming(
             &staging.join("occurrences.parquet"),
@@ -344,13 +574,37 @@ where
             return Err(IndexError::Invalid("document/vector count"));
         }
         fs::create_dir(staging.join("lexical"))?;
-        write_lexical_from_documents(
-            &staging.join("lexical/index.json"),
-            &staging.join("documents.parquet"),
-            document_summary.rows,
-            document_summary.total_token_count,
-            &document_summary.document_frequency,
-        )?;
+        let (storage_schema_version, lexical_relative) = match lexical_format {
+            LexicalFormat::JsonV2 => {
+                write_lexical_from_documents(
+                    &staging.join("lexical/index.json"),
+                    &staging.join("documents.parquet"),
+                    document_summary.rows,
+                    document_summary
+                        .total_token_count
+                        .ok_or(IndexError::Invalid("legacy lexical token count"))?,
+                    document_summary
+                        .document_frequency
+                        .as_ref()
+                        .ok_or(IndexError::Invalid("legacy lexical document frequency"))?,
+                )?;
+                ("livefire.rag.fast-index/2", "lexical/index.json")
+            }
+            LexicalFormat::SqliteV3 => {
+                write_sqlite_lexical_from_documents(
+                    &staging.join("lexical/index.sqlite3"),
+                    &staging.join("documents.parquet"),
+                    document_summary.rows,
+                    &document_summary.order_sha256,
+                )?;
+                ("livefire.rag.fast-index/3", "lexical/index.sqlite3")
+            }
+        };
+        let schema_version = if test_only {
+            "livefire.rag.fast-index/4"
+        } else {
+            storage_schema_version
+        };
         let documents_artifact = artifact_summary(
             &staging.join("documents.parquet"),
             "documents.parquet",
@@ -364,10 +618,10 @@ where
             None,
         )?;
         let vectors_path = staging.join("vectors.f32");
-        let lexical_path = staging.join("lexical/index.json");
+        let lexical_path = staging.join(lexical_relative);
         let occurrence_lookup_path = staging.join("occurrence-index.sqlite3");
         let mut manifest = FastIndexManifest {
-            schema_version: "livefire.rag.fast-index/2".into(),
+            schema_version: schema_version.into(),
             component_sha256: String::new(),
             source,
             build_scope: build_scope.clone(),
@@ -385,10 +639,12 @@ where
                 document_order_sha256: document_summary.order_sha256,
             },
             lexical: LexicalSummary {
-                path: "lexical/index.json".into(),
+                path: lexical_relative.into(),
                 document_count: document_summary.rows,
                 bytes: fs::metadata(&lexical_path)?.len(),
                 sha256: file_sha256(&lexical_path)?,
+                schema: (lexical_format == LexicalFormat::SqliteV3)
+                    .then(|| SQLITE_LEXICAL_SCHEMA.into()),
                 tokenizer: "ascii_camel_lower_v1".into(),
                 k1: 1.2,
                 b: 0.75,
@@ -401,13 +657,19 @@ where
                 schema: OCCURRENCE_LOOKUP_SCHEMA.into(),
             },
             embedding_profile,
+            pipeline_provenance,
+            test_only,
         };
         manifest.component_sha256 = manifest_component_sha256(&manifest)?;
         let mut bytes = serde_json::to_vec_pretty(&manifest)?;
         bytes.push(b'\n');
         fs::write(staging.join("index.json"), bytes)?;
         let report = BuildReport {
-            schema_version: "livefire.rag.fast-build-report/1".into(),
+            schema_version: if test_only {
+                "livefire.rag.fast-build-report/2".into()
+            } else {
+                "livefire.rag.fast-build-report/1".into()
+            },
             source: manifest.source.clone(),
             build_scope: manifest.build_scope.clone(),
             complete: manifest.complete,
@@ -426,6 +688,7 @@ where
             // counters describe work performed by this assembly operation.
             cache_hits: 0,
             embedded: 0,
+            test_only,
         };
         let mut report_bytes = serde_json::to_vec_pretty(&report)?;
         report_bytes.push(b'\n');
@@ -443,15 +706,24 @@ pub struct FastIndex {
     root: PathBuf,
     pub manifest: FastIndexManifest,
     documents_path: PathBuf,
-    lexical_path: PathBuf,
     occurrence_lookup_path: PathBuf,
     vectors_file: File,
-    data: OnceLock<SearchData>,
+    documents: OnceLock<Vec<FastDocument>>,
+    lexical: LexicalBackend,
 }
 
-struct SearchData {
-    documents: Vec<FastDocument>,
-    lexical: LexicalIndex,
+enum LexicalBackend {
+    JsonV2 {
+        path: PathBuf,
+        index: OnceLock<LexicalIndex>,
+    },
+    SqliteV3(SqliteLexicalIndex),
+}
+
+struct SqliteLexicalIndex {
+    path: PathBuf,
+    document_count: u64,
+    total_length: u64,
 }
 
 type EligibleDocuments = Option<HashSet<String>>;
@@ -459,11 +731,32 @@ type EligibleDocuments = Option<HashSet<String>>;
 impl FastIndex {
     /// Fast open validates metadata and vector/document pairing without replaying the parent.
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_internal(root, false)
+    }
+
+    /// Open an index for an explicitly test-only catalogue or diagnostic.
+    /// Normal query and provider paths deliberately use [`Self::open`].
+    pub fn open_allow_test_only(root: &Path) -> Result<Self> {
+        Self::open_internal(root, true)
+    }
+
+    fn open_internal(root: &Path, allow_test_only: bool) -> Result<Self> {
         let root = fs::canonicalize(root)?;
         let manifest: FastIndexManifest =
             serde_json::from_slice(&fs::read(root.join("index.json"))?)?;
-        if manifest.schema_version != "livefire.rag.fast-index/2" {
+        if manifest.test_only && !allow_test_only {
+            return Err(IndexError::Invalid(
+                "test-only index requires explicit diagnostic mode",
+            ));
+        }
+        if !matches!(
+            manifest.schema_version.as_str(),
+            "livefire.rag.fast-index/2" | "livefire.rag.fast-index/3" | "livefire.rag.fast-index/4"
+        ) {
             return Err(IndexError::Invalid("manifest version"));
+        }
+        if (manifest.schema_version == "livefire.rag.fast-index/4") != manifest.test_only {
+            return Err(IndexError::Invalid("test-only manifest version binding"));
         }
         if manifest.complete != matches!(manifest.build_scope, BuildScope::Full)
             || manifest.vectors.count != manifest.documents.rows
@@ -479,8 +772,21 @@ impl FastIndex {
             || !manifest.lexical.b.is_finite()
             || !(0.0..=1.0).contains(&manifest.lexical.b)
             || validate_embedding_profile(&manifest.embedding_profile).is_err()
+            || manifest
+                .pipeline_provenance
+                .as_ref()
+                .is_some_and(|provenance| provenance.validate().is_err())
         {
             return Err(IndexError::Invalid("manifest bindings"));
+        }
+        match manifest.schema_version.as_str() {
+            "livefire.rag.fast-index/2" if manifest.lexical.schema.is_none() => {}
+            "livefire.rag.fast-index/3"
+                if manifest.lexical.schema.as_deref() == Some(SQLITE_LEXICAL_SCHEMA) => {}
+            "livefire.rag.fast-index/4"
+                if manifest.lexical.schema.is_none()
+                    || manifest.lexical.schema.as_deref() == Some(SQLITE_LEXICAL_SCHEMA) => {}
+            _ => return Err(IndexError::Invalid("lexical format binding")),
         }
         if manifest.component_sha256 != manifest_component_sha256(&manifest)? {
             return Err(IndexError::Corrupt("index component identity"));
@@ -522,15 +828,32 @@ impl FastIndex {
             &manifest.occurrence_lookup.sha256,
         )?;
         validate_occurrence_lookup_metadata(&occurrence_lookup_path, &manifest)?;
+        let lexical = if manifest.lexical.schema.is_none() {
+            LexicalBackend::JsonV2 {
+                path: lexical_path,
+                index: OnceLock::new(),
+            }
+        } else {
+            let (document_count, total_length) = validate_sqlite_lexical_metadata(
+                &lexical_path,
+                manifest.documents.rows,
+                &manifest.vectors.document_order_sha256,
+            )?;
+            LexicalBackend::SqliteV3(SqliteLexicalIndex {
+                path: lexical_path,
+                document_count,
+                total_length,
+            })
+        };
         let vectors_file = File::open(&vectors_path)?;
         Ok(Self {
             root,
             manifest,
             documents_path,
-            lexical_path,
             occurrence_lookup_path,
             vectors_file,
-            data: OnceLock::new(),
+            documents: OnceLock::new(),
+            lexical,
         })
     }
 
@@ -539,11 +862,79 @@ impl FastIndex {
         &self.root
     }
 
+    /// Validate and bind a caller-supplied query vector to this index's
+    /// embedding profile.
+    ///
+    /// Callers that need to measure index-only latency should do this before
+    /// starting their timer, after obtaining the vector from the embedding
+    /// service. The returned value owns an immutable copy and may be reused
+    /// across threads.
+    pub fn validate_query_vector(&self, query: &[f32]) -> Result<ProfileBoundQueryVector> {
+        validate_query_vector_values(
+            query,
+            self.manifest.embedding_profile.dimensions as usize,
+            &self.manifest.embedding_profile.normalization,
+        )?;
+        Ok(ProfileBoundQueryVector {
+            values: Arc::from(query),
+            embedding_profile: self.manifest.embedding_profile.clone(),
+        })
+    }
+
+    /// Search the dense index with a previously validated query vector.
+    pub fn search_dense_with_vector(
+        &self,
+        query: &ProfileBoundQueryVector,
+        filters: &SearchFilters,
+        top_n: usize,
+    ) -> Result<Vec<SearchHit>> {
+        self.search_with_bound_vector(SearchMode::Dense, "", query, filters, top_n)
+    }
+
+    /// Search the fused dense and lexical index with a previously validated
+    /// query vector.
+    pub fn search_fused_with_vector(
+        &self,
+        query_text: &str,
+        query: &ProfileBoundQueryVector,
+        filters: &SearchFilters,
+        top_n: usize,
+    ) -> Result<Vec<SearchHit>> {
+        self.search_with_bound_vector(SearchMode::Fused, query_text, query, filters, top_n)
+    }
+
     pub fn search(
         &self,
         mode: SearchMode,
         query_text: &str,
         query_vector: Option<&[f32]>,
+        filters: &SearchFilters,
+        top_n: usize,
+    ) -> Result<Vec<SearchHit>> {
+        self.search_internal(mode, query_text, query_vector, false, filters, top_n)
+    }
+
+    fn search_with_bound_vector(
+        &self,
+        mode: SearchMode,
+        query_text: &str,
+        query: &ProfileBoundQueryVector,
+        filters: &SearchFilters,
+        top_n: usize,
+    ) -> Result<Vec<SearchHit>> {
+        if !matches!(mode, SearchMode::Dense | SearchMode::Fused) {
+            return Err(IndexError::Invalid("bound query search mode"));
+        }
+        self.validate_query_binding(query)?;
+        self.search_internal(mode, query_text, Some(query.values()), true, filters, top_n)
+    }
+
+    fn search_internal(
+        &self,
+        mode: SearchMode,
+        query_text: &str,
+        query_vector: Option<&[f32]>,
+        query_vector_is_validated: bool,
         filters: &SearchFilters,
         top_n: usize,
     ) -> Result<Vec<SearchHit>> {
@@ -558,11 +949,17 @@ impl FastIndex {
         {
             return Err(IndexError::Invalid("search filters"));
         }
-        let data = self.search_data()?;
-        let eligible = self.eligible(data, filters)?;
+        let eligible = self.eligible(filters)?;
+        if matches!(mode, SearchMode::Dense | SearchMode::Fused) && !query_vector_is_validated {
+            validate_query_vector_values(
+                query_vector.ok_or(IndexError::Invalid("query vector"))?,
+                self.manifest.embedding_profile.dimensions as usize,
+                &self.manifest.embedding_profile.normalization,
+            )?;
+        }
         let dense = if matches!(mode, SearchMode::Dense | SearchMode::Fused) {
             Some(self.dense_scores(
-                data,
+                self.documents()?,
                 query_vector.ok_or(IndexError::Invalid("query vector"))?,
                 &eligible,
             )?)
@@ -570,7 +967,7 @@ impl FastIndex {
             None
         };
         let lexical = if matches!(mode, SearchMode::Lexical | SearchMode::Fused) {
-            Some(data.lexical.scores(query_text, &eligible))
+            Some(self.lexical_scores(query_text, &eligible)?)
         } else {
             None
         };
@@ -596,17 +993,7 @@ impl FastIndex {
             .iter()
             .map(|(id, _)| id.clone())
             .collect::<BTreeSet<_>>();
-        let semantic_by_id = data
-            .documents
-            .iter()
-            .filter(|document| selected_ids.contains(&document.document_id))
-            .map(|document| {
-                (
-                    document.document_id.as_str(),
-                    document.semantic_text.as_str(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let semantic_by_id = self.semantic_texts(&selected_ids)?;
         let occurrences_by_document =
             read_matching_occurrences(&self.occurrence_lookup_path, &selected_ids, filters)?;
         Ok(selected
@@ -615,9 +1002,9 @@ impl FastIndex {
             .map(|(index, (id, score))| SearchHit {
                 rank: index + 1,
                 semantic_text: semantic_by_id
-                    .get(id.as_str())
+                    .get(&id)
                     .expect("ranked document exists")
-                    .to_string(),
+                    .clone(),
                 dense_score: dense_map.get(&id).copied(),
                 lexical_score: lexical_map.get(&id).copied(),
                 eligible_occurrence_count: occurrences_by_document
@@ -636,9 +1023,16 @@ impl FastIndex {
             .collect())
     }
 
-    fn search_data(&self) -> Result<&SearchData> {
-        if let Some(data) = self.data.get() {
-            return Ok(data);
+    fn validate_query_binding(&self, query: &ProfileBoundQueryVector) -> Result<()> {
+        if query.embedding_profile != self.manifest.embedding_profile {
+            return Err(IndexError::Invalid("query vector profile binding"));
+        }
+        Ok(())
+    }
+
+    fn documents(&self) -> Result<&Vec<FastDocument>> {
+        if let Some(documents) = self.documents.get() {
+            return Ok(documents);
         }
         let documents = read_documents(File::open(&self.documents_path)?)?;
         if documents.len() as u64 != self.manifest.documents.rows
@@ -652,30 +1046,62 @@ impl FastIndex {
         {
             return Err(IndexError::Corrupt("manifest row/order binding"));
         }
-        let lexical: LexicalIndex = serde_json::from_slice(&fs::read(&self.lexical_path)?)?;
-        let document_ids = documents
-            .iter()
-            .map(|document| document.document_id.as_str())
-            .collect::<BTreeSet<_>>();
-        let lexical_ids = lexical
-            .documents
-            .iter()
-            .map(|document| document.document_id.as_str())
-            .collect::<BTreeSet<_>>();
-        if lexical.document_count != documents.len() as u64
-            || lexical.documents.len() != documents.len()
-            || lexical_ids.len() != lexical.documents.len()
-            || lexical_ids != document_ids
-        {
-            return Err(IndexError::Corrupt("lexical document association"));
-        }
-        let _ = self.data.set(SearchData { documents, lexical });
-        self.data
+        let _ = self.documents.set(documents);
+        self.documents
             .get()
-            .ok_or(IndexError::Invalid("search data initialization"))
+            .ok_or(IndexError::Invalid("document initialization"))
     }
 
-    fn eligible(&self, _data: &SearchData, filters: &SearchFilters) -> Result<EligibleDocuments> {
+    fn lexical_scores(
+        &self,
+        query: &str,
+        eligible: &EligibleDocuments,
+    ) -> Result<Vec<(String, f64)>> {
+        match &self.lexical {
+            LexicalBackend::JsonV2 { path, index } => {
+                if index.get().is_none() {
+                    let lexical: LexicalIndex = serde_json::from_slice(&fs::read(path)?)?;
+                    let documents = self.documents()?;
+                    let document_ids = documents
+                        .iter()
+                        .map(|document| document.document_id.as_str())
+                        .collect::<BTreeSet<_>>();
+                    let lexical_ids = lexical
+                        .documents
+                        .iter()
+                        .map(|document| document.document_id.as_str())
+                        .collect::<BTreeSet<_>>();
+                    if lexical.document_count != documents.len() as u64
+                        || lexical.documents.len() != documents.len()
+                        || lexical_ids.len() != lexical.documents.len()
+                        || lexical_ids != document_ids
+                    {
+                        return Err(IndexError::Corrupt("lexical document association"));
+                    }
+                    let _ = index.set(lexical);
+                }
+                Ok(index
+                    .get()
+                    .ok_or(IndexError::Invalid("lexical index initialization"))?
+                    .scores(query, eligible))
+            }
+            LexicalBackend::SqliteV3(index) => index.scores(query, eligible),
+        }
+    }
+
+    fn semantic_texts(&self, selected_ids: &BTreeSet<String>) -> Result<HashMap<String, String>> {
+        match &self.lexical {
+            LexicalBackend::SqliteV3(index) => index.semantic_texts(selected_ids),
+            LexicalBackend::JsonV2 { .. } => Ok(self
+                .documents()?
+                .iter()
+                .filter(|document| selected_ids.contains(&document.document_id))
+                .map(|document| (document.document_id.clone(), document.semantic_text.clone()))
+                .collect()),
+        }
+    }
+
+    fn eligible(&self, filters: &SearchFilters) -> Result<EligibleDocuments> {
         if filters.relations.is_empty()
             && filters.time_start_ms.is_none()
             && filters.time_end_ms.is_none()
@@ -691,31 +1117,18 @@ impl FastIndex {
 
     fn dense_scores(
         &self,
-        data: &SearchData,
+        documents: &[FastDocument],
         query: &[f32],
         eligible: &EligibleDocuments,
     ) -> Result<Vec<(String, f64)>> {
         let dimensions = self.manifest.vectors.dimensions as usize;
-        if query.len() != dimensions || query.iter().any(|value| !value.is_finite()) {
-            return Err(IndexError::Invalid("query vector"));
-        }
-        if self.manifest.embedding_profile.normalization == "l2" {
-            let norm = query
-                .iter()
-                .map(|value| f64::from(*value) * f64::from(*value))
-                .sum::<f64>()
-                .sqrt();
-            if (norm - 1.0).abs() > 1.0e-4 {
-                return Err(IndexError::Invalid("query vector normalization"));
-            }
-        }
         let row_bytes = dimensions
             .checked_mul(4)
             .ok_or(IndexError::Invalid("vector row bytes"))?;
         let mut row = vec![0_u8; row_bytes];
         let mut scores =
-            Vec::with_capacity(eligible.as_ref().map_or(data.documents.len(), HashSet::len));
-        for document in &data.documents {
+            Vec::with_capacity(eligible.as_ref().map_or(documents.len(), HashSet::len));
+        for document in documents {
             if eligible
                 .as_ref()
                 .is_some_and(|ids| !ids.contains(&document.document_id))
@@ -836,6 +1249,89 @@ impl LexicalIndex {
     }
 }
 
+impl SqliteLexicalIndex {
+    fn scores(&self, query: &str, eligible: &EligibleDocuments) -> Result<Vec<(String, f64)>> {
+        let terms = tokenize(query).into_iter().collect::<BTreeSet<_>>();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = open_sqlite_lexical(&self.path)?;
+        let average_length = self.total_length as f64 / self.document_count.max(1) as f64;
+        let mut scores = HashMap::<String, f64>::new();
+        let mut frequency =
+            connection.prepare("SELECT document_frequency FROM term_stats WHERE term = ?1")?;
+        let mut postings = connection.prepare(
+            "SELECT document.document_id, document.length, posting.term_frequency
+               FROM postings AS posting
+               JOIN documents AS document USING (document_ordinal)
+              WHERE posting.term = ?1
+              ORDER BY posting.document_ordinal",
+        )?;
+        for term in terms {
+            let Some(document_frequency) = frequency
+                .query_row([&term], |row| row.get::<_, i64>(0))
+                .optional()?
+            else {
+                continue;
+            };
+            let document_frequency = u64::try_from(document_frequency)
+                .map_err(|_| IndexError::Corrupt("lexical document frequency"))?;
+            if document_frequency == 0 || document_frequency > self.document_count {
+                return Err(IndexError::Corrupt("lexical document frequency"));
+            }
+            let idf = ((self.document_count as f64 - document_frequency as f64 + 0.5)
+                / (document_frequency as f64 + 0.5)
+                + 1.0)
+                .ln();
+            let rows = postings.query_map([&term], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (document_id, length, term_frequency) = row?;
+                if eligible
+                    .as_ref()
+                    .is_some_and(|ids| !ids.contains(&document_id))
+                {
+                    continue;
+                }
+                let length = u64::try_from(length)
+                    .map_err(|_| IndexError::Corrupt("lexical document length"))?;
+                let term_frequency = u64::try_from(term_frequency)
+                    .map_err(|_| IndexError::Corrupt("lexical term frequency"))?;
+                if term_frequency == 0 {
+                    return Err(IndexError::Corrupt("lexical term frequency"));
+                }
+                let tf = term_frequency as f64;
+                let score = idf * (tf * 2.2)
+                    / (tf + 1.2 * (1.0 - 0.75 + 0.75 * length as f64 / average_length.max(1.0)));
+                *scores.entry(document_id).or_default() += score;
+            }
+        }
+        let mut scores = scores.into_iter().collect::<Vec<_>>();
+        sort_scores(&mut scores);
+        Ok(scores)
+    }
+
+    fn semantic_texts(&self, selected_ids: &BTreeSet<String>) -> Result<HashMap<String, String>> {
+        let connection = open_sqlite_lexical(&self.path)?;
+        let mut statement =
+            connection.prepare("SELECT semantic_text FROM documents WHERE document_id = ?1")?;
+        let mut texts = HashMap::with_capacity(selected_ids.len());
+        for document_id in selected_ids {
+            let semantic_text = statement
+                .query_row([document_id], |row| row.get::<_, String>(0))
+                .optional()?
+                .ok_or(IndexError::Corrupt("lexical document association"))?;
+            texts.insert(document_id.clone(), semantic_text);
+        }
+        Ok(texts)
+    }
+}
+
 fn write_lexical_from_documents(
     path: &Path,
     documents_path: &Path,
@@ -877,6 +1373,131 @@ fn write_lexical_from_documents(
     writer.write_all(b"]}")?;
     writer.write_all(b"\n")?;
     writer.flush()?;
+    Ok(())
+}
+
+fn write_sqlite_lexical_from_documents(
+    path: &Path,
+    documents_path: &Path,
+    expected_document_count: u64,
+    document_order_sha256: &str,
+) -> Result<()> {
+    let mut connection = Connection::open(path)?;
+    connection.execute_batch(&format!(
+        "PRAGMA page_size=4096;
+         PRAGMA auto_vacuum=NONE;
+         PRAGMA encoding='UTF-8';
+         PRAGMA journal_mode=OFF;
+         PRAGMA synchronous=OFF;
+         PRAGMA temp_store=FILE;
+         PRAGMA cache_size=-32768;
+         PRAGMA mmap_size=0;
+         PRAGMA foreign_keys=ON;
+         PRAGMA application_id={SQLITE_LEXICAL_APPLICATION_ID};
+         PRAGMA user_version=1;
+         CREATE TABLE documents (
+           document_ordinal INTEGER PRIMARY KEY NOT NULL,
+           document_id TEXT NOT NULL UNIQUE,
+           semantic_text TEXT NOT NULL,
+           length INTEGER NOT NULL
+         ) WITHOUT ROWID;
+         CREATE TABLE postings (
+           term TEXT NOT NULL,
+           document_ordinal INTEGER NOT NULL REFERENCES documents(document_ordinal),
+           term_frequency INTEGER NOT NULL,
+           PRIMARY KEY(term, document_ordinal)
+         ) WITHOUT ROWID;
+         CREATE TABLE term_stats (
+           term TEXT PRIMARY KEY NOT NULL,
+           document_frequency INTEGER NOT NULL
+         ) WITHOUT ROWID;
+         CREATE TABLE metadata (
+           key TEXT PRIMARY KEY NOT NULL,
+           value TEXT NOT NULL
+         ) WITHOUT ROWID;"
+    ))?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Exclusive)?;
+    let mut document_count = 0_u64;
+    let mut total_length = 0_u64;
+    let mut order_hasher = Sha256::new();
+    {
+        let mut insert_document = transaction.prepare(
+            "INSERT INTO documents(document_ordinal, document_id, semantic_text, length)
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        let mut insert_posting = transaction.prepare(
+            "INSERT INTO postings(term, document_ordinal, term_frequency) VALUES (?1, ?2, ?3)",
+        )?;
+        let mut update_frequency = transaction.prepare(
+            "INSERT INTO term_stats(term, document_frequency) VALUES (?1, 1)
+             ON CONFLICT(term) DO UPDATE
+             SET document_frequency = document_frequency + 1",
+        )?;
+        for document in documents_from_parquet_shards([documents_path]) {
+            let document = document?;
+            if document.vector_ordinal != document_count {
+                return Err(IndexError::Invalid("lexical document ordinal"));
+            }
+            order_hasher.update(document.document_id.as_bytes());
+            order_hasher.update([0]);
+            let mut terms = BTreeMap::<String, u64>::new();
+            for term in tokenize(&document.semantic_text) {
+                *terms.entry(term).or_default() += 1;
+            }
+            let length = terms.values().try_fold(0_u64, |total, count| {
+                total
+                    .checked_add(*count)
+                    .ok_or(IndexError::Invalid("lexical token count"))
+            })?;
+            insert_document.execute(params![
+                i64::try_from(document.vector_ordinal)
+                    .map_err(|_| IndexError::Invalid("lexical document ordinal"))?,
+                document.document_id,
+                document.semantic_text,
+                i64::try_from(length).map_err(|_| IndexError::Invalid("lexical token count"))?
+            ])?;
+            for (term, term_frequency) in terms {
+                insert_posting.execute(params![
+                    term,
+                    i64::try_from(document.vector_ordinal)
+                        .map_err(|_| IndexError::Invalid("lexical document ordinal"))?,
+                    i64::try_from(term_frequency)
+                        .map_err(|_| IndexError::Invalid("lexical term frequency"))?
+                ])?;
+                update_frequency.execute([term])?;
+            }
+            document_count = document_count
+                .checked_add(1)
+                .ok_or(IndexError::Invalid("lexical document count"))?;
+            total_length = total_length
+                .checked_add(length)
+                .ok_or(IndexError::Invalid("lexical token count"))?;
+        }
+    }
+    if document_count != expected_document_count {
+        return Err(IndexError::Invalid("lexical document count"));
+    }
+    let observed_document_order_sha256 = format!("{:x}", order_hasher.finalize());
+    if observed_document_order_sha256 != document_order_sha256 {
+        return Err(IndexError::Invalid("lexical document order"));
+    }
+    for (key, value) in [
+        ("schema", SQLITE_LEXICAL_SCHEMA.to_owned()),
+        ("document_count", document_count.to_string()),
+        ("total_length", total_length.to_string()),
+        ("document_order_sha256", observed_document_order_sha256),
+        ("tokenizer", "ascii_camel_lower_v1".to_owned()),
+        ("k1", "1.2".to_owned()),
+        ("b", "0.75".to_owned()),
+    ] {
+        transaction.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+    }
+    transaction.commit()?;
+    connection.execute_batch("VACUUM;")?;
+    drop(connection);
     Ok(())
 }
 
@@ -1005,6 +1626,27 @@ fn validate_vector_values(vector: &[f32], dimensions: usize, normalization: &str
     Ok(())
 }
 
+fn validate_query_vector_values(
+    vector: &[f32],
+    dimensions: usize,
+    normalization: &str,
+) -> Result<()> {
+    if vector.len() != dimensions || vector.iter().any(|value| !value.is_finite()) {
+        return Err(IndexError::Invalid("query vector"));
+    }
+    if normalization == "l2" {
+        let norm = vector
+            .iter()
+            .map(|value| f64::from(*value) * f64::from(*value))
+            .sum::<f64>()
+            .sqrt();
+        if (norm - 1.0).abs() > 1.0e-4 {
+            return Err(IndexError::Invalid("query vector normalization"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_vector_file(path: &Path, expected: &VectorSummary) -> Result<()> {
     let mut reader = BufReader::new(File::open(path)?);
     let mut header = [0_u8; 64];
@@ -1120,14 +1762,15 @@ fn write_document_batch(writer: &mut ArrowWriter<File>, rows: &[FastDocument]) -
 struct DocumentWriteSummary {
     rows: u64,
     order_sha256: String,
-    total_token_count: u64,
-    document_frequency: BTreeMap<String, u64>,
+    total_token_count: Option<u64>,
+    document_frequency: Option<BTreeMap<String, u64>>,
 }
 
 fn write_documents_streaming<I>(
     path: &Path,
     documents: I,
     lookup: &mut Connection,
+    collect_legacy_lexical_stats: bool,
 ) -> Result<DocumentWriteSummary>
 where
     I: Iterator<Item = Result<FastDocument>>,
@@ -1141,8 +1784,8 @@ where
     let mut order_hasher = Sha256::new();
     let mut previous_id: Option<String> = None;
     let mut rows = 0_u64;
-    let mut total_token_count = 0_u64;
-    let mut document_frequency = BTreeMap::<String, u64>::new();
+    let mut total_token_count = collect_legacy_lexical_stats.then_some(0_u64);
+    let mut document_frequency = collect_legacy_lexical_stats.then(BTreeMap::new);
     let transaction = lookup.transaction()?;
     {
         let mut insert = transaction.prepare(
@@ -1167,12 +1810,16 @@ where
             ])?;
             order_hasher.update(document.document_id.as_bytes());
             order_hasher.update([0]);
-            let tokens = tokenize(&document.semantic_text);
-            total_token_count = total_token_count
-                .checked_add(tokens.len() as u64)
-                .ok_or(IndexError::Invalid("lexical token count"))?;
-            for term in tokens.into_iter().collect::<BTreeSet<_>>() {
-                *document_frequency.entry(term).or_default() += 1;
+            if let (Some(total_token_count), Some(document_frequency)) =
+                (&mut total_token_count, &mut document_frequency)
+            {
+                let tokens = tokenize(&document.semantic_text);
+                *total_token_count = total_token_count
+                    .checked_add(tokens.len() as u64)
+                    .ok_or(IndexError::Invalid("lexical token count"))?;
+                for term in tokens.into_iter().collect::<BTreeSet<_>>() {
+                    *document_frequency.entry(term).or_default() += 1;
+                }
             }
             previous_id = Some(document.document_id.clone());
             batch.push(document);
@@ -1810,7 +2457,7 @@ fn validate_artifact(path: &Path, bytes: u64, sha256: &str) -> Result<()> {
 }
 
 fn manifest_component_sha256(manifest: &FastIndexManifest) -> Result<String> {
-    let material = serde_json::json!({
+    let mut material = serde_json::json!({
         "schema_version": manifest.schema_version,
         "source": manifest.source,
         "build_scope": manifest.build_scope,
@@ -1822,6 +2469,21 @@ fn manifest_component_sha256(manifest: &FastIndexManifest) -> Result<String> {
         "occurrence_lookup": manifest.occurrence_lookup,
         "embedding_profile": manifest.embedding_profile,
     });
+    if let Some(provenance) = &manifest.pipeline_provenance {
+        material
+            .as_object_mut()
+            .expect("manifest identity material is an object")
+            .insert(
+                "pipeline_provenance".into(),
+                serde_json::to_value(provenance)?,
+            );
+    }
+    if manifest.test_only {
+        material
+            .as_object_mut()
+            .expect("manifest identity material is an object")
+            .insert("test_only".into(), serde_json::Value::Bool(true));
+    }
     // SDK component identities use RFC 8785 JSON Canonicalization Scheme.
     let bytes = serde_json_canonicalizer::to_vec(&material)
         .map_err(|_| IndexError::Invalid("component identity canonicalization"))?;
@@ -1854,6 +2516,90 @@ fn validate_occurrence_lookup_metadata(path: &Path, manifest: &FastIndexManifest
         return Err(IndexError::Corrupt("occurrence lookup row count"));
     }
     Ok(())
+}
+
+fn open_sqlite_lexical(path: &Path) -> Result<Connection> {
+    Ok(Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?)
+}
+
+fn validate_sqlite_lexical_metadata(
+    path: &Path,
+    expected_document_count: u64,
+    expected_document_order_sha256: &str,
+) -> Result<(u64, u64)> {
+    let connection = open_sqlite_lexical(path)?;
+    let quick_check =
+        connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))?;
+    let application_id =
+        connection.query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))?;
+    let user_version =
+        connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?;
+    if quick_check != "ok" || application_id != SQLITE_LEXICAL_APPLICATION_ID || user_version != 1 {
+        return Err(IndexError::Corrupt("lexical SQLite header"));
+    }
+    let read = |key: &str| -> Result<String> {
+        Ok(
+            connection.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })?,
+        )
+    };
+    let document_count = read("document_count")?
+        .parse::<u64>()
+        .map_err(|_| IndexError::Corrupt("lexical document count"))?;
+    let total_length = read("total_length")?
+        .parse::<u64>()
+        .map_err(|_| IndexError::Corrupt("lexical token count"))?;
+    if read("schema")? != SQLITE_LEXICAL_SCHEMA
+        || read("document_order_sha256")? != expected_document_order_sha256
+        || read("tokenizer")? != "ascii_camel_lower_v1"
+        || read("k1")? != "1.2"
+        || read("b")? != "0.75"
+        || document_count != expected_document_count
+    {
+        return Err(IndexError::Corrupt("lexical metadata binding"));
+    }
+    let (rows, minimum, maximum) = connection.query_row(
+        "SELECT count(*), min(document_ordinal), max(document_ordinal) FROM documents",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        },
+    )?;
+    let rows = u64::try_from(rows).map_err(|_| IndexError::Corrupt("lexical document count"))?;
+    let expected_maximum = i64::try_from(document_count.saturating_sub(1))
+        .map_err(|_| IndexError::Corrupt("lexical document ordinal"))?;
+    if rows != document_count
+        || minimum != Some(0)
+        || maximum != Some(expected_maximum)
+        || connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM documents WHERE length < 0
+               UNION ALL
+               SELECT 1 FROM postings WHERE term_frequency <= 0
+               UNION ALL
+               SELECT 1 FROM term_stats
+                WHERE document_frequency <= 0 OR document_frequency > ?1
+               UNION ALL
+               SELECT 1 FROM postings AS posting
+               LEFT JOIN documents AS document USING (document_ordinal)
+               WHERE document.document_ordinal IS NULL
+             )",
+            [i64::try_from(document_count)
+                .map_err(|_| IndexError::Corrupt("lexical document count"))?],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Err(IndexError::Corrupt("lexical row binding"));
+    }
+    Ok((document_count, total_length))
 }
 
 fn safe_artifact(root: &Path, value: &str) -> Result<PathBuf> {
@@ -1917,6 +2663,7 @@ mod tests {
             model: "fake".into(),
             dimensions: 2,
             normalization: "l2".into(),
+            vector_derivation: None,
             query_instruction: None,
             query_composition: None,
         }
@@ -1960,6 +2707,99 @@ mod tests {
             .collect();
         (docs, occ, vec![vec![1.0, 0.0], vec![0.0, 1.0]])
     }
+
+    fn provenance(digit: char) -> PipelineProvenance {
+        PipelineProvenance {
+            dataset_sha256: digit.to_string().repeat(64),
+            prepared_corpus_sha256: "4".repeat(64),
+            embedding_plan_sha256: "5".repeat(64),
+            embedding_result_set_sha256: "6".repeat(64),
+        }
+    }
+
+    #[test]
+    fn bound_index_seals_and_reopens_exact_pipeline_provenance() {
+        let root = tempdir().unwrap();
+        let build = |out: &Path, pipeline_provenance| {
+            let (documents, occurrences, vectors) = fixture();
+            write_bound_scalable_fast_index_from_streams(
+                out,
+                documents.into_iter().map(Ok),
+                occurrences.into_iter().map(Ok),
+                vectors.into_iter().enumerate().map(|(ordinal, values)| {
+                    Ok(OrderedVector {
+                        vector_ordinal: ordinal as u64,
+                        values,
+                    })
+                }),
+                PipelineIndexOptions {
+                    source: SourceBinding {
+                        snapshot_sha256: "a".repeat(64),
+                        mapping_sha256: "b".repeat(64),
+                    },
+                    build_scope: BuildScope::Sample,
+                    embedding_profile: profile(),
+                    provenance: pipeline_provenance,
+                    test_only: false,
+                },
+            )
+            .unwrap()
+        };
+        let first_provenance = provenance('3');
+        let first = build(&root.path().join("first"), first_provenance.clone());
+        let second = build(&root.path().join("second"), provenance('7'));
+        assert_eq!(first.pipeline_provenance, Some(first_provenance));
+        assert_ne!(first.component_sha256, second.component_sha256);
+        assert_eq!(
+            FastIndex::open(&root.path().join("first"))
+                .unwrap()
+                .manifest,
+            first
+        );
+    }
+
+    #[test]
+    fn normal_open_refuses_test_only_index_and_diagnostic_open_accepts_it() {
+        let root = tempdir().unwrap();
+        let out = root.path().join("test-index");
+        let (documents, occurrences, vectors) = fixture();
+        let manifest = write_bound_scalable_fast_index_from_streams(
+            &out,
+            documents.into_iter().map(Ok),
+            occurrences.into_iter().map(Ok),
+            vectors.into_iter().enumerate().map(|(ordinal, values)| {
+                Ok(OrderedVector {
+                    vector_ordinal: ordinal as u64,
+                    values,
+                })
+            }),
+            PipelineIndexOptions {
+                source: SourceBinding {
+                    snapshot_sha256: "a".repeat(64),
+                    mapping_sha256: "b".repeat(64),
+                },
+                build_scope: BuildScope::Sample,
+                embedding_profile: profile(),
+                provenance: provenance('3'),
+                test_only: true,
+            },
+        )
+        .unwrap();
+        assert!(manifest.test_only);
+        assert_eq!(manifest.schema_version, "livefire.rag.fast-index/4");
+        assert!(FastIndex::open(&out).is_err());
+        assert!(
+            FastIndex::open_allow_test_only(&out)
+                .unwrap()
+                .manifest
+                .test_only
+        );
+        let report: BuildReport =
+            serde_json::from_slice(&fs::read(out.join("build-report.json")).unwrap()).unwrap();
+        assert!(report.test_only);
+        assert_eq!(report.schema_version, "livefire.rag.fast-build-report/2");
+    }
+
     #[test]
     fn direct_index_roundtrip_and_search() {
         let root = tempdir().unwrap();
@@ -2026,6 +2866,84 @@ mod tests {
             "a"
         );
     }
+
+    #[test]
+    fn bound_query_search_matches_existing_dense_and_fused_results() {
+        let (_root, out) = built_index();
+        let index = FastIndex::open(&out).unwrap();
+        let filters = SearchFilters::default();
+        let values = [1.0, 0.0];
+        let query = index.validate_query_vector(&values).unwrap();
+
+        let existing_dense = index
+            .search(SearchMode::Dense, "", Some(&values), &filters, 2)
+            .unwrap();
+        let bound_dense = index.search_dense_with_vector(&query, &filters, 2).unwrap();
+        assert_eq!(bound_dense, existing_dense);
+
+        let existing_fused = index
+            .search(
+                SearchMode::Fused,
+                "logging bypass",
+                Some(&values),
+                &filters,
+                2,
+            )
+            .unwrap();
+        let bound_fused = index
+            .search_fused_with_vector("logging bypass", &query, &filters, 2)
+            .unwrap();
+        assert_eq!(bound_fused, existing_fused);
+        assert_eq!(query.values(), values);
+        assert_eq!(
+            query.embedding_profile_sha256(),
+            index.manifest.embedding_profile.sha256
+        );
+    }
+
+    #[test]
+    fn bound_query_validates_values_and_rejects_a_different_profile() {
+        let (_root, out) = built_index();
+        let index = FastIndex::open(&out).unwrap();
+        assert!(matches!(
+            index.validate_query_vector(&[1.0]),
+            Err(IndexError::Invalid("query vector"))
+        ));
+        assert!(matches!(
+            index.validate_query_vector(&[f32::NAN, 0.0]),
+            Err(IndexError::Invalid("query vector"))
+        ));
+        assert!(matches!(
+            index.validate_query_vector(&[0.5, 0.5]),
+            Err(IndexError::Invalid("query vector normalization"))
+        ));
+
+        let query = index.validate_query_vector(&[1.0, 0.0]).unwrap();
+        let other_root = tempdir().unwrap();
+        let other_out = other_root.path().join("index");
+        let (documents, occurrences, vectors) = fixture();
+        let mut other_profile = profile();
+        other_profile.sha256 = "c".repeat(64);
+        write_fast_index(
+            &other_out,
+            SourceBinding {
+                snapshot_sha256: "a".repeat(64),
+                mapping_sha256: "b".repeat(64),
+            },
+            BuildScope::Sample,
+            &documents,
+            &occurrences,
+            &vectors,
+            other_profile,
+        )
+        .unwrap();
+        let other_index = FastIndex::open(&other_out).unwrap();
+        assert!(matches!(
+            other_index.search_dense_with_vector(&query, &SearchFilters::default(), 1),
+            Err(IndexError::Invalid("query vector profile binding"))
+        ));
+    }
+
     #[test]
     fn open_verifies_content_bound_artifacts_before_use() {
         let root = tempdir().unwrap();
@@ -2184,6 +3102,217 @@ mod tests {
         )
         .unwrap();
         (root, out)
+    }
+
+    fn write_scalable_fixture(
+        output: &Path,
+        documents: &[FastDocument],
+        occurrences: &[FastOccurrence],
+        vectors: &[Vec<f32>],
+    ) -> FastIndexManifest {
+        write_scalable_fast_index_from_streams(
+            output,
+            SourceBinding {
+                snapshot_sha256: "a".repeat(64),
+                mapping_sha256: "b".repeat(64),
+            },
+            BuildScope::Sample,
+            documents.iter().cloned().map(Ok),
+            occurrences.iter().cloned().map(Ok),
+            vectors
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(ordinal, values)| {
+                    Ok(OrderedVector {
+                        vector_ordinal: ordinal as u64,
+                        values,
+                    })
+                }),
+            profile(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scalable_lexical_v3_matches_v2_scores_order_and_occurrence_filters() {
+        let root = tempdir().unwrap();
+        let v2_path = root.path().join("v2");
+        let v3_path = root.path().join("v3");
+        let (documents, mut occurrences, vectors) = fixture();
+        occurrences[1].relation = "other".into();
+        write_fast_index(
+            &v2_path,
+            SourceBinding {
+                snapshot_sha256: "a".repeat(64),
+                mapping_sha256: "b".repeat(64),
+            },
+            BuildScope::Sample,
+            &documents,
+            &occurrences,
+            &vectors,
+            profile(),
+        )
+        .unwrap();
+        let v3_manifest = write_scalable_fixture(&v3_path, &documents, &occurrences, &vectors);
+        assert_eq!(v3_manifest.schema_version, "livefire.rag.fast-index/3");
+        assert_eq!(
+            v3_manifest.lexical.schema.as_deref(),
+            Some(SQLITE_LEXICAL_SCHEMA)
+        );
+        assert_eq!(v3_manifest.lexical.path, "lexical/index.sqlite3");
+        let v2 = FastIndex::open(&v2_path).unwrap();
+        let v3 = FastIndex::open(&v3_path).unwrap();
+        for query in [
+            "logging bypass",
+            "normal launch",
+            "PowerShell normal",
+            "absent-term",
+        ] {
+            let v2_hits = v2
+                .search(
+                    SearchMode::Lexical,
+                    query,
+                    None,
+                    &SearchFilters::default(),
+                    2,
+                )
+                .unwrap();
+            let v3_hits = v3
+                .search(
+                    SearchMode::Lexical,
+                    query,
+                    None,
+                    &SearchFilters::default(),
+                    2,
+                )
+                .unwrap();
+            assert_eq!(v3_hits, v2_hits, "{query}");
+        }
+        let filters = SearchFilters {
+            relations: BTreeSet::from(["ocsf_process_activity".into()]),
+            ..Default::default()
+        };
+        let v2_filtered = v2
+            .search(SearchMode::Lexical, "normal launch", None, &filters, 2)
+            .unwrap();
+        let v3_filtered = v3
+            .search(SearchMode::Lexical, "normal launch", None, &filters, 2)
+            .unwrap();
+        assert_eq!(v3_filtered, v2_filtered);
+        assert!(v3_filtered.is_empty());
+    }
+
+    #[test]
+    fn scalable_lexical_v3_uses_document_id_for_exact_ties_without_loading_parquet() {
+        let root = tempdir().unwrap();
+        let out = root.path().join("v3");
+        let (mut documents, occurrences, vectors) = fixture();
+        for document in &mut documents {
+            document.semantic_text = "same exact terms".into();
+        }
+        write_scalable_fixture(&out, &documents, &occurrences, &vectors);
+        let index = FastIndex::open(&out).unwrap();
+        fs::remove_file(out.join("documents.parquet")).unwrap();
+        let hits = index
+            .search(
+                SearchMode::Lexical,
+                "same",
+                None,
+                &SearchFilters::default(),
+                2,
+            )
+            .unwrap();
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.document_id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(hits[0].lexical_score, hits[1].lexical_score);
+        assert_eq!(hits[0].semantic_text, "same exact terms");
+    }
+
+    #[test]
+    fn scalable_lexical_v3_is_byte_deterministic_and_rejects_resealed_metadata_drift() {
+        let root = tempdir().unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        let (documents, occurrences, vectors) = fixture();
+        let first_manifest = write_scalable_fixture(&first, &documents, &occurrences, &vectors);
+        let second_manifest = write_scalable_fixture(&second, &documents, &occurrences, &vectors);
+        let tracked_fixture: FastIndexManifest = serde_json::from_str(include_str!(
+            "../../../rust-fixtures/index/fast-index-manifest.v3.json"
+        ))
+        .unwrap();
+        assert_eq!(first_manifest, tracked_fixture);
+        assert_eq!(
+            tracked_fixture.component_sha256,
+            manifest_component_sha256(&tracked_fixture).unwrap()
+        );
+        assert_eq!(first_manifest.lexical, second_manifest.lexical);
+        assert_eq!(
+            fs::read(first.join("lexical/index.sqlite3")).unwrap(),
+            fs::read(second.join("lexical/index.sqlite3")).unwrap()
+        );
+
+        let lexical_path = first.join("lexical/index.sqlite3");
+        let connection = Connection::open(&lexical_path).unwrap();
+        connection
+            .execute(
+                "UPDATE metadata SET value = 'wrong-schema' WHERE key = 'schema'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let mut manifest: FastIndexManifest =
+            serde_json::from_slice(&fs::read(first.join("index.json")).unwrap()).unwrap();
+        manifest.lexical.bytes = fs::metadata(&lexical_path).unwrap().len();
+        manifest.lexical.sha256 = file_sha256(&lexical_path).unwrap();
+        manifest.component_sha256 = manifest_component_sha256(&manifest).unwrap();
+        let mut bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        bytes.push(b'\n');
+        fs::write(first.join("index.json"), bytes).unwrap();
+        assert!(matches!(
+            FastIndex::open(&first),
+            Err(IndexError::Corrupt("lexical metadata binding"))
+        ));
+    }
+
+    #[test]
+    fn scalable_lexical_v3_supports_concurrent_read_only_queries() {
+        const THREADS: usize = 8;
+        let root = tempdir().unwrap();
+        let out = root.path().join("v3");
+        let (documents, occurrences, vectors) = fixture();
+        write_scalable_fixture(&out, &documents, &occurrences, &vectors);
+        let index = Arc::new(FastIndex::open(&out).unwrap());
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let joins = (0..THREADS)
+            .map(|_| {
+                let index = Arc::clone(&index);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..20 {
+                        let hit = index
+                            .search(
+                                SearchMode::Lexical,
+                                "logging bypass",
+                                None,
+                                &SearchFilters::default(),
+                                1,
+                            )
+                            .unwrap()
+                            .remove(0);
+                        assert_eq!(hit.document_id, "a");
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for join in joins {
+            join.join().unwrap();
+        }
     }
 
     #[test]
@@ -2543,16 +3672,11 @@ mod tests {
                 thread::spawn(move || {
                     let mut query = vec![0.0; DIMENSIONS];
                     query[thread_id] = 1.0;
+                    let query = index.validate_query_vector(&query).unwrap();
                     barrier.wait();
                     for _ in 0..10 {
                         let hit = index
-                            .search(
-                                SearchMode::Dense,
-                                "",
-                                Some(&query),
-                                &SearchFilters::default(),
-                                1,
-                            )
+                            .search_dense_with_vector(&query, &SearchFilters::default(), 1)
                             .unwrap()
                             .remove(0);
                         assert_eq!(hit.dense_score, Some(1.0));
@@ -2603,6 +3727,7 @@ mod tests {
                 document_count: 1,
                 bytes: 10,
                 sha256: "1".repeat(64),
+                schema: None,
                 tokenizer: "ascii_camel_lower_v1".into(),
                 k1: 1.2,
                 b: 0.75,
@@ -2615,6 +3740,8 @@ mod tests {
                 schema: OCCURRENCE_LOOKUP_SCHEMA.into(),
             },
             embedding_profile: profile(),
+            pipeline_provenance: None,
+            test_only: false,
         };
         assert_eq!(
             manifest_component_sha256(&manifest).unwrap(),

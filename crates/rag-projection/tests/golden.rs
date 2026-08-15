@@ -263,6 +263,66 @@ fn event_identity_does_not_change_semantic_group_identity() {
 }
 
 #[test]
+fn camel_case_time_and_identifier_values_do_not_split_semantic_groups() {
+    let context = context();
+    let project_row = |calendar_time: &str, host_identifier: &str, unix_time: u64| {
+        let typed_event = serde_json::json!({
+            "semantic_class": "process",
+            "ocsf": {
+                "activity_id": 99,
+                "class_uid": 1007,
+                "time": 1534762063000_u64,
+                "unmapped": {
+                    "action": "added",
+                    "calendarTime": calendar_time,
+                    "hostIdentifier": host_identifier,
+                    "unixTime": unix_time,
+                    "columns": {"cmdline": "\"awk\" --version", "path": "/bin/gawk"},
+                }
+            }
+        });
+        project(ProjectionInput {
+            relation_name: "ocsf_process_activity",
+            event_id: "event",
+            typed_event_json: &serde_json::to_string(&typed_event).unwrap(),
+            support_ref: "support:event",
+            context: &context,
+        })
+        .unwrap()
+    };
+
+    let first = project_row(
+        "Mon Aug 20 10:47:43 2018 UTC",
+        "gacrux.i-0920036c8ca91e501",
+        1_534_762_063,
+    );
+    let second = project_row("another event time", "another-host", 1_700_000_000);
+
+    assert_eq!(
+        first.occurrence.semantic_group_id,
+        second.occurrence.semantic_group_id
+    );
+    for forbidden in ["calendarTime", "hostIdentifier", "unixTime", "another-host"] {
+        assert!(
+            !first
+                .document
+                .as_ref()
+                .unwrap()
+                .semantic_text
+                .contains(forbidden)
+        );
+        assert!(
+            !second
+                .document
+                .as_ref()
+                .unwrap()
+                .semantic_text
+                .contains(forbidden)
+        );
+    }
+}
+
+#[test]
 fn every_current_typed_relation_has_a_scenario_blind_terminal_classification() {
     let context = context();
     let activity = [

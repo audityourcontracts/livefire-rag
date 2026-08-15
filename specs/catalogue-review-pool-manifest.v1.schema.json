@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/catalogue-review-pool-manifest.v1.schema.json",
+  "title": "Label-hidden catalogue review pool manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "status", "system_labels_hidden", "query_fixture_sha256", "raw_batch_run_sha256", "review_pool", "unique_query_count", "unique_candidate_count"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.catalogue-review-pool-manifest/1"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "status": {"const": "people_have_not_yet_marked_relevance"},
+    "system_labels_hidden": {"const": true},
+    "query_fixture_sha256": {"$ref": "#/$defs/sha256"},
+    "raw_batch_run_sha256": {"$ref": "#/$defs/sha256"},
+    "review_pool": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "rows"],
+      "properties": {
+        "path": {"const": "review-pool.jsonl"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "rows": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "unique_query_count": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "unique_candidate_count": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+  "$comment": "Runtime validation recomputes the self digest with component_sha256 omitted, verifies the review-pool bytes and row count, requires unique opaque candidate IDs, and closes the distinct query and candidate counts."
+}

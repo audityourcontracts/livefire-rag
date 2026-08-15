@@ -45,8 +45,9 @@ The fast experimental path now has a working OCSF fixture-to-tool vertical
 slice. It streams typed Parquet through the Rust projection, batches embeddings
 through LM Studio, writes the language-neutral fast index, queries dense,
 lexical, or fused retrieval, and opens that index in the standalone Rust JSONL
-provider. Python reads the same Parquet and `vectors.f32` artifacts for qrel
-evaluation and PCA; it is not in the build or query path.
+provider. Python reads the same Parquet and `vectors.f32` artifacts for
+evaluation against human relevance labels (often called qrels) and for PCA; it
+is not in the build or query path.
 
 With LM Studio serving the model named by
 `profiles/qwen3-embedding-8b-generic-evidence-lmstudio-q4.dev.json`, run the
@@ -119,21 +120,37 @@ provider runs.
 `--representative-sample` bounds retained documents and embedding calls per
 searchable relation, but still scans and projects the typed snapshot twice: the
 first pass selects documents and the second spills all occurrences for them.
-Do not start the next production `livefire-ocsf` build until its qualified
-release snapshot is available. The Rust provider is packaged as a content-closed
-SDK bundle and tested through the SDK lifecycle with a source-bound, explicitly
-local-test admission receipt. Returned candidates are OCSF hydration handoffs,
-not evidence: an authoritative OCSF host must hydrate and verify them before use.
-Production authority admission, a concrete Livefire desktop/server composition
-root, and a Wasmtime guest remain separate integration gates. The exact contracts,
-implemented status, and remaining gaps are in
+Do not start the next released `livefire-ocsf` build until its verified source
+snapshot is available. The Rust provider is packaged with every file and digest
+it needs, then exercised through the SDK as an explicitly local test. Search
+returns pointers to OCSF events, not verified evidence: the released OCSF query
+service must resolve and check those pointers before their fields are used as
+facts. A production host must still enforce file, network, memory, and process
+limits, and Livefire must still connect its desktop or server runner to this
+provider. Wasmtime guest support is also separate future work. The exact
+contracts, implemented status, and remaining gaps are in
 [`docs/rust-experimental-rag-spec.md`](docs/rust-experimental-rag-spec.md).
 The next large-index design separates parallel Rust preparation, replaceable
 local or cloud embedding, and streaming final assembly. Its implementation
 contract and staged test plan are in
 [`docs/portable-embedding-pipeline.md`](docs/portable-embedding-pipeline.md).
-The execution plan now proves and measures LM Studio locally before any Runpod
-work; see
+The local scale path is now measured through a 10,000-document LM Studio build,
+version-3 query, recovery checks, and 2,048- and 1,024-dimensional comparison
+indexes. The measured non-network target is 422,566 documents and 5,325,200
+event references. All 16 M41 datasets in that scope are prepared, verified, and
+planned for 92,466,199 exact tokens. Twelve datasets are real embedded and
+indexed: the ten small datasets plus API and HTTP activity, for 23,636
+documents and 165,186 event references. Their sealed catalogue completed 45
+searches across 15 queries with 15 model calls and produced a label-hidden pool
+of 690 unique candidates whose 1,275 unique event pointers were checked against
+typed Parquet. The four largest datasets
+also passed deterministic test-vector assembly as explicitly test-only indexes,
+covering another 398,930 documents and 5,160,014 event references. People still
+need to review pooled search results and mark which are relevant. Returned
+event references still need confirmation through the released OCSF query
+service. A freshly packaged provider also passed the complete local SDK
+handshake/open/search/health/close lifecycle against the HTTP index.
+Runpod is deferred and is not part of the current goal. See
 [`docs/local-first-embedding-scale-plan.md`](docs/local-first-embedding-scale-plan.md).
 
 The first modular dataset path is implemented. For example, one relation can be
@@ -143,11 +160,17 @@ prepared, embedded, assembled, and queried without rebuilding any other index:
 cargo run -p rag-builder --bin rag -- prepare \
   --snapshot SNAPSHOT --dataset-id DATASET --relation ocsf_detection_finding \
   --out PREPARED
+cargo run -p rag-builder --bin rag -- verify-prepared --prepared PREPARED
 cargo run -p rag-builder --bin rag -- plan-embeddings \
-  --prepared PREPARED --embedding-profile PROFILE --out PLAN
+  --prepared PREPARED --embedding-profile PROFILE \
+  --tokenizer-json TOKENIZER_JSON --tokenizer-ref TOKENIZER_REF \
+  --maximum-task-tokens 262144 --maximum-task-documents 2048 --out PLAN
 cargo run -p rag-builder --bin rag -- embed \
   --prepared PREPARED --plan PLAN --embedding-profile PROFILE \
   --embedding-endpoint http://127.0.0.1:1234 --out EMBEDDINGS
+cargo run -p rag-builder --bin rag -- finalize-embeddings \
+  --prepared PREPARED --plan PLAN --embedding-profile PROFILE \
+  --embeddings EMBEDDINGS
 cargo run -p rag-builder --bin rag -- assemble \
   --prepared PREPARED --plan PLAN --embeddings EMBEDDINGS \
   --embedding-profile PROFILE --out INDEX
@@ -156,12 +179,26 @@ cargo run -p rag-builder --bin rag -- query \
   --embedding-endpoint http://127.0.0.1:1234
 ```
 
-Occurrence rows and vectors stream in bounded chunks. Preparation currently
-keeps the deduplicated document table in memory and refuses more than 600,000
-documents; external document merging is the next scale milestone. LM Studio is
-the only implemented executor in this branch. Runpod support will consume the
-same prepared Parquet and produce the same binary vector shards rather than
-changing the index format.
+`plan-embeddings` now emits only the exact-token, token-balanced v2 plan. A v1
+plan is rejected with a migration message instead of being interpreted using
+the new rules. Several `embed` processes may write disjoint task ranges to the
+same output. Each publishes one vector part, a content-bound receipt, and a
+sanitized timing report. `finalize-embeddings` is deliberately separate: it
+refuses partial or extra output and writes `manifest.json` only after every
+planned task is present and valid.
+Planning and embedding verify the prepared manifest and document files, but do
+not read occurrence files that those stages cannot use. `verify-prepared` and
+`assemble` perform the full check, including every occurrence file.
+For larger plans, give separate workers non-overlapping ranges such as
+`--task-range 0..8` and `--task-range 8..16`; each range is checked against the
+actual number of tasks before any model request.
+
+Occurrence rows and vectors stream in bounded chunks. Preparation writes
+bounded sorted document runs and merges them by document ID, so the former
+600,000-document in-memory limit is removed. Parallel Arrow preparation and
+streaming version-3 SQLite assembly are implemented. LM Studio is the only
+implemented model executor in this branch; the documented Runpod design is
+future work and would reuse the same prepared Parquet and binary vector format.
 
 ## Implemented standalone POC commands
 
@@ -250,8 +287,9 @@ absence claim. Pilot promotion does not accept a derivation overlay.
 search, runs every predeclared query through lexical, dense, and fused retrieval,
 and seals every top-N output plus fixed pairwise ranking comparisons. It verifies
 partial sample scope and exact occurrence-pointer closure. Expected relation
-families are reported only as answer-neutral diagnostics; without adjudicated
-qrels the report makes no retrieval-quality claim. PCA/kNN corpus geometry is a
+families are reported only as answer-neutral diagnostics. Until people review
+the pooled results and mark which are relevant, the report makes no
+retrieval-quality claim. PCA/kNN corpus geometry is a
 separate index-only analysis so query metadata cannot influence it; see
 [`docs/evidence-pilot-evaluation.md`](docs/evidence-pilot-evaluation.md).
 

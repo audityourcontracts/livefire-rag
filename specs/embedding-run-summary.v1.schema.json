@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-run-summary.v1.schema.json",
+  "title": "Final local embedding run summary v1",
+  "description": "The closed summary of every task in one local embedding plan. A progress message uses a different schema and is not a completed run summary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "status", "source_snapshot_sha256", "prepared_corpus_sha256",
+    "plan_sha256", "embedding_profile_sha256", "tokenizer_sha256", "git", "machine",
+    "lm_studio", "resource_usage", "artifact_sizes", "tasks", "documents", "tokens",
+    "unique_input_text_bytes", "sent_input_text_bytes", "vector_payload_bytes",
+    "vector_shard_bytes", "transport_bytes", "requests", "retries",
+    "execution_reports_complete", "calendar_span_micros", "wall_time_micros", "task_elapsed_micros_sum",
+    "request_elapsed_micros", "retry_backoff_micros", "peak_in_flight",
+    "documents_per_second", "tokens_per_second", "request_latency_micros",
+    "length_bucket_throughput"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.embedding-run-summary/1"},
+    "status": {"const": "finalized"},
+    "source_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "prepared_corpus_sha256": {"$ref": "#/$defs/sha256"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "embedding_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "tokenizer_sha256": {"$ref": "#/$defs/sha256"},
+    "git": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/git"},
+    "machine": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/machine"},
+    "lm_studio": {"$ref": "#/$defs/lm_studio_summary"},
+    "resource_usage": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/resource_usage"},
+    "artifact_sizes": {"$ref": "#/$defs/artifact_sizes"},
+    "tasks": {"type": "integer", "minimum": 1},
+    "documents": {"type": "integer", "minimum": 1},
+    "tokens": {"type": "integer", "minimum": 1},
+    "unique_input_text_bytes": {"$ref": "#/$defs/count"},
+    "sent_input_text_bytes": {"$ref": "#/$defs/nullable_count"},
+    "vector_payload_bytes": {"$ref": "#/$defs/count"},
+    "vector_shard_bytes": {"$ref": "#/$defs/count"},
+    "transport_bytes": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/transport_bytes"},
+    "requests": {"$ref": "#/$defs/count"},
+    "retries": {"$ref": "#/$defs/count"},
+    "execution_reports_complete": {"type": "boolean"},
+    "calendar_span_micros": {"$ref": "#/$defs/nullable_count"},
+    "wall_time_micros": {"$ref": "#/$defs/nullable_count"},
+    "task_elapsed_micros_sum": {"$ref": "#/$defs/nullable_count"},
+    "request_elapsed_micros": {"$ref": "#/$defs/nullable_count"},
+    "retry_backoff_micros": {"$ref": "#/$defs/nullable_count"},
+    "peak_in_flight": {"$ref": "#/$defs/nullable_count"},
+    "documents_per_second": {"$ref": "#/$defs/nullable_rate"},
+    "tokens_per_second": {"$ref": "#/$defs/nullable_rate"},
+    "request_latency_micros": {"$ref": "#/$defs/latency"},
+    "length_bucket_throughput": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/length_bucket"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "nullable_count": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
+    "nullable_rate": {"type": ["number", "null"], "minimum": 0},
+    "artifact_sizes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "prepared_corpus_bytes", "embedding_plan_bytes", "embedding_profile_bytes", "vector_shards_bytes", "receipts_bytes", "task_reports_bytes"],
+      "properties": {
+        "status": {"enum": ["observed", "partial", "not_measured", "unavailable"]},
+        "prepared_corpus_bytes": {"$ref": "#/$defs/nullable_count"},
+        "embedding_plan_bytes": {"$ref": "#/$defs/nullable_count"},
+        "embedding_profile_bytes": {"$ref": "#/$defs/nullable_count"},
+        "vector_shards_bytes": {"$ref": "#/$defs/nullable_count"},
+        "receipts_bytes": {"$ref": "#/$defs/nullable_count"},
+        "task_reports_bytes": {"$ref": "#/$defs/nullable_count"}
+      }
+    },
+    "lm_studio_summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "version", "configured_model", "returned_model", "endpoint_kind", "batch_size", "requests_in_flight", "cold_load_micros"],
+      "properties": {
+        "status": {"enum": ["observed", "partial", "caller_supplied", "not_measured", "unavailable"]},
+        "version": {"type": ["string", "null"], "minLength": 1},
+        "configured_model": {"type": "string", "minLength": 1},
+        "returned_model": {"type": "string", "minLength": 1},
+        "endpoint_kind": {"const": "local_openai_compatible"},
+        "batch_size": {"type": ["integer", "null"], "minimum": 1},
+        "requests_in_flight": {"type": ["integer", "null"], "minimum": 1},
+        "cold_load_micros": {"$ref": "#/$defs/nullable_count"}
+      }
+    },
+    "latency": {
+      "type": "object", "additionalProperties": false,
+      "required": ["p50", "p95", "samples"],
+      "properties": {
+        "p50": {"$ref": "#/$defs/nullable_count"},
+        "p95": {"$ref": "#/$defs/nullable_count"},
+        "samples": {"$ref": "#/$defs/count"}
+      }
+    },
+    "length_bucket": {
+      "type": "object", "additionalProperties": false,
+      "required": ["basis", "minimum_tokens", "maximum_tokens", "documents", "tokens", "shared_wall_time_micros", "documents_per_second", "tokens_per_second"],
+      "properties": {
+        "basis": {"const": "exact_model_input_tokens"},
+        "minimum_tokens": {"type": "integer", "minimum": 1},
+        "maximum_tokens": {"type": ["integer", "null"], "minimum": 1},
+        "documents": {"$ref": "#/$defs/count"},
+        "tokens": {"$ref": "#/$defs/count"},
+        "shared_wall_time_micros": {"$ref": "#/$defs/nullable_count"},
+        "documents_per_second": {"$ref": "#/$defs/nullable_rate"},
+        "tokens_per_second": {"$ref": "#/$defs/nullable_rate"}
+      }
+    }
+  },
+  "$comment": "calendar_span_micros covers the earliest task start through the latest finish and can include pauses. wall_time_micros is the union of task execution intervals, so pauses and overlapping workers are each counted correctly. Length buckets divide their document and token totals by that shared active time; they do not claim isolated per-bucket timings. The runtime additionally checks full task coverage and aggregate closure against the bound embedding plan and receipts."
+}

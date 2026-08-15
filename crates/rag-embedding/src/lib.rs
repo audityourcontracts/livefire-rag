@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::{Host, Url};
 
+pub use rag_contracts::{MAX_DOCUMENT_FORMAT_BYTES, MAX_FORMATTED_DOCUMENT_BYTES};
+
 #[derive(Debug, Error)]
 pub enum EmbeddingError {
     #[error("embedding cache failed: {0}")]
@@ -43,7 +45,7 @@ impl EmbeddingError {
                 if error.is_timeout()
                     || error.is_connect()
                     || error.status().is_some_and(|status| {
-                        matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
+                        matches!(status.as_u16(), 408 | 429) || status.is_server_error()
                     }) =>
             {
                 RetryClass::Temporary
@@ -65,16 +67,21 @@ mod task;
 pub use shard::{
     AtomicFilePublication, AtomicPublishOutcome, EMBEDDING_SHARD_HEADER_BYTES,
     EMBEDDING_SHARD_MAGIC, EmbeddingShard, EmbeddingShardExpectation, EmbeddingShardMetadata,
-    EmbeddingShardVectorReader, EmbeddingShardWriter, decode_sha256_hex,
+    EmbeddingShardVectorReader, EmbeddingShardWriter, EmbeddingTaskPartPreparation,
+    VerifiedEmbeddingTaskPart, complete_embedding_task_part_recovery, decode_sha256_hex,
+    prepare_embedding_task_part, restore_quarantined_embedding_task_part,
+    verify_embedding_task_part,
 };
-pub use task::{EmbeddingTaskOptions, EmbeddingTaskStats, RetryPolicy, execute_embedding_task};
+pub use task::{
+    EmbeddingAttemptOutcome, EmbeddingAttemptReport, EmbeddingBatchReport, EmbeddingTaskOptions,
+    EmbeddingTaskReport, EmbeddingTaskStats, RetryPolicy, TaskSelection, execute_embedding_task,
+    execute_embedding_task_reported,
+};
 
 pub const MAX_QUERY_BYTES: usize = 8_192;
 pub const MAX_QUERY_INSTRUCTION_BYTES: usize = 8_192;
 pub const MAX_QUERY_COMPOSITION_BYTES: usize = 1_024;
 pub const MAX_COMPOSED_QUERY_BYTES: usize = 16_384;
-pub const MAX_DOCUMENT_FORMAT_BYTES: usize = 4_096;
-pub const MAX_FORMATTED_DOCUMENT_BYTES: usize = 1_048_576;
 
 /// Parse and canonicalize the only network endpoint permitted by the local
 /// embedding contract. Keeping this policy beside the HTTP client prevents a
@@ -138,10 +145,25 @@ pub struct EmbeddingProfile {
     pub model: String,
     pub dimensions: u32,
     pub normalization: String,
+    /// A deterministic post-processing step applied to the model's full
+    /// output. Reduced profiles keep their own identity and name the exact
+    /// parent profile whose vectors they were derived from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_derivation: Option<VectorDerivation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_composition: Option<String>,
+}
+
+pub const PREFIX_L2_NORMALIZE_V1: &str = "prefix_then_l2_normalize_v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VectorDerivation {
+    pub parent_embedding_profile_sha256: String,
+    pub parent_dimensions: u32,
+    pub transformation: String,
 }
 
 /// Read either the compact fast-index profile or the existing bound embedding
@@ -189,6 +211,12 @@ pub fn parse_embedding_profile(bytes: &[u8]) -> Result<EmbeddingProfile> {
             .and_then(serde_json::Value::as_str)
             .ok_or(EmbeddingError::Invalid("normalization"))?
             .to_owned(),
+        vector_derivation: object
+            .get("vector_derivation")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| EmbeddingError::Invalid("vector derivation"))?,
         query_instruction: object
             .get("query_instruction")
             .and_then(serde_json::Value::as_str)
@@ -235,6 +263,19 @@ pub fn validate_embedding_profile(profile: &EmbeddingProfile) -> Result<()> {
     {
         return Err(EmbeddingError::Invalid("embedding profile fields"));
     }
+    if let Some(derivation) = &profile.vector_derivation
+        && (derivation.transformation != PREFIX_L2_NORMALIZE_V1
+            || derivation.parent_dimensions != 4_096
+            || !matches!(profile.dimensions, 1_024 | 2_048)
+            || profile.normalization != "l2"
+            || derivation.parent_embedding_profile_sha256.len() != 64
+            || !derivation
+                .parent_embedding_profile_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    {
+        return Err(EmbeddingError::Invalid("vector derivation"));
+    }
     match (&profile.query_instruction, &profile.query_composition) {
         (None, None) => {}
         (Some(instruction), Some(composition)) => {
@@ -264,6 +305,45 @@ pub fn validate_embedding_profile(profile: &EmbeddingProfile) -> Result<()> {
         _ => return Err(EmbeddingError::Invalid("embedding profile fields")),
     }
     Ok(())
+}
+
+/// Convert the model's response into the vector represented by `profile`.
+/// Normal profiles are only validated. A reduced profile takes the declared
+/// prefix and normalizes it again, because truncation changes its length.
+pub fn adapt_model_vector(profile: &EmbeddingProfile, vector: Vec<f32>) -> Result<Vec<f32>> {
+    validate_embedding_profile(profile)?;
+    let Some(derivation) = &profile.vector_derivation else {
+        validate_vector(
+            &vector,
+            usize::try_from(profile.dimensions)
+                .map_err(|_| EmbeddingError::Invalid("profile dimensions"))?,
+            &profile.normalization,
+        )?;
+        return Ok(vector);
+    };
+    if vector.len()
+        != usize::try_from(derivation.parent_dimensions)
+            .map_err(|_| EmbeddingError::Invalid("parent vector dimensions"))?
+        || vector.iter().any(|value| !value.is_finite())
+    {
+        return Err(EmbeddingError::Invalid("parent vector dimensions"));
+    }
+    let target = usize::try_from(profile.dimensions)
+        .map_err(|_| EmbeddingError::Invalid("profile dimensions"))?;
+    let mut reduced = vector[..target].to_vec();
+    let squared_norm = reduced
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>();
+    if !squared_norm.is_finite() || squared_norm <= f64::EPSILON {
+        return Err(EmbeddingError::Invalid("reduced vector norm"));
+    }
+    let norm = squared_norm.sqrt();
+    for value in &mut reduced {
+        *value = (f64::from(*value) / norm) as f32;
+    }
+    validate_vector(&reduced, target, "l2")?;
+    Ok(reduced)
 }
 
 pub fn try_compose_query(profile: &EmbeddingProfile, query: &str) -> Result<String> {
@@ -310,27 +390,8 @@ pub fn try_compose_query(profile: &EmbeddingProfile, query: &str) -> Result<Stri
 /// format is deliberately closed to one placeholder so a worker cannot
 /// silently interpret templates differently.
 pub fn format_document_input(document_format: &str, semantic_text: &str) -> Result<String> {
-    const TOKEN: &str = "{semantic_text}";
-    if semantic_text.is_empty()
-        || document_format.is_empty()
-        || document_format.len() > MAX_DOCUMENT_FORMAT_BYTES
-        || document_format.matches(TOKEN).count() != 1
-    {
-        return Err(EmbeddingError::Invalid("document input format"));
-    }
-    let remaining = document_format.replace(TOKEN, "");
-    if remaining.contains('{') || remaining.contains('}') {
-        return Err(EmbeddingError::Invalid("document input placeholder"));
-    }
-    let size = document_format
-        .len()
-        .checked_sub(TOKEN.len())
-        .and_then(|fixed| fixed.checked_add(semantic_text.len()))
-        .ok_or(EmbeddingError::Invalid("formatted document size"))?;
-    if size > MAX_FORMATTED_DOCUMENT_BYTES {
-        return Err(EmbeddingError::Invalid("formatted document size"));
-    }
-    Ok(document_format.replace(TOKEN, semantic_text))
+    rag_contracts::format_document_input(document_format, semantic_text)
+        .map_err(|_| EmbeddingError::Invalid("document input format"))
 }
 
 #[derive(Debug, Clone)]
@@ -773,9 +834,46 @@ mod tests {
             model: "fake".into(),
             dimensions: 2,
             normalization: "l2".into(),
+            vector_derivation: None,
             query_instruction: None,
             query_composition: None,
         }
+    }
+
+    #[test]
+    fn prefix_derivation_is_normalized_ordered_and_deterministic() {
+        let mut reduced = profile();
+        reduced.dimensions = 1_024;
+        reduced.vector_derivation = Some(VectorDerivation {
+            parent_embedding_profile_sha256: "b".repeat(64),
+            parent_dimensions: 4_096,
+            transformation: PREFIX_L2_NORMALIZE_V1.into(),
+        });
+        let mut first_parent = vec![0.0; 4_096];
+        first_parent[0] = 3.0;
+        first_parent[1] = 4.0;
+        first_parent[2_048] = 99.0;
+        let mut second_parent = first_parent.clone();
+        second_parent[2_048] = -77.0;
+        let first = adapt_model_vector(&reduced, first_parent).unwrap();
+        let second = adapt_model_vector(&reduced, second_parent).unwrap();
+        assert_eq!(&first[..2], &[0.6, 0.8]);
+        assert_eq!(first.len(), 1_024);
+        assert_eq!(first, second);
+        validate_vector(&first, 1_024, "l2").unwrap();
+    }
+
+    #[test]
+    fn prefix_derivation_refuses_wrong_parent_size_and_zero_prefix() {
+        let mut reduced = profile();
+        reduced.dimensions = 1_024;
+        reduced.vector_derivation = Some(VectorDerivation {
+            parent_embedding_profile_sha256: "b".repeat(64),
+            parent_dimensions: 4_096,
+            transformation: PREFIX_L2_NORMALIZE_V1.into(),
+        });
+        assert!(adapt_model_vector(&reduced, vec![1.0, 0.0]).is_err());
+        assert!(adapt_model_vector(&reduced, vec![0.0; 4_096]).is_err());
     }
 
     #[tokio::test]
@@ -922,6 +1020,41 @@ mod tests {
             assert!(format_document_input(invalid, "text").is_err());
         }
         assert!(format_document_input("{semantic_text}", "").is_err());
+    }
+
+    #[test]
+    fn planner_and_executor_document_formatters_have_identical_results() {
+        let exact_limit = "x".repeat(MAX_FORMATTED_DOCUMENT_BYTES);
+        let over_limit = "x".repeat(MAX_FORMATTED_DOCUMENT_BYTES + 1);
+        let maximum_format = format!(
+            "{}{semantic_text}",
+            "x".repeat(MAX_DOCUMENT_FORMAT_BYTES - "{semantic_text}".len()),
+            semantic_text = "{semantic_text}",
+        );
+        let overlong_format = format!("x{maximum_format}");
+        let fixtures = [
+            ("{semantic_text}", "text"),
+            ("passage: {semantic_text}", "PowerShell download"),
+            ("prefix {semantic_text} suffix", "é 👩‍💻"),
+            ("no placeholder", "text"),
+            ("{semantic_text} {semantic_text}", "text"),
+            ("{semantic_text} {unknown}", "text"),
+            ("left { {semantic_text}", "text"),
+            ("{semantic_text} right }", "text"),
+            ("{semantic_text}", ""),
+            (maximum_format.as_str(), "x"),
+            (overlong_format.as_str(), "x"),
+            ("{semantic_text}", exact_limit.as_str()),
+            ("{semantic_text}", over_limit.as_str()),
+        ];
+        for (format, text) in fixtures {
+            let executor = format_document_input(format, text);
+            let planner = rag_pipeline::format_document_input_exact(format, text);
+            assert_eq!(executor.is_ok(), planner.is_ok(), "format={format:?}");
+            if let (Ok(executor), Ok(planner)) = (executor, planner) {
+                assert_eq!(executor, planner, "format={format:?}");
+            }
+        }
     }
 
     #[test]

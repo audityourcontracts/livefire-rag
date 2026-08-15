@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-task-run-report.v1.schema.json",
+  "title": "Local embedding task run report v1",
+  "description": "A content-free report for one token-balanced embedding task. Unknown host and transport measurements are represented by null values and an explicit status.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "plan_sha256", "source_snapshot_sha256",
+    "prepared_corpus_sha256", "embedding_profile_sha256", "tokenizer_sha256",
+    "task_id", "task_index", "ordinal_start", "ordinal_end",
+    "document_count", "token_count", "receipt_sha256", "outcome",
+    "started_unix_ms", "finished_unix_ms", "git", "machine", "lm_studio",
+    "transport_bytes", "resource_usage", "artifact_sizes", "execution"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.embedding-task-run-report/1"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "source_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "prepared_corpus_sha256": {"$ref": "#/$defs/sha256"},
+    "embedding_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "tokenizer_sha256": {"$ref": "#/$defs/sha256"},
+    "task_id": {"type": "string", "minLength": 1},
+    "task_index": {"$ref": "#/$defs/count"},
+    "ordinal_start": {"$ref": "#/$defs/count"},
+    "ordinal_end": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "document_count": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "token_count": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "outcome": {"enum": ["executed", "reused"]},
+    "started_unix_ms": {"$ref": "#/$defs/nullable_count"},
+    "finished_unix_ms": {"$ref": "#/$defs/nullable_count"},
+    "git": {"$ref": "#/$defs/git"},
+    "machine": {"$ref": "#/$defs/machine"},
+    "lm_studio": {"$ref": "#/$defs/lm_studio"},
+    "transport_bytes": {"$ref": "#/$defs/transport_bytes"},
+    "resource_usage": {"$ref": "#/$defs/resource_usage"},
+    "artifact_sizes": {"$ref": "#/$defs/task_artifact_sizes"},
+    "execution": {
+      "oneOf": [
+        {"$ref": "#/$defs/execution"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "nullable_count": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
+    "status": {"enum": ["observed", "partial", "caller_supplied", "not_measured", "unavailable"]},
+    "git": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "commit", "working_tree_dirty"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+        "working_tree_dirty": {"type": ["boolean", "null"]}
+      }
+    },
+    "machine": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "operating_system", "operating_system_version", "architecture", "cpu_model", "logical_cpu_count", "ram_bytes"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "operating_system": {"type": ["string", "null"], "minLength": 1},
+        "operating_system_version": {"type": ["string", "null"], "minLength": 1},
+        "architecture": {"type": ["string", "null"], "minLength": 1},
+        "cpu_model": {"type": ["string", "null"], "minLength": 1},
+        "logical_cpu_count": {"type": ["integer", "null"], "minimum": 1},
+        "ram_bytes": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "lm_studio": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "version", "configured_model", "returned_model", "endpoint_kind", "batch_size", "requests_in_flight", "cold_load_micros"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "version": {"type": ["string", "null"], "minLength": 1},
+        "configured_model": {"type": "string", "minLength": 1},
+        "returned_model": {"type": "string", "minLength": 1},
+        "endpoint_kind": {"const": "local_openai_compatible"},
+        "batch_size": {"type": "integer", "minimum": 1},
+        "requests_in_flight": {"type": "integer", "minimum": 1},
+        "cold_load_micros": {"$ref": "#/$defs/nullable_count"}
+      }
+    },
+    "transport_bytes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "request_body_bytes", "response_body_bytes", "submitted_text_bytes", "decoded_vector_bytes"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "request_body_bytes": {"$ref": "#/$defs/nullable_count"},
+        "response_body_bytes": {"$ref": "#/$defs/nullable_count"},
+        "submitted_text_bytes": {"$ref": "#/$defs/nullable_count"},
+        "decoded_vector_bytes": {"$ref": "#/$defs/nullable_count"}
+      }
+    },
+    "resource_usage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "rust_peak_rss_bytes", "lm_studio_peak_rss_bytes"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "rust_peak_rss_bytes": {"$ref": "#/$defs/nullable_count"},
+        "lm_studio_peak_rss_bytes": {"$ref": "#/$defs/nullable_count"}
+      }
+    },
+    "task_artifact_sizes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "vector_shard_bytes", "receipt_bytes", "task_report_bytes"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "vector_shard_bytes": {"$ref": "#/$defs/nullable_count"},
+        "receipt_bytes": {"$ref": "#/$defs/nullable_count"},
+        "task_report_bytes": {"$ref": "#/$defs/nullable_count"}
+      }
+    },
+    "attempt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["attempt", "input_rows", "input_text_bytes", "vector_bytes", "elapsed_micros", "backoff_micros", "outcome"],
+      "properties": {
+        "attempt": {"type": "integer", "minimum": 1},
+        "input_rows": {"type": "integer", "minimum": 1},
+        "input_text_bytes": {"$ref": "#/$defs/count"},
+        "vector_bytes": {"$ref": "#/$defs/count"},
+        "elapsed_micros": {"$ref": "#/$defs/count"},
+        "backoff_micros": {"$ref": "#/$defs/count"},
+        "outcome": {"enum": ["success", "temporary_failure"]}
+      }
+    },
+    "batch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["batch_ordinal", "row_start", "row_end", "input_text_bytes", "vector_bytes", "elapsed_micros", "backoff_micros", "attempts"],
+      "properties": {
+        "batch_ordinal": {"$ref": "#/$defs/count"},
+        "row_start": {"$ref": "#/$defs/count"},
+        "row_end": {"type": "integer", "minimum": 1},
+        "input_text_bytes": {"$ref": "#/$defs/count"},
+        "vector_bytes": {"$ref": "#/$defs/count"},
+        "elapsed_micros": {"$ref": "#/$defs/count"},
+        "backoff_micros": {"$ref": "#/$defs/count"},
+        "attempts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/attempt"}}
+      }
+    },
+    "execution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rows", "batches", "attempts", "retries", "unique_input_text_bytes", "sent_input_text_bytes", "vector_bytes", "shard_bytes", "elapsed_micros", "request_elapsed_micros", "retry_backoff_micros", "peak_in_flight", "batch_reports"],
+      "properties": {
+        "rows": {"type": "integer", "minimum": 1},
+        "batches": {"type": "integer", "minimum": 1},
+        "attempts": {"type": "integer", "minimum": 1},
+        "retries": {"$ref": "#/$defs/count"},
+        "unique_input_text_bytes": {"$ref": "#/$defs/count"},
+        "sent_input_text_bytes": {"$ref": "#/$defs/count"},
+        "vector_bytes": {"$ref": "#/$defs/count"},
+        "shard_bytes": {"$ref": "#/$defs/count"},
+        "elapsed_micros": {"$ref": "#/$defs/count"},
+        "request_elapsed_micros": {"$ref": "#/$defs/count"},
+        "retry_backoff_micros": {"$ref": "#/$defs/count"},
+        "peak_in_flight": {"type": "integer", "minimum": 1},
+        "batch_reports": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/batch"}}
+      }
+    }
+  },
+  "$comment": "The runtime additionally checks task ordinal and document-count closure, plan/profile/tokenizer bindings, receipt bindings, timestamp pairing and ordering, and execution totals. Reports contain no input text, endpoint URL, HTTP body, or backend error message."
+}

@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+rag-contracts.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
@@ -15,6 +16,7 @@ serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
 
 [dev-dependencies]
 tempfile.workspace = true

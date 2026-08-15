@@ -115,6 +115,11 @@ def prepare_evidence_loadout(
             "evidence-search.input.v1.schema.json", query, sdk_specs=sdk_specs
         )
     _bundle_identity(bundle_root)
+    fast_manifest_path = index_root / "index.json"
+    if fast_manifest_path.is_file():
+        fast_manifest = _load_object(fast_manifest_path, "fast index manifest")
+        if fast_manifest.get("test_only") is True:
+            raise ValueError("test-only indexes cannot be prepared as provider loadouts")
     with EvidenceIndex.open(index_root, sdk_specs=sdk_specs) as index:
         manifest = index.manifest
     pilot_sample = manifest.get("pilot_sample")

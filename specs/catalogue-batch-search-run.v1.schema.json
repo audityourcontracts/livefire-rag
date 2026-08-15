@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/catalogue-batch-search-run.v1.schema.json",
+  "title": "Atomic catalogue batch-search run manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "status", "catalogue_sha256", "embedding_profile", "requests", "results", "request_count", "result_count", "modes", "top_n_values", "relation_filters", "request_shapes", "model", "query_vectors", "rank_merge"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.catalogue-batch-search-run/1"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "status": {"const": "complete"},
+    "catalogue_sha256": {"$ref": "#/$defs/sha256"},
+    "embedding_profile": {"$ref": "portable-component-ref.v1.schema.json"},
+    "requests": {"$ref": "#/$defs/requests_file"},
+    "results": {"$ref": "#/$defs/results_file"},
+    "request_count": {"$ref": "#/$defs/positive_count"},
+    "result_count": {"$ref": "#/$defs/positive_count"},
+    "modes": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"enum": ["dense", "lexical", "fused"]}},
+    "top_n_values": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "integer", "minimum": 1, "maximum": 100}},
+    "relation_filters": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {
+        "type": "array", "maxItems": 64, "uniqueItems": true,
+        "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"}
+      }
+    },
+    "request_shapes": {"type": "array", "minItems": 1, "maxItems": 10000, "uniqueItems": true, "items": {"$ref": "#/$defs/request_shape"}},
+    "model": {"$ref": "#/$defs/model"},
+    "query_vectors": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/query_vector"}},
+    "rank_merge": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy", "k"],
+      "properties": {"policy": {"const": "reciprocal_rank_fusion_v1"}, "k": {"const": 60}}
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "model": {"properties": {"status": {"const": "used"}, "calls": {"minimum": 1}, "returned_model": {"type": "string", "minLength": 1}}},
+        "query_vectors": {"minItems": 1}
+      }
+    },
+    {
+      "properties": {
+        "model": {"properties": {"status": {"const": "not_used_all_lexical"}, "calls": {"const": 0}, "returned_model": {"type": "null"}}},
+        "query_vectors": {"maxItems": 0}
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "positive_count": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "file": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "rows"],
+      "properties": {
+        "path": {"type": "string"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "rows": {"$ref": "#/$defs/positive_count"}
+      }
+    },
+    "requests_file": {"allOf": [{"$ref": "#/$defs/file"}, {"properties": {"path": {"const": "requests.jsonl"}}}]},
+    "results_file": {"allOf": [{"$ref": "#/$defs/file"}, {"properties": {"path": {"const": "results.jsonl"}}}]},
+    "model": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "configured_model", "returned_model", "calls"],
+      "properties": {
+        "status": {"enum": ["used", "not_used_all_lexical"]},
+        "configured_model": {"type": "string", "minLength": 1},
+        "returned_model": {"type": ["string", "null"]},
+        "calls": {"type": "integer", "minimum": 0, "maximum": 10000}
+      }
+    },
+    "query_vector": {
+      "type": "object", "additionalProperties": false,
+      "required": ["composed_query_sha256", "vector_sha256", "dimensions"],
+      "properties": {
+        "composed_query_sha256": {"$ref": "#/$defs/sha256"},
+        "vector_sha256": {"$ref": "#/$defs/sha256"},
+        "dimensions": {"type": "integer", "minimum": 1}
+      }
+    },
+    "request_shape": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "top_n", "relations", "rows"],
+      "properties": {
+        "mode": {"enum": ["dense", "lexical", "fused"]},
+        "top_n": {"type": "integer", "minimum": 1, "maximum": 100},
+        "relations": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"}
+        },
+        "rows": {"$ref": "#/$defs/positive_count"}
+      }
+    }
+  },
+  "$comment": "The bound requests.jsonl and results.jsonl files must terminate every row, including each final row, with an LF byte (0A). Runtime validation recomputes the RFC 8785 component digest with component_sha256 omitted; verifies exact file SHA/bytes/rows and request/result order closure; checks sorted aggregate sets; requires calls to equal unique composed semantic queries; and requires returned_model to match configured_model whenever the model was used."
+}

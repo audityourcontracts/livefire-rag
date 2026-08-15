@@ -1,0 +1,1 @@
+{"schema_version":"livefire.rag.fast-lexical-profile/2","media_type":"application/vnd.sqlite3","algorithm":"bm25","tokenizer":"ascii_camel_lower_v1","document_binding":"document_id","storage_schema":"sqlite-inverted-bm25-v1","score_parity":"livefire.rag.fast-lexical-profile/1"}

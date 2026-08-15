@@ -18,6 +18,34 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class EvidenceProjectionTest(unittest.TestCase):
+    def test_rust_golden_fixture_matches_python_projection(self) -> None:
+        fixture = json.loads(
+            (ROOT / "rust-fixtures" / "projection" / "golden.v1.json").read_text()
+        )
+        for case in fixture["cases"]:
+            with self.subTest(case=case["name"]):
+                projected = project_event(
+                    case["relation_name"],
+                    case["event_id"],
+                    case["typed_event"],
+                    case["support_ref"],
+                )
+                expected = case["expected"]
+                self.assertEqual(projected["document_kind"], expected["document_kind"])
+                self.assertEqual(
+                    projected["semantic_group_sha256"],
+                    expected["semantic_group_sha256"],
+                )
+                self.assertEqual(
+                    projected["event_metadata"]["event_time"], expected["event_time"]
+                )
+                self.assertEqual(
+                    projected["terminal_disposition"],
+                    expected["terminal_disposition"],
+                )
+                if expected["semantic_text"] is not None:
+                    self.assertEqual(projected["semantic_text"], expected["semantic_text"])
+
     def test_closed_relation_set_has_total_generic_projection(self) -> None:
         expected = {
             "ocsf_api_activity",

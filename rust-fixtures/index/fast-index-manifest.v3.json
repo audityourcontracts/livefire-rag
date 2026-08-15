@@ -1,0 +1,59 @@
+{
+  "schema_version": "livefire.rag.fast-index/3",
+  "component_sha256": "00351063c06d82b81fb526af04c51953993a1cf5a3ea3b0bc2ec5580f9a3c4c6",
+  "source": {
+    "snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "mapping_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "build_scope": "sample",
+  "complete": false,
+  "documents": {
+    "path": "documents.parquet",
+    "rows": 2,
+    "bytes": 2688,
+    "sha256": "9d55f1296faf07d221e182e1596d0b460ede030ce5d522cb96ff3b3c3f65d8fc",
+    "order_sha256": "8fb20ef63ced4145fc2e983ffe597d1dcff39154c3bf21f0fa9dde6a0c50fdc9"
+  },
+  "occurrences": {
+    "path": "occurrences.parquet",
+    "rows": 2,
+    "bytes": 3375,
+    "sha256": "bc4a9992073d44743deb2287d4489f10dc74906b4f9e868d534129377853a8a5",
+    "order_sha256": null
+  },
+  "vectors": {
+    "path": "vectors.f32",
+    "count": 2,
+    "bytes": 80,
+    "sha256": "f2f2835e1f031eb4258229a19718e544b9d2e737f9cf89c5e6bc024ee97ce605",
+    "dimensions": 2,
+    "dtype": "f32le",
+    "header_bytes": 64,
+    "document_order_sha256": "8fb20ef63ced4145fc2e983ffe597d1dcff39154c3bf21f0fa9dde6a0c50fdc9"
+  },
+  "lexical": {
+    "path": "lexical/index.sqlite3",
+    "document_count": 2,
+    "bytes": 24576,
+    "sha256": "02c48029eeb83c0fd968c669749f81f4b368d01ca2340f816adedf71033b1702",
+    "schema": "sqlite-inverted-bm25-v1",
+    "tokenizer": "ascii_camel_lower_v1",
+    "k1": 1.2,
+    "b": 0.75
+  },
+  "occurrence_lookup": {
+    "path": "occurrence-index.sqlite3",
+    "rows": 2,
+    "bytes": 36864,
+    "sha256": "7c9ebf9fe772f27b74dc481c04abd12bfb58302f491f3ee12160db57961ba2f9",
+    "schema": "sqlite-occurrence-lookup-v1"
+  },
+  "embedding_profile": {
+    "id": "p",
+    "version": "1",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "model": "fake",
+    "dimensions": 2,
+    "normalization": "l2"
+  }
+}

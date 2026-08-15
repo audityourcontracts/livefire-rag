@@ -26,9 +26,43 @@ use thiserror::Error;
 
 pub const PREPARED_CORPUS_SCHEMA: &str = "livefire.rag.prepared-corpus/1";
 pub const EMBEDDING_PLAN_SCHEMA: &str = "livefire.rag.embedding-plan/1";
+pub const EMBEDDING_PLAN_V2_SCHEMA: &str = "livefire.rag.embedding-plan/2";
 pub const VECTOR_RECEIPT_SCHEMA: &str = "livefire.rag.vector-result-receipt/1";
+pub const DERIVED_VECTOR_RECEIPT_SCHEMA: &str = "livefire.rag.vector-result-receipt/2";
 pub const RESULT_SET_SCHEMA: &str = "livefire.rag.embedding-result-set/1";
+pub const TEST_RESULT_SET_SCHEMA: &str = "livefire.rag.embedding-result-set/2";
+pub const DERIVED_RESULT_SET_SCHEMA: &str = "livefire.rag.embedding-result-set/3";
+pub const TEST_VECTOR_EXECUTOR_ID: &str =
+    "livefire.rag.embedding-executor.deterministic-test-vectors";
+pub const DERIVED_VECTOR_EXECUTOR_ID: &str = "livefire.rag.embedding-executor.prefix-l2-derivation";
+pub const PREFIX_L2_DERIVATION_POLICY: &str = "prefix_then_l2_normalize_v1";
+pub const BENCHMARK_SELECTION_SCHEMA: &str = "livefire.rag.benchmark-selection/1";
+pub const DATASET_CATALOGUE_SCHEMA: &str = "livefire.rag.dataset-catalogue/1";
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
+static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+mod benchmark_selection;
+mod dataset_catalogue;
+mod token_plan;
+
+pub use benchmark_selection::{
+    BenchmarkLengthStratum, BenchmarkPreparedCorpusIdentity, BenchmarkPublishedCorpus,
+    BenchmarkSelectionCandidate, BenchmarkSelectionManifest, BenchmarkSelectionPolicy,
+    BenchmarkSelectionRow, BenchmarkSelectionTarget, BenchmarkStratumQuota, BenchmarkTargetQuota,
+    STANDARD_BENCHMARK_SIZES, bind_benchmark_prepared_corpus, build_benchmark_selection_manifest,
+    select_benchmark_documents,
+};
+pub use dataset_catalogue::{
+    CatalogueArtifactRef, CatalogueDatasetEntry, CatalogueMode, DatasetCatalogue,
+    RelationOverlapAllowance, validate_dataset_pipeline_binding,
+};
+pub use token_plan::{
+    DOCUMENT_TOKEN_COUNTS_PATH, DocumentTokenCountsObject, EmbeddingInputSliceV2, EmbeddingPlanV2,
+    EmbeddingTaskV2, ExactTokenizer, ExecutableTokenizerRef, TokenBalanceOptions, TokenStatistics,
+    TokenizerArtifactFormat, build_token_balanced_plan, build_token_balanced_plan_with_counts,
+    decode_document_token_counts, derive_embedding_plan_v2, document_token_counts_digest,
+    encode_document_token_counts, format_document_input_exact, token_statistics,
+};
 
 #[derive(Debug, Error)]
 pub enum PipelineError {
@@ -38,6 +72,8 @@ pub enum PipelineError {
     Io(#[from] std::io::Error),
     #[error("pipeline JSON failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("pipeline tokenizer failed: {0}")]
+    Tokenizer(String),
     #[error("pipeline Arrow failed: {0}")]
     Arrow(#[from] arrow_schema::ArrowError),
     #[error("pipeline Parquet failed: {0}")]
@@ -622,6 +658,28 @@ pub struct ExecutorReceipt {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DerivedVectorBinding {
+    pub parent_embedding_profile_sha256: Digest,
+    pub parent_result_set_sha256: Digest,
+    pub parent_receipt_sha256: Digest,
+    pub parent_vector_sha256: Digest,
+    pub parent_dimensions: u32,
+    pub transformation: String,
+}
+
+impl DerivedVectorBinding {
+    pub fn validate(&self, target_dimensions: u32) -> Result<()> {
+        if self.parent_dimensions <= target_dimensions
+            || self.transformation != PREFIX_L2_DERIVATION_POLICY
+        {
+            return Err(PipelineError::Invalid("derived vector binding"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VectorResultReceipt {
     pub schema_version: String,
     pub component_sha256: Digest,
@@ -634,11 +692,23 @@ pub struct VectorResultReceipt {
     pub embedding_input_order_sha256: Digest,
     pub vector: VectorObject,
     pub executor: ExecutorReceipt,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<DerivedVectorBinding>,
     pub finite_values_validated: bool,
     pub normalization_validated: bool,
 }
 
 impl VectorResultReceipt {
+    #[must_use]
+    pub fn test_only(&self) -> bool {
+        self.executor.implementation.id == TEST_VECTOR_EXECUTOR_ID
+    }
+
+    #[must_use]
+    pub fn derived(&self) -> bool {
+        self.derivation.is_some()
+    }
+
     pub fn validate_against(&self, plan: &EmbeddingPlan) -> Result<()> {
         for value in [
             self.ordinal_start,
@@ -652,7 +722,10 @@ impl VectorResultReceipt {
         ] {
             require_safe_u64(value)?;
         }
-        if self.schema_version != VECTOR_RECEIPT_SCHEMA {
+        if !matches!(
+            (self.schema_version.as_str(), self.derived()),
+            (VECTOR_RECEIPT_SCHEMA, false) | (DERIVED_VECTOR_RECEIPT_SCHEMA, true)
+        ) {
             return Err(PipelineError::Invalid("vector receipt schema"));
         }
         let task = plan
@@ -678,10 +751,24 @@ impl VectorResultReceipt {
         self.executor.implementation.validate()?;
         self.executor.runtime.validate()?;
         require_text(&self.executor.returned_model)?;
-        if !self.executor.conformance_passed
-            || self.executor.retries > self.executor.requests
-            || self.executor.requests == 0
-        {
+        if let Some(derivation) = &self.derivation {
+            derivation.validate(self.vector.dimensions)?;
+        }
+        let invalid_executor = if self.test_only() {
+            self.executor.requests != 0
+                || self.executor.retries != 0
+                || self.executor.conformance_passed
+        } else if self.derived() {
+            self.executor.implementation.id != DERIVED_VECTOR_EXECUTOR_ID
+                || self.executor.requests != 0
+                || self.executor.retries != 0
+                || self.executor.conformance_passed
+        } else {
+            !self.executor.conformance_passed
+                || self.executor.retries > self.executor.requests
+                || self.executor.requests == 0
+        };
+        if invalid_executor {
             return Err(PipelineError::Invalid("receipt executor validation"));
         }
         let expected_bytes = 64_u64
@@ -727,13 +814,47 @@ pub struct EmbeddingResultSetManifest {
     pub document_count: u64,
     pub document_order_sha256: Digest,
     pub receipts: Vec<ReceiptEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<DerivedResultSetBinding>,
+    /// Synthetic vectors are useful for checking the full artifact chain but
+    /// must never be admitted as model-produced search data.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub test_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DerivedResultSetBinding {
+    pub parent_embedding_profile_sha256: Digest,
+    pub parent_result_set_sha256: Digest,
+    pub parent_dimensions: u32,
+    pub transformation: String,
+}
+
+impl DerivedResultSetBinding {
+    pub fn validate(&self, target_dimensions: u32) -> Result<()> {
+        if self.parent_dimensions <= target_dimensions
+            || self.transformation != PREFIX_L2_DERIVATION_POLICY
+        {
+            return Err(PipelineError::Invalid("derived result-set binding"));
+        }
+        Ok(())
+    }
 }
 
 impl EmbeddingResultSetManifest {
     pub fn validate(&self, plan: &EmbeddingPlan, loaded: &[VectorResultReceipt]) -> Result<()> {
         require_safe_u64(self.document_count)?;
-        if self.schema_version != RESULT_SET_SCHEMA
-            || self.plan_sha256 != plan.component_sha256
+        if !matches!(
+            (
+                self.schema_version.as_str(),
+                self.test_only,
+                self.derivation.is_some()
+            ),
+            (RESULT_SET_SCHEMA, false, false)
+                | (TEST_RESULT_SET_SCHEMA, true, false)
+                | (DERIVED_RESULT_SET_SCHEMA, false, true)
+        ) || self.plan_sha256 != plan.component_sha256
             || self.prepared_corpus_sha256 != plan.prepared_corpus_sha256
             || self.embedding_profile_sha256 != plan.embedding_profile.component.sha256
             || self.document_count != plan.document_count
@@ -743,6 +864,9 @@ impl EmbeddingResultSetManifest {
         }
         if self.receipts.len() != plan.tasks.len() || loaded.len() != plan.tasks.len() {
             return Err(PipelineError::Invalid("result set coverage"));
+        }
+        if let Some(derivation) = &self.derivation {
+            derivation.validate(plan.embedding_profile.dimensions)?;
         }
         let entries: BTreeMap<_, _> = self
             .receipts
@@ -767,6 +891,26 @@ impl EmbeddingResultSetManifest {
                 .get(task.task_id.as_str())
                 .ok_or(PipelineError::Invalid("missing receipt"))?;
             receipt.validate_against(plan)?;
+            if receipt.test_only() != self.test_only {
+                return Err(PipelineError::Invalid("result set test-only binding"));
+            }
+            if receipt.derivation.as_ref().map(|value| {
+                (
+                    &value.parent_embedding_profile_sha256,
+                    &value.parent_result_set_sha256,
+                    value.parent_dimensions,
+                    value.transformation.as_str(),
+                )
+            }) != self.derivation.as_ref().map(|value| {
+                (
+                    &value.parent_embedding_profile_sha256,
+                    &value.parent_result_set_sha256,
+                    value.parent_dimensions,
+                    value.transformation.as_str(),
+                )
+            }) {
+                return Err(PipelineError::Invalid("result derivation binding"));
+            }
             if entry.path != task.receipt_path || entry.sha256 != receipt.component_sha256 {
                 return Err(PipelineError::Invalid("result receipt binding"));
             }
@@ -1027,8 +1171,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .ok_or(PipelineError::Invalid("output parent"))?;
     fs::create_dir_all(parent)?;
+    let process_id = std::process::id();
+    let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let mut temporary = tempfile::Builder::new()
-        .prefix(".livefire-rag-atomic-")
+        .prefix(&format!(".livefire-rag-atomic-{process_id}-{sequence}-"))
         .suffix(".partial")
         .tempfile_in(parent)?;
     temporary.write_all(bytes)?;
@@ -1041,6 +1187,8 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Removes only temporary files owned by [`atomic_write`]. A killed process
 /// can leave these files behind; they are never complete pipeline artifacts.
+/// Callers that can run concurrently should first check the process id now
+/// recorded in every new temporary file name.
 pub fn remove_stale_atomic_writes(directory: &Path) -> Result<()> {
     if !directory.try_exists()? {
         return Ok(());
@@ -1731,6 +1879,7 @@ mod tests {
                 elapsed_ms: 1,
                 conformance_passed: true,
             },
+            derivation: None,
             finite_values_validated: true,
             normalization_validated: true,
         };
@@ -2062,7 +2211,9 @@ mod tests {
     #[test]
     fn stale_atomic_writes_are_owned_and_restart_cleanable() {
         let root = tempfile::tempdir().unwrap();
-        let stale = root.path().join(".livefire-rag-atomic-crash.partial");
+        let stale = root
+            .path()
+            .join(".livefire-rag-atomic-4294967295-0-crash.partial");
         let unrelated = root.path().join(".tmp-user-file");
         fs::write(&stale, b"incomplete").unwrap();
         fs::write(&unrelated, b"keep").unwrap();

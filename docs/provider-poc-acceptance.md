@@ -73,8 +73,11 @@ python3 tools/check_provider_poc.py \
 Passing this smoke suite means the provider can reproduce the declared useful
 and failure behaviors. It does not prove that RAG improves investigation
 quality. That claim still requires a sealed occurrence-preserving candidate
-universe, blinded qrels, same-universe exact/BM25 baselines, pointer hydration,
-and the metrics in `docs/fact-evidence-benchmark.md`.
+universe; a review in which people do not see which search method produced each
+result and mark which results are relevant (a blinded qrel review);
+same-universe exact/BM25 baselines; confirmation that returned event references
+resolve through the authoritative service; and the metrics in
+`docs/fact-evidence-benchmark.md`.
 
 ## Same-corpus lexical comparison
 
@@ -114,5 +117,6 @@ for Q2, Q5, and Q8 where BM25 was partial. Both systems recovered Q7's two
 positive behaviors, while BM25 avoided the two declared dense hard-negative
 exposures. Q9 reproduced the expected single-query facet-collapse boundary.
 
-This is qualitative POC evidence: there are no blinded qrels, so checker passes
-are not nDCG, Recall, precision, or evidence of general model superiority.
+This is qualitative POC evidence: people have not reviewed these search results
+without method labels and marked which are relevant. The checker passes are
+therefore not nDCG, recall, precision, or evidence of general model superiority.

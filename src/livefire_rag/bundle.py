@@ -82,6 +82,10 @@ def package_bundle(
     index_dir: Path,
     sdk_specs: Path,
 ) -> dict[str, Any]:
+    manifest_path = Path(index_dir) / "index.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if isinstance(manifest, dict) and manifest.get("test_only") is True:
+        raise ValueError("test-only indexes cannot be packaged for a provider")
     index = SemanticIndex.open(index_dir)
     schema_lock = json.loads((sdk_specs / "schema-set.lock.json").read_text(encoding="utf-8"))
     schema_set_sha256 = schema_lock["schema_set_sha256"]
