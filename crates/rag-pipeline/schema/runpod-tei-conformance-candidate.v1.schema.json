@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/runpod-tei-conformance-candidate.v1.schema.json",
+  "title": "Sealed RunPod TEI conformance measurement candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "component_sha256", "model_repository", "model_revision",
+    "model_snapshot_completeness", "model_manifest", "model_objects", "tokenizer",
+    "tei_image", "executor_image", "executor_image_build", "runtime", "inference_engine", "load_policy", "worker_binary",
+    "execution", "accelerator", "fixture", "expected_output_key", "output_format"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.runpod-tei-conformance-candidate/1"},
+    "component_sha256": {"$ref": "#/$defs/digest"},
+    "model_repository": {"$ref": "#/$defs/plainText"},
+    "model_revision": {"$ref": "#/$defs/revision"},
+    "model_snapshot_completeness": {"const": "complete_upstream_snapshot"},
+    "model_manifest": {"$ref": "#/$defs/boundArtifact"},
+    "model_objects": {"type": "array", "minItems": 1, "maxItems": 10000, "items": {"$ref": "#/$defs/artifact"}},
+    "tokenizer": {"$ref": "#/$defs/tokenizer"},
+    "tei_image": {"$ref": "#/$defs/image"},
+    "executor_image": {"$ref": "#/$defs/image"},
+    "executor_image_build": {"$ref": "#/$defs/boundBuildReceipt"},
+    "runtime": {"$ref": "#/$defs/component"},
+    "inference_engine": {"$ref": "#/$defs/component"},
+    "load_policy": {"$ref": "#/$defs/loadPolicy"},
+    "worker_binary": {"$ref": "#/$defs/boundArtifact"},
+    "execution": {"$ref": "#/$defs/execution"},
+    "accelerator": {"$ref": "#/$defs/accelerator"},
+    "fixture": {"$ref": "#/$defs/fixture"},
+    "expected_output_key": {"$ref": "#/$defs/path"},
+    "output_format": {"const": "rfc8785_f32_vectors_lf_v1"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "revision": {"type": "string", "pattern": "^(?!0{40}$)[0-9a-f]{40}$"},
+    "plainText": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!.*://)[^\\u0000-\\u001f\\u007f]+$"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"},
+    "safeInteger": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "positiveSafeInteger": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*//)(?!.*[\\\\:])[^/]+(?:/[^/]+)*$"},
+    "component": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {"id": {"$ref": "#/$defs/plainText"}, "version": {"$ref": "#/$defs/plainText"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "media_type", "bytes", "sha256"],
+      "properties": {"path": {"$ref": "#/$defs/path"}, "media_type": {"$ref": "#/$defs/plainText"}, "bytes": {"$ref": "#/$defs/positiveSafeInteger"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "boundArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component_sha256", "object"],
+      "properties": {"component_sha256": {"$ref": "#/$defs/digest"}, "object": {"$ref": "#/$defs/artifact"}}
+    },
+    "boundBuildReceipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "object"],
+      "properties": {"component": {"$ref": "#/$defs/component"}, "object": {"$ref": "#/$defs/artifact"}}
+    },
+    "tokenizer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "repository", "revision", "format", "object", "add_special_tokens"],
+      "properties": {
+        "component": {"$ref": "#/$defs/component"}, "repository": {"$ref": "#/$defs/plainText"},
+        "revision": {"$ref": "#/$defs/revision"}, "format": {"const": "hugging_face_tokenizer_json"},
+        "object": {"$ref": "#/$defs/artifact"}, "add_special_tokens": {"type": "boolean"}
+      }
+    },
+    "image": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "repository", "digest"],
+      "properties": {"component": {"$ref": "#/$defs/component"}, "repository": {"$ref": "#/$defs/plainText"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+    },
+    "loadPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "model_source", "revision_policy", "local_files_only", "trust_remote_code", "safetensors_only"],
+      "properties": {
+        "component": {"$ref": "#/$defs/component"}, "model_source": {"const": "mounted_complete_snapshot"},
+        "revision_policy": {"const": "exact"}, "local_files_only": {"const": true},
+        "trust_remote_code": {"const": false}, "safetensors_only": {"const": true}
+      }
+    },
+    "accelerator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "gpu_model_id", "compute_capability", "architecture_image_class", "gpu_count"],
+      "properties": {
+        "provider": {"const": "runpod"}, "gpu_model_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "compute_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "architecture_image_class": {"$ref": "#/$defs/identifier"}, "gpu_count": {"const": 1}
+      }
+    },
+    "execution": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "model_artifact_set", "tokenizer", "tei_image", "executor_image", "executor_image_build", "runtime", "inference_engine",
+        "load_policy", "worker_binary", "served_model", "dimensions", "pooling",
+        "forced_runtime_dtype", "api_vector_dtype", "normalization", "maximum_tokens",
+        "maximum_client_batch_size", "maximum_batch_tokens", "maximum_concurrent_requests",
+        "request_timeout_ms", "maximum_response_bytes"
+      ],
+      "properties": {
+        "model_artifact_set": {"$ref": "#/$defs/component"}, "tokenizer": {"$ref": "#/$defs/component"},
+        "tei_image": {"$ref": "#/$defs/component"}, "runtime": {"$ref": "#/$defs/component"},
+        "executor_image": {"$ref": "#/$defs/component"},
+        "executor_image_build": {"$ref": "#/$defs/component"},
+        "inference_engine": {"$ref": "#/$defs/component"}, "load_policy": {"$ref": "#/$defs/component"},
+        "worker_binary": {"$ref": "#/$defs/component"}, "served_model": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "dimensions": {"type": "integer", "minimum": 1, "maximum": 4294967295}, "pooling": {"const": "last_token"},
+        "forced_runtime_dtype": {"enum": ["float16", "float32"]}, "api_vector_dtype": {"const": "float32"},
+        "normalization": {"const": "l2"}, "maximum_tokens": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "maximum_client_batch_size": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maximum_batch_tokens": {"type": "integer", "minimum": 40960, "maximum": 262144},
+        "maximum_concurrent_requests": {"type": "integer", "minimum": 1, "maximum": 256},
+        "request_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
+        "maximum_response_bytes": {"type": "integer", "minimum": 1024, "maximum": 268435456}
+      }
+    },
+    "fixture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["object", "input_count"],
+      "properties": {"object": {"$ref": "#/$defs/artifact"}, "input_count": {"type": "integer", "minimum": 1, "maximum": 32}}
+    }
+  },
+  "$comment": "Runtime validation requires sorted unique model paths; exact repository/revision agreement between model and tokenizer; the model_artifact_set component SHA to equal the RFC 8785 digest of the complete ordered object list; tokenizer, image, runtime, engine, load policy and worker components to match execution; maximum_batch_tokens to fit within maximum_tokens times maximum_client_batch_size while covering Qwen's 40960-position window; and the candidate self digest to match with component_sha256 omitted. This artifact deliberately contains no output digest, endpoint URL, storage URL, environment variable, credential, or token."
+}

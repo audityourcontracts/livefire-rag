@@ -60,7 +60,7 @@ def _duckdb():
         import duckdb
     except ImportError as error:  # pragma: no cover - optional dependency
         raise EvidenceGeometryError(
-            "DuckDB is required; install livefire-rag[prototype]"
+            "DuckDB is required for this historical test oracle; install livefire-rag[test]"
         ) from error
     return duckdb
 

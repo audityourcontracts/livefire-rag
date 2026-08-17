@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
@@ -250,6 +251,9 @@ static JWT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}").unwrap());
 static MAC_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}").unwrap());
+static POWERSHELL_ENCODED_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(?:-enc|-encodedcommand)\s+[\"']?([A-Za-z0-9+/=]{8,})"#).unwrap()
+});
 
 pub fn project(input: ProjectionInput<'_>) -> Result<ProjectionOutput, ProjectionError> {
     let core = project_core(input.relation_name, input.typed_event_json, input.context);
@@ -278,6 +282,271 @@ pub fn project(input: ProjectionInput<'_>) -> Result<ProjectionOutput, Projectio
         document: core.document,
         occurrence,
     })
+}
+
+/// Project one M45 normalized event into the command-focused corpus. `None`
+/// means the admitted row has no surviving command, script, or API operation.
+pub fn project_m45_command(
+    input: ProjectionInput<'_>,
+) -> Result<Option<ProjectionOutput>, ProjectionError> {
+    let typed_event: Value = serde_json::from_str(input.typed_event_json)?;
+    let Some(event) = typed_event.as_object() else {
+        return Ok(None);
+    };
+    let Some(mut focused) = command_projection_value(input.relation_name, event) else {
+        return Ok(None);
+    };
+    if let Some(time) =
+        value_at(&typed_event, &["ocsf", "time"]).or_else(|| value_at(&typed_event, &["time"]))
+    {
+        focused.insert("time".to_owned(), time.clone());
+    }
+    let focused_json = serde_json::to_string(&Value::Object(focused))?;
+    let mut output = project(ProjectionInput {
+        relation_name: input.relation_name,
+        event_id: input.event_id,
+        typed_event_json: &focused_json,
+        support_ref: input.support_ref,
+        context: input.context,
+    })?;
+    output.occurrence.disposition_reason = "projected_by_m45_command_policy".to_owned();
+    Ok(Some(output))
+}
+
+fn command_projection_value(
+    relation: &str,
+    event: &Map<String, Value>,
+) -> Option<Map<String, Value>> {
+    let root = Value::Object(event.clone());
+    let mut focused = Map::new();
+    match relation {
+        "ocsf_process_activity" => {
+            let unmapped = value_at(&root, &["ocsf", "unmapped"]);
+            let (command, source_kind) = value_at(&root, &["ocsf", "process", "cmd_line"])
+                .and_then(Value::as_str)
+                .or_else(|| value_at(&root, &["process", "cmd_line"]).and_then(Value::as_str))
+                .or_else(|| value_at(&root, &["command_line"]).and_then(Value::as_str))
+                .map(|command| (command.to_owned(), "typed_process_command"))
+                .or_else(|| {
+                    unmapped
+                        .and_then(sysmon_named_command)
+                        .map(|command| (command, "sysmon_command_line"))
+                })
+                .or_else(|| {
+                    unmapped
+                        .and_then(bash_history_command)
+                        .map(|command| (command, "bash_history_tokens"))
+                })
+                .or_else(|| {
+                    unmapped
+                        .and_then(osquery_command)
+                        .map(|command| (command, "normalized_unmapped_command"))
+                })?;
+            focused.insert(
+                "action".to_owned(),
+                Value::String("execute command".to_owned()),
+            );
+            focused.insert("command".to_owned(), Value::String(command.clone()));
+            focused.insert(
+                "source_kind".to_owned(),
+                Value::String(source_kind.to_owned()),
+            );
+            if let Some(decoded) = decode_powershell_encoded_command(&command) {
+                focused.insert("decoded_script".to_owned(), Value::String(decoded));
+            }
+            for (output, path) in [
+                ("image", &["image"][..]),
+                ("parent_image", &["parent_image"][..]),
+                ("status", &["status"][..]),
+            ] {
+                if let Some(value) = value_at(&root, path).and_then(Value::as_str) {
+                    focused.insert(output.to_owned(), Value::String(value.to_owned()));
+                }
+            }
+        }
+        "ocsf_event_log_activity" => {
+            let unmapped = value_at(&root, &["ocsf", "unmapped"]);
+            let (script, source_kind) = unmapped
+                .and_then(powershell_script_body)
+                .map(|script| (script, "powershell_script_body"))
+                .or_else(|| {
+                    let is_4104 = value_at(&root, &["event_id"])
+                        .and_then(Value::as_str)
+                        .is_some_and(|event_id| event_id == "4104");
+                    is_4104
+                        .then(|| value_at(&root, &["ocsf", "message"]).and_then(Value::as_str))
+                        .flatten()
+                        .map(|message| (message.to_owned(), "powershell_4104_message"))
+                })?;
+            focused.insert(
+                "action".to_owned(),
+                Value::String("event log script".to_owned()),
+            );
+            focused.insert("script".to_owned(), Value::String(script));
+            focused.insert(
+                "source_kind".to_owned(),
+                Value::String(source_kind.to_owned()),
+            );
+            for (output, path) in [
+                ("event_id", &["event_id"][..]),
+                ("device", &["device"][..]),
+                ("status", &["status"][..]),
+            ] {
+                if let Some(value) = value_at(&root, path).and_then(Value::as_str) {
+                    focused.insert(output.to_owned(), Value::String(value.to_owned()));
+                }
+            }
+        }
+        "ocsf_api_activity" => {
+            let operation = value_at(&root, &["operation"])
+                .or_else(|| value_at(&root, &["ocsf", "api", "operation"]))
+                .and_then(Value::as_str)?;
+            focused.insert("action".to_owned(), Value::String(operation.to_owned()));
+            focused.insert(
+                "source_kind".to_owned(),
+                Value::String("normalized_api_operation".to_owned()),
+            );
+            for (output, paths) in [
+                (
+                    "service",
+                    [&["service"][..], &["ocsf", "api", "service", "name"][..]],
+                ),
+                (
+                    "resource",
+                    [&["resource"][..], &["ocsf", "resource", "name"][..]],
+                ),
+                ("status", [&["status"][..], &["ocsf", "status"][..]]),
+            ] {
+                if let Some(value) = paths
+                    .iter()
+                    .find_map(|path| value_at(&root, path).and_then(Value::as_str))
+                {
+                    focused.insert(output.to_owned(), Value::String(value.to_owned()));
+                }
+            }
+            if let Some(parameters) = value_at(&root, &["ocsf", "unmapped", "requestParameters"]) {
+                focused.insert("request_parameters".to_owned(), parameters.clone());
+            }
+        }
+        _ => return None,
+    }
+    Some(focused)
+}
+
+fn value_at<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter().try_fold(root, |value, key| value.get(*key))
+}
+
+fn sysmon_named_command(unmapped: &Value) -> Option<String> {
+    let object = unmapped.as_object()?;
+    let names = object
+        .iter()
+        .find(|(key, _)| key.ends_with("/Data/@Name"))?
+        .1
+        .as_array()?;
+    let values = object
+        .iter()
+        .find(|(key, _)| key.ends_with("/Data/#text"))?
+        .1
+        .as_array()?;
+    names
+        .iter()
+        .position(|name| {
+            name.as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case("CommandLine"))
+        })
+        .and_then(|index| values.get(index))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn bash_history_command(unmapped: &Value) -> Option<String> {
+    let object = unmapped.as_object()?;
+    let mut tokens = object
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("$token/")?
+                .parse::<usize>()
+                .ok()
+                .zip(value.as_str())
+        })
+        .collect::<Vec<_>>();
+    tokens.sort_by_key(|(ordinal, _)| *ordinal);
+    (!tokens.is_empty()).then(|| {
+        tokens
+            .into_iter()
+            .map(|(_, token)| token)
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+}
+
+fn osquery_command(unmapped: &Value) -> Option<String> {
+    for path in [
+        &["columns", "cmdline"][..],
+        &["columns", "command_line"][..],
+        &["cmdline"][..],
+        &["command_line"][..],
+        &["CommandLine"][..],
+    ] {
+        if let Some(command) = value_at(unmapped, path).and_then(Value::as_str) {
+            return Some(command.to_owned());
+        }
+    }
+    None
+}
+
+fn powershell_script_body(unmapped: &Value) -> Option<String> {
+    let object = unmapped.as_object()?;
+    for key in ["ScriptBlockText", "script_block", "script", "body"] {
+        if let Some(script) = object.get(key).and_then(Value::as_str) {
+            return Some(script.to_owned());
+        }
+    }
+    let names = object
+        .iter()
+        .find(|(key, _)| key.ends_with("/Data/@Name"))?
+        .1
+        .as_array()?;
+    let values = object
+        .iter()
+        .find(|(key, _)| key.ends_with("/Data/#text"))?
+        .1
+        .as_array()?;
+    names
+        .iter()
+        .position(|name| {
+            name.as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case("ScriptBlockText"))
+        })
+        .and_then(|index| values.get(index))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn decode_powershell_encoded_command(command: &str) -> Option<String> {
+    let encoded = POWERSHELL_ENCODED_RE.captures(command)?.get(1)?.as_str();
+    if encoded.len() > 65_536 {
+        return None;
+    }
+    let bytes = BASE64_STANDARD.decode(encoded).ok()?;
+    if bytes.len() > 49_152 {
+        return None;
+    }
+    if bytes.len() >= 2 && bytes.len().is_multiple_of(2) {
+        let utf16 = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        if let Ok(decoded) = String::from_utf16(&utf16)
+            && decoded
+                .chars()
+                .all(|character| !character.is_control() || character.is_whitespace())
+        {
+            return Some(decoded);
+        }
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// Project only document identity/content and event-time accounting. This uses
@@ -423,7 +692,8 @@ pub fn relation_kind(relation: &str) -> Option<DocumentKind> {
         | "ocsf_user_inventory" => DocumentKind::State,
         "ocsf_detection_finding" => DocumentKind::Detection,
         "ocsf_ext_livefire_system_metric" => DocumentKind::StructuredOnly,
-        "ocsf_api_activity"
+        "ocsf_account_change"
+        | "ocsf_api_activity"
         | "ocsf_application_lifecycle"
         | "ocsf_authentication"
         | "ocsf_datastore_activity"

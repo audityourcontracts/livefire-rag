@@ -1,6 +1,6 @@
 use std::{fs::File, sync::Arc};
 
-use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, UInt64Array};
+use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use serde_json::{Value, json};
@@ -11,6 +11,267 @@ use super::*;
 
 struct Fixture {
     root: TempDir,
+}
+
+struct V2Fixture {
+    root: TempDir,
+}
+
+impl V2Fixture {
+    fn write() -> Self {
+        let root = tempfile::tempdir().expect("fixture root");
+        for directory in ["graph", "normalized", "provenance"] {
+            std::fs::create_dir(root.path().join(directory)).expect("snapshot directory");
+        }
+
+        let events_schema = Arc::new(Schema::new(vec![
+            Field::new("event_id", DataType::Utf8, false),
+            Field::new("event_time_ms", DataType::UInt64, false),
+            Field::new("support_ref", DataType::Utf8, false),
+        ]));
+        let events = RecordBatch::try_new(
+            events_schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["evt_1", "evt_2"])) as ArrayRef,
+                Arc::new(UInt64Array::from(vec![1_u64, 2])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["sup_1", "sup_2"])) as ArrayRef,
+            ],
+        )
+        .expect("events batch");
+        write_batch(
+            root.path().join("graph/events.parquet"),
+            events_schema,
+            events,
+        );
+
+        let typed_schema = v2_typed_schema();
+        let typed = RecordBatch::try_new(
+            typed_schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["evt_1", "evt_2"])) as ArrayRef,
+                Arc::new(StringArray::from(vec![Some("alice"), Some("bob")])) as ArrayRef,
+                Arc::new(StringArray::from(vec![Some("account created"), None])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![Some(1_i64), Some(2_i64)])) as ArrayRef,
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"requestParameters":{"userName":"alice"}}"#),
+                    Some("{}"),
+                ])) as ArrayRef,
+                Arc::new(StringArray::from(vec![
+                    Some("CreateUser"),
+                    Some("DisableUser"),
+                ])) as ArrayRef,
+                Arc::new(StringArray::from(vec![
+                    Some("account_change"),
+                    Some("account_change"),
+                ])) as ArrayRef,
+                Arc::new(StringArray::from(vec![Some("sup_1"), Some("sup_2")])) as ArrayRef,
+                Arc::new(StringArray::from(vec![Some(r#"["ocsf.actor"]"#), None])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["sup_1", "sup_2"])) as ArrayRef,
+            ],
+        )
+        .expect("typed batch");
+        write_batch(
+            root.path().join("normalized/ocsf_account_change.parquet"),
+            typed_schema.clone(),
+            typed,
+        );
+
+        for relation in REQUIRED_CORE_RELATIONS
+            .into_iter()
+            .filter(|relation| *relation != "events")
+        {
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "support_ref",
+                DataType::Utf8,
+                false,
+            )]));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef],
+            )
+            .expect("empty core batch");
+            write_batch(
+                root.path().join(format!("graph/{relation}.parquet")),
+                schema,
+                batch,
+            );
+        }
+
+        let objects = REQUIRED_CORE_RELATIONS
+            .into_iter()
+            .map(|relation| object_v2(relation, if relation == "events" { 2 } else { 0 }))
+            .chain(std::iter::once(object_v2("ocsf_account_change", 2)))
+            .collect::<Vec<_>>();
+        let mut receipt = json!({
+            "schema_version": 2,
+            "snapshot_manifest": {
+                "schema_version": 2,
+                "dataset_sha256": hex('d'),
+                "ocsf_schema_sha256": hex('3'),
+                "extension_pack_sha256": hex('4'),
+                "mapping_pack_sha256": hex('b'),
+                "relation_contract_sha256": hex('5'),
+                "objects": objects,
+                "logical_sha256": hex('a')
+            },
+            "output_logical_sha256": hex('a'),
+            "runnable_snapshot": {
+                "component": {"id":"fixture.snapshot","version":"2","sha256":hex('a')},
+                "dataset_sha256":hex('d'),
+                "mapping_pack":{"id":"fixture.mapping","version":"2","sha256":hex('b')},
+                "relation_contract":{"id":"fixture.relations","version":"3","sha256":hex('5')},
+                "normalized_events":2,
+                "source_rows":2
+            },
+            "closure": {
+                "input_rows":2,"mapped_source_records":2,"mapped_events":2,"event_rows":2,
+                "rejected_malformed_records":0,"unsupported_records":0,
+                "unresolved_provenance_fields":0,"provenance_digest_mismatches":0
+            },
+            "completeness_receipt": {
+                "dataset_sha256":hex('d'),
+                "mapping_pack_sha256":hex('b'),
+                "normalized_snapshot_sha256":hex('a'),
+                "relation_contract_sha256":hex('5'),
+                "metrics":{
+                    "source_rows":2,"mapped_source_records":2,
+                    "rejected_malformed_records":0,"normalized_events":2
+                }
+            }
+        });
+        for object in receipt["snapshot_manifest"]["objects"]
+            .as_array_mut()
+            .expect("manifest objects")
+        {
+            let relative = object["path"].as_str().expect("object path");
+            object["sha256"] = Value::String(file_digest(&root.path().join(relative)));
+        }
+        std::fs::write(
+            root.path().join(RECEIPT_FILE),
+            serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+        )
+        .expect("write receipt");
+        Self { root }
+    }
+
+    fn write_v3() -> Self {
+        let fixture = Self::write();
+        let typed_schema = v2_typed_schema();
+        let mut added_typed_objects = Vec::new();
+        for relation in SCHEMA_V3_TYPED_RELATIONS
+            .into_iter()
+            .filter(|relation| *relation != "ocsf_account_change")
+        {
+            let path = fixture
+                .root
+                .path()
+                .join(format!("normalized/{relation}.parquet"));
+            write_batch(
+                path.clone(),
+                typed_schema.clone(),
+                RecordBatch::new_empty(typed_schema.clone()),
+            );
+            let mut object = object_v2(relation, 0);
+            object["sha256"] = json!(file_digest(&path));
+            added_typed_objects.push(object);
+        }
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "support_ref",
+            DataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef],
+        )
+        .expect("empty subject-alias batch");
+        let relation_path = fixture.root.path().join("graph/subject_aliases.parquet");
+        write_batch(relation_path.clone(), schema, batch);
+
+        let provenance_schema = Arc::new(Schema::new(vec![Field::new(
+            "support_ref",
+            DataType::Utf8,
+            false,
+        )]));
+        let provenance_batch = RecordBatch::try_new(
+            provenance_schema.clone(),
+            vec![Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef],
+        )
+        .expect("empty provenance batch");
+        let provenance_path = fixture
+            .root
+            .path()
+            .join("provenance/field_provenance.parquet");
+        write_batch(provenance_path.clone(), provenance_schema, provenance_batch);
+
+        let capability = json!({
+            "schema_version": 1,
+            "snapshot_logical_sha256": hex('a'),
+            "event_time_bounds": {"start_ms": 1, "end_ms": 2},
+            "classes": [],
+            "searchable_subjects": [],
+            "mapping_completeness": {
+                "state": "complete",
+                "source_rows": 2,
+                "normalized_events": 2,
+                "unassigned_source_signatures": 0,
+                "unsupported_source_signatures": 0,
+                "intentionally_ignored_source_signatures": 0,
+                "valid_rows_without_normalized_output": 0,
+                "raw_fallback_rows": 0,
+                "normalized_events_without_source_provenance": 0,
+                "native_fields_without_disposition": 0,
+                "fields_without_typed_projection_or_metadata_justification": 0,
+                "mapped_fields_without_round_trip_provenance": 0,
+                "observed_semantic_variants_without_test": 0,
+                "field_disposition_audit_failures": 0
+            }
+        });
+        let capability_path = fixture
+            .root
+            .path()
+            .join("capabilities/snapshot-capabilities.v1.json");
+        std::fs::create_dir(capability_path.parent().expect("capability parent"))
+            .expect("capability directory");
+        std::fs::write(
+            &capability_path,
+            serde_json::to_vec_pretty(&capability).expect("capability JSON"),
+        )
+        .expect("write capability");
+
+        let receipt_path = fixture.root.path().join(RECEIPT_FILE);
+        let mut receipt: Value =
+            serde_json::from_slice(&std::fs::read(&receipt_path).expect("read schema v2 receipt"))
+                .expect("receipt JSON");
+        receipt["snapshot_manifest"]["schema_version"] = json!(3);
+        receipt["runnable_snapshot"]["component"]["version"] = json!("45");
+        let mut subject_aliases = object_v2("subject_aliases", 0);
+        subject_aliases["sha256"] = json!(file_digest(&relation_path));
+        receipt["snapshot_manifest"]["objects"]
+            .as_array_mut()
+            .expect("manifest objects")
+            .push(subject_aliases);
+        let mut field_provenance = object_v2("field_provenance", 0);
+        field_provenance["sha256"] = json!(file_digest(&provenance_path));
+        receipt["snapshot_manifest"]["objects"]
+            .as_array_mut()
+            .expect("manifest objects")
+            .push(field_provenance);
+        receipt["snapshot_manifest"]["objects"]
+            .as_array_mut()
+            .expect("manifest objects")
+            .extend(added_typed_objects);
+        receipt["snapshot_capabilities"] = json!({
+            "path": "capabilities/snapshot-capabilities.v1.json",
+            "sha256": file_digest(&capability_path)
+        });
+        std::fs::write(
+            receipt_path,
+            serde_json::to_vec_pretty(&receipt).expect("schema v3 receipt JSON"),
+        )
+        .expect("write schema v3 receipt");
+        fixture
+    }
 }
 
 impl Fixture {
@@ -162,6 +423,36 @@ fn object(relation: &str, rows: u64) -> Value {
     })
 }
 
+fn object_v2(relation: &str, rows: u64) -> Value {
+    let directory = match relation {
+        "field_provenance" => "provenance",
+        relation if relation.starts_with("ocsf_") => "normalized",
+        _ => "graph",
+    };
+    json!({
+        "relation": relation,
+        "path": format!("{directory}/{relation}.parquet"),
+        "rows": rows,
+        "sha256": hex('7'),
+        "logical_sha256": hex('8')
+    })
+}
+
+fn v2_typed_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("event_id", DataType::Utf8, false),
+        Field::new("event.account", DataType::Utf8, true),
+        Field::new("event.ocsf.message", DataType::Utf8, true),
+        Field::new("event.ocsf.time", DataType::Int64, true),
+        Field::new("event.ocsf.unmapped", DataType::Utf8, true),
+        Field::new("event.operation", DataType::Utf8, true),
+        Field::new("event.semantic_class", DataType::Utf8, true),
+        Field::new("event.support_ref", DataType::Utf8, true),
+        Field::new("empty_object_paths", DataType::Utf8, true),
+        Field::new("support_ref", DataType::Utf8, false),
+    ]))
+}
+
 fn hex(character: char) -> String {
     std::iter::repeat_n(character, 64).collect()
 }
@@ -220,6 +511,201 @@ fn opens_current_receipt_discovers_typed_relations_and_streams_batches() {
         .expect("UTF-8");
     assert_eq!(first.value(0), "evt_1");
     assert!(!first.is_null(0));
+}
+
+#[test]
+fn opens_schema_v2_and_reconstructs_the_logical_typed_rows() {
+    let fixture = V2Fixture::write();
+    let reader = LocalSnapshotReader::open_with_batch_size(fixture.root.path(), 1)
+        .expect("schema v2 snapshot opens");
+    assert_eq!(reader.identity().schema_version, 2);
+    let relation = reader.typed_relations().next().expect("typed relation");
+    assert_eq!(relation.name, "ocsf_account_change");
+    assert_eq!(
+        relation.path,
+        Path::new("normalized/ocsf_account_change.parquet")
+    );
+
+    let object = reader.admit_object(relation).expect("object admits");
+    let batch = object
+        .scan_row_group(0, &["event_id", "typed_event_json", "support_ref"])
+        .expect("logical scan opens")
+        .next()
+        .expect("first batch")
+        .expect("logical reconstruction");
+    assert_eq!(batch.num_columns(), 3);
+    let typed = batch
+        .column_by_name("typed_event_json")
+        .expect("typed JSON")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("UTF-8");
+    let value: Value = serde_json::from_str(typed.value(0)).expect("valid typed JSON");
+    assert_eq!(value["account"], "alice");
+    assert_eq!(value["operation"], "CreateUser");
+    assert_eq!(value["ocsf"]["time"], 1);
+    assert_eq!(
+        value["ocsf"]["unmapped"]["requestParameters"]["userName"],
+        "alice"
+    );
+    assert_eq!(value["ocsf"]["actor"], json!({}));
+
+    let identifiers = object
+        .scan_projected(&["support_ref", "event_id"])
+        .expect("identifier-only projection")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("identifier rows");
+    assert!(
+        identifiers
+            .iter()
+            .all(|batch| batch.column_by_name("typed_event_json").is_none())
+    );
+    assert_eq!(
+        identifiers.iter().map(RecordBatch::num_rows).sum::<usize>(),
+        2
+    );
+}
+
+#[test]
+fn opens_schema_v3_and_binds_the_capability_sidecar() {
+    let fixture = V2Fixture::write_v3();
+    let reader = LocalSnapshotReader::open(fixture.root.path()).expect("schema v3 snapshot opens");
+    assert_eq!(reader.identity().schema_version, 3);
+    assert_eq!(reader.identity().snapshot_version, "45");
+    assert_eq!(
+        reader
+            .identity()
+            .snapshot_capabilities_sha256
+            .as_ref()
+            .expect("capability digest")
+            .as_str(),
+        file_digest(
+            &fixture
+                .root
+                .path()
+                .join("capabilities/snapshot-capabilities.v1.json")
+        )
+    );
+    assert!(reader.identity().relations.iter().any(|relation| {
+        relation.name == "subject_aliases" && relation.kind == RelationKind::SemanticGraph
+    }));
+    assert_eq!(reader.typed_relations().count(), 19);
+}
+
+#[test]
+fn schema_v3_requires_an_exact_capability_sidecar_and_subject_aliases() {
+    let fixture = V2Fixture::write_v3();
+    std::fs::write(
+        fixture
+            .root
+            .path()
+            .join("capabilities/snapshot-capabilities.v1.json"),
+        b"{}",
+    )
+    .expect("tamper capability");
+    assert!(matches!(
+        LocalSnapshotReader::open(fixture.root.path()),
+        Err(OcsfError::ObjectDigest(_))
+    ));
+
+    let fixture = V2Fixture::write_v3();
+    let receipt_path = fixture.root.path().join(RECEIPT_FILE);
+    let mut receipt: Value =
+        serde_json::from_slice(&std::fs::read(&receipt_path).expect("read schema v3 receipt"))
+            .expect("receipt JSON");
+    receipt["snapshot_manifest"]["objects"]
+        .as_array_mut()
+        .expect("objects")
+        .retain(|object| object["relation"] != "subject_aliases");
+    std::fs::write(
+        receipt_path,
+        serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+    )
+    .expect("write receipt");
+    assert!(matches!(
+        LocalSnapshotReader::open(fixture.root.path()),
+        Err(OcsfError::MissingRelation("subject_aliases"))
+    ));
+
+    let fixture = V2Fixture::write_v3();
+    let receipt_path = fixture.root.path().join(RECEIPT_FILE);
+    let mut receipt: Value =
+        serde_json::from_slice(&std::fs::read(&receipt_path).expect("read schema v3 receipt"))
+            .expect("receipt JSON");
+    receipt["snapshot_manifest"]["objects"]
+        .as_array_mut()
+        .expect("objects")
+        .retain(|object| object["relation"] != "field_provenance");
+    std::fs::write(
+        receipt_path,
+        serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+    )
+    .expect("write receipt");
+    assert!(matches!(
+        LocalSnapshotReader::open(fixture.root.path()),
+        Err(OcsfError::MissingRelation("field_provenance"))
+    ));
+}
+
+#[test]
+fn schema_v3_rejects_incomplete_capabilities_and_unknown_graph_relations() {
+    let fixture = V2Fixture::write_v3();
+    let capability_path = fixture
+        .root
+        .path()
+        .join("capabilities/snapshot-capabilities.v1.json");
+    let mut capability: Value =
+        serde_json::from_slice(&std::fs::read(&capability_path).expect("read capability"))
+            .expect("capability JSON");
+    capability["mapping_completeness"]["raw_fallback_rows"] = json!(1);
+    std::fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capability).expect("capability JSON"),
+    )
+    .expect("write capability");
+    let receipt_path = fixture.root.path().join(RECEIPT_FILE);
+    let mut receipt: Value =
+        serde_json::from_slice(&std::fs::read(&receipt_path).expect("read receipt"))
+            .expect("receipt JSON");
+    receipt["snapshot_capabilities"]["sha256"] = json!(file_digest(&capability_path));
+    std::fs::write(
+        &receipt_path,
+        serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+    )
+    .expect("write receipt");
+    assert!(matches!(
+        LocalSnapshotReader::open(fixture.root.path()),
+        Err(OcsfError::InvalidReceipt(
+            "snapshot capability identity closure"
+        ))
+    ));
+
+    let fixture = V2Fixture::write_v3();
+    let receipt_path = fixture.root.path().join(RECEIPT_FILE);
+    let mut receipt: Value =
+        serde_json::from_slice(&std::fs::read(&receipt_path).expect("read receipt"))
+            .expect("receipt JSON");
+    receipt["snapshot_manifest"]["objects"]
+        .as_array_mut()
+        .expect("objects")
+        .push(json!({
+            "relation": "unexpected_graph",
+            "path": "graph/unexpected_graph.parquet",
+            "rows": 0,
+            "sha256": hex('7'),
+            "logical_sha256": hex('8')
+        }));
+    std::fs::write(
+        receipt_path,
+        serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+    )
+    .expect("write receipt");
+    assert!(matches!(
+        LocalSnapshotReader::open(fixture.root.path()),
+        Err(OcsfError::InvalidReceipt(
+            "manifest version 3 declares an unknown relation"
+        ))
+    ));
 }
 
 #[test]
@@ -535,4 +1021,16 @@ fn fixture_objects_are_real_parquet_files() {
     assert_eq!(&bytes[..4], b"PAR1");
     let digest = format!("{:x}", Sha256Hasher::digest(&bytes));
     assert_eq!(digest.len(), 64);
+}
+
+#[test]
+fn schema_v2_distinguishes_envelope_text_from_residual_ocsf_json() {
+    // M44 carries an envelope-level `resources` text value as well as an OCSF
+    // class field with the same final path segment but a residual JSON type.
+    // The physical Arrow type is Utf8 for both, so the complete path is part
+    // of the decoding contract.
+    assert!(!residual_json_column("event.resources"));
+    assert!(residual_json_column("event.ocsf.resources"));
+    assert!(residual_json_column("event.ocsf.unmapped"));
+    assert!(residual_json_column("event.semantics"));
 }

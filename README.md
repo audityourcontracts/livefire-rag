@@ -1,108 +1,288 @@
 # Livefire RAG
 
-`livefire-rag` builds immutable, generic OCSF evidence-candidate indexes and
-serves typed retrieval tools. Process and command activity are one relation
-family among API, identity, configuration, cloud, file, network, email,
-detection, and other normalized OCSF relations.
+`livefire-rag` builds immutable search indexes over normalized OCSF evidence
+candidates and serves typed retrieval tools. It returns ranked leads and exact
+event references. Livefire still owns hypotheses, evidence selection,
+conclusions, and stopping.
 
-It is not Livefire's investigative brain. It returns ranked leads, score
-decompositions, comparisons, and exact source pointers. Livefire owns
-hypotheses, evidence selection, conclusions, and stopping.
+## Current production boundary
 
-## Boundary
+The active source is the admitted normalized Parquet output from
+`livefire-ocsf` M45. The builder does not read OpenBOTS, vendor exports, or the
+historical M21/M41 output trees, and it does not query a live security service.
 
-- `livefire-ocsf`, `livefire-splunk`, and `livefire-panther` export bounded,
-  immutable command snapshots through `livefire-sdk` contracts.
-- `livefire-rag build` consumes one or more sealed snapshots. It never queries a
-  live SIEM while building an admitted index.
-- `livefire-rag-provider` opens one immutable index read-only. It has no Splunk
-  or Panther credentials and makes no vendor calls at query time.
-- DuckDB is the first exact retrieval engine, not the public interface or the
-  canonical index format.
-- Livefire runners emit `call_tool`; the implemented Node-side SDK adapter owns
-  provider spawn/open/call/health/close and validates the exact declared
-  read-only mount bindings. OS-level immutability is enforced externally.
-  Browser/WASM code receives only an injected typed host client and never
-  spawns a process.
+The production implementation is Rust:
 
-## V1 tools
+- `rag` performs census, projection, preparation, embedding orchestration,
+  finalization, index assembly, inspection, query, similarity, catalogue, and
+  RunPod control work.
+- `rag-runpod-worker` verifies and executes bounded cloud embedding assignments.
+- `rag-provider` opens an immutable index read-only and implements the Livefire
+  SDK handshake, open, call, health, and close lifecycle.
+- Python is limited to tests, benchmarks, statistical analysis, people reviewing
+  and marking which search results are relevant, and PCA visualization. It is
+  not a production builder, promoter, query tool, provider, packager, or cloud
+  worker.
+
+The provider has no source-system credentials and makes no vendor call at query
+time. Search returns candidate references, not verified facts. The released
+OCSF query service must resolve and confirm returned event references before
+their fields are used as evidence. A production host must run the provider with
+enforced file, network, memory, and process limits.
+
+## Current M45 corpus
+
+The admitted source is:
 
 ```text
-cli.outliers  rank commands against the principal's own prior history,
-              the prior population, or both
-cli.search    retrieve commands from a natural-language security query
-cli.similar   find commands semantically similar to one indexed command
-cli.explain   return materialized score components and prior comparisons
+$PWD/../livefire-ocsf/data/builds/m45-progressive-disclosure-run-b
 ```
 
-All tools return candidate pointers, never a malicious/benign verdict or
-authoritative evidence. `top_n` is honored up to the declared bound; there is no
-hidden alert threshold.
+Its sealed identities are:
 
-## Rust experimental vertical slice
+- snapshot: `23077f2605cb4d0ca7f1a857dd0c540d990911197c21a80c886fc1099f6e7d10`
+- dataset: `ba9e0c1ff5f1154defc0956e1984fc1168d0424d29f8d4d6b02e1d1c93fbbe46`
+- mapping: `641e479d5d830edef80c4e57c8048eed9b26710d35a18101e9441065f4337bb7`
+- capability receipt: `d9e7e485213c09abb9862f8620cebc410649bc8241688ae21c53721958493e1b`
 
-The fast experimental path now has a working OCSF fixture-to-tool vertical
-slice. It streams typed Parquet through the Rust projection, batches embeddings
-through LM Studio, writes the language-neutral fast index, queries dense,
-lexical, or fused retrieval, and opens that index in the standalone Rust JSONL
-provider. Python reads the same Parquet and `vectors.f32` artifacts for
-evaluation against human relevance labels (often called qrels) and for PCA; it
-is not in the build or query path.
+The Rust census accounted for 13,905,577 normalized events from 2,030,269
+source records with no rejected, unsupported, or unresolved rows. M45 keeps the
+normalized event bytes from M44 but changes the authoritative snapshot, mapping,
+graph, provenance, and capability identities. Every prepared corpus is therefore
+rebuilt rather than relabelled. The system-metric relation remains structured-only;
+graph, provenance, and subject-alias relations remain exact lookup or hydration
+data rather than embedding input.
 
-With LM Studio serving the model named by
-`profiles/qwen3-embedding-8b-generic-evidence-lmstudio-q4.dev.json`, run the
-six-document interface smoke with:
+The M45 relation datasets are prepared and verified locally under
+`indexes/livefire-ocsf-m45-v1/prepared`. This is model-independent work: it does
+not mean that embeddings or final indexes are complete. Generated
+corpora, model weights, reports, credentials, and built indexes are ignored and
+are not committed to Git.
+
+See [the M45 prepared dataset report](docs/m45-prepared-dataset-report.md) for
+the source qualification, corpus counts, prepared artifact inventory, and the
+exact boundary between files copied for embedding and files retained locally.
+
+## Active Rust workflow
+
+Build the release tools with:
 
 ```sh
-uv run --extra analysis python tools/run_rust_smoke.py \
-  --work /tmp/livefire-rag-smoke --mode fused
+cargo build --release --workspace
 ```
 
-The command refuses to overwrite its work directory. It writes the source
-fixture, index, per-query results, retrieval run, qrel metrics, PCA PNG/report,
-direct provider JSONL transcript, and a `smoke-report.json`. It also repeats the
-build with the embedding endpoint deliberately unreachable, requires zero model
-calls, and compares the stable index artifacts byte-for-byte. The bundled qrels
-are generated from the same six synthetic scenarios, so a perfect score proves
-only that the interfaces and document/vector/pointer bindings work. It is not a
-retrieval-quality benchmark.
+### Reproduce preprocessing from `livefire-ocsf` Parquet
 
-The isolated Livefire adapter includes
-`tools/prepare-external-evidence-search.mjs`, which converts the packaged RAG
-bundle and prepared local-test transcript into a validated external-tool
-loadout. A desktop/server composition root must inject that Node host into the
-runner; deterministic hunt scheduling is intentionally unchanged.
+Start with a completed M45 snapshot produced by the `livefire-ocsf` pipeline.
+Its root must contain `build-receipt.json`, `completeness-receipt.json`, the
+`normalized/`, `graph/`, `provenance/`, and `capabilities/` directories, and all
+objects named by the receipt. Follow the upstream
+[`livefire-ocsf` README](https://github.com/audityourcontracts/livefire-ocsf) to
+build and verify that snapshot. The commands below use the independently
+reproduced M45 run-b output, but they accept the same snapshot at another local
+path through `LIVEFIRE_OCSF_SNAPSHOT`.
 
-The individual commands are:
+From the `livefire-rag` checkout, run this complete model-independent workflow.
+Every output directory must be new; publication is atomic and refuses to
+overwrite an existing result.
 
 ```sh
-cargo run -p rag-builder --bin rag -- build \
-  --snapshot SNAPSHOT --out INDEX \
-  --embedding-profile profiles/qwen3-embedding-8b-generic-evidence-lmstudio-q4.dev.json \
-  --embedding-endpoint http://127.0.0.1:1234 \
-  --resume CACHE.sqlite3 --embedding-batch-size 16 \
-  --representative-sample
+set -eu
 
-cargo run -p rag-builder --bin rag -- query \
+RAG_ROOT=$PWD
+M45_SNAPSHOT=${LIVEFIRE_OCSF_SNAPSHOT:-$RAG_ROOT/../livefire-ocsf/data/builds/m45-progressive-disclosure-run-b}
+M45_OUTPUT=$RAG_ROOT/indexes/livefire-ocsf-m45-v1
+M45_REPORTS=$RAG_ROOT/reports/livefire-ocsf-m45
+
+test -f "$M45_SNAPSHOT/build-receipt.json"
+test -f "$M45_SNAPSHOT/completeness-receipt.json"
+test -f "$M45_SNAPSHOT/capabilities/snapshot-capabilities.v1.json"
+
+cargo build --release --workspace --bins
+mkdir -p "$M45_OUTPUT/prepared" "$M45_REPORTS"
+
+target/release/rag census \
+  --snapshot "$M45_SNAPSHOT" \
+  --out "$M45_REPORTS/full-census.json" \
+  --workers 8
+
+M45_SEARCHABLE_RELATIONS='account-change:ocsf_account_change
+api-activity:ocsf_api_activity
+application-lifecycle:ocsf_application_lifecycle
+authentication:ocsf_authentication
+cloud-resources-inventory-info:ocsf_cloud_resources_inventory_info
+datastore-activity:ocsf_datastore_activity
+detection-finding:ocsf_detection_finding
+dns-activity:ocsf_dns_activity
+email-activity:ocsf_email_activity
+entity-management:ocsf_entity_management
+event-log-activity:ocsf_event_log_activity
+ext-livefire-configuration-snapshot:ocsf_ext_livefire_configuration_snapshot
+file-activity:ocsf_file_activity
+http-activity:ocsf_http_activity
+inventory-info:ocsf_inventory_info
+network-activity:ocsf_network_activity
+process-activity:ocsf_process_activity
+user-inventory:ocsf_user_inventory'
+
+for specification in $M45_SEARCHABLE_RELATIONS; do
+  dataset=${specification%%:*}
+  relation=${specification#*:}
+  prepared=$M45_OUTPUT/prepared/$dataset
+
+  target/release/rag prepare \
+    --snapshot "$M45_SNAPSHOT" \
+    --dataset-id "livefire-ocsf-m45-$dataset" \
+    --dataset-version 1 \
+    --relation "$relation" \
+    --out "$prepared" \
+    --workers 8
+
+  target/release/rag verify-prepared --prepared "$prepared"
+done
+
+# This separate projection retains normalized command, script, and API-operation
+# shapes. It does not read OpenBOTS or another raw source directory.
+target/release/rag prepare-commands \
+  --snapshot "$M45_SNAPSHOT" \
+  --out "$M45_OUTPUT/commands-prepared" \
+  --workers 8
+
+target/release/rag verify-prepared \
+  --prepared "$M45_OUTPUT/commands-prepared"
+
+# Freeze nested 512-, 2,000-, and 10,000-document selections so LM Studio and
+# RunPod can be compared using exactly the same formatted document inputs.
+set --
+for specification in $M45_SEARCHABLE_RELATIONS; do
+  set -- "$@" --relation "${specification#*:}"
+done
+
+target/release/rag prepare-benchmark \
+  --snapshot "$M45_SNAPSHOT" \
+  --dataset-id livefire-ocsf-m45-backend-benchmark \
+  --dataset-version 1 \
+  --selection-seed local-scale-benchmark-v1 \
+  --workers 8 \
+  "$@" \
+  --out "$M45_OUTPUT/benchmark-v1"
+
+for size in 00512 02000 10000; do
+  target/release/rag verify-prepared \
+    --prepared "$M45_OUTPUT/benchmark-v1/prepared-$size"
+done
+```
+
+`rag` verifies the exact M45 receipt, normalized Parquet objects, relation
+inventory, mapping, relation contract, capability sidecar, and row counts before
+publishing. It groups equal formatted text into stable document IDs while
+retaining every contributing event reference in occurrence shards. The
+system-metric relation is accounted as structured-only and is not embedded.
+
+To move a prepared dataset to an embedding machine, transfer only its
+`manifest.json` and every relative path in the manifest's `documents` array.
+For example, this creates a backend-neutral archive for one relation:
+
+```sh
+PREPARED=$M45_OUTPUT/prepared/process-activity
+ARCHIVE=$RAG_ROOT/process-activity-prepared.tar
+
+(
+  cd "$PREPARED"
+  {
+    printf '%s\n' manifest.json
+    jq -r '.documents[].path' manifest.json
+  } | tar -cf "$ARCHIVE" -T -
+)
+```
+
+Keep every path in the manifest's `occurrences` array and `accounting.json`
+locally. They are not model inputs; they are required later to assemble the
+search index and preserve exact M45 event references. The RunPod bundle command
+automates the same allowlisted transfer after a cloud profile and token plan
+have been sealed.
+
+Stop here when selecting between LM Studio and RunPod. Embedding plans bind the
+exact tokenizer, model profile, and runtime conformance evidence, so they are
+created only after the backend is chosen. Prepared document shards can be copied
+to RunPod; occurrence shards stay local for final index assembly.
+
+For a local LM Studio development profile, freeze exact token-balanced work,
+embed it, finalize all task outputs, and assemble one SQLite index:
+
+```sh
+target/release/rag plan-embeddings \
+  --prepared PREPARED --embedding-profile LOCAL_PROFILE \
+  --tokenizer-json TOKENIZER_JSON --tokenizer-ref TOKENIZER_REF \
+  --maximum-task-tokens 262144 --maximum-task-documents 2048 --out PLAN
+
+target/release/rag embed \
+  --prepared PREPARED --plan PLAN --embedding-profile LOCAL_PROFILE \
+  --embedding-endpoint http://127.0.0.1:1234 --out EMBEDDINGS
+
+target/release/rag finalize-embeddings \
+  --prepared PREPARED --plan PLAN --embedding-profile LOCAL_PROFILE \
+  --embeddings EMBEDDINGS
+
+target/release/rag assemble \
+  --prepared PREPARED --plan PLAN --embeddings EMBEDDINGS \
+  --embedding-profile LOCAL_PROFILE --index-format sqlite-v3 --out INDEX
+```
+
+Query and stored-document similarity are also Rust operations:
+
+```sh
+target/release/rag query \
   --index INDEX --query 'encoded PowerShell download' --mode fused --top-n 20 \
   --embedding-endpoint http://127.0.0.1:1234
 
-# Open and verify the index once, then execute a frozen JSONL experiment plan.
-cargo run -p rag-builder --bin rag -- batch-query \
-  --index INDEX --requests QUERIES.jsonl \
-  --embedding-endpoint http://127.0.0.1:1234 > RESULTS.jsonl
+# This reads the seed vector from the index and makes no model request.
+target/release/rag similar \
+  --index INDEX --document-id DOCUMENT_ID --top-n 20
+```
 
-cargo run -p rag-provider --bin rag-package-tool -- \
-  --provider target/release/rag-provider \
-  --sdk-specs ../livefire-sdk/specs --out PROVIDER_BUNDLE
+Several embedding processes may execute non-overlapping task ranges against the
+same output directory. `finalize-embeddings` refuses missing, duplicate, or
+extra output and publishes the result manifest only when the plan is complete.
+Preparation and assembly verify the complete document and occurrence chain.
 
-cargo run -p rag-provider --bin rag-prepare-local-tool -- \
-  --index INDEX --bundle PROVIDER_BUNDLE \
-  --source-receipt SNAPSHOT/build-receipt.json \
-  --embedding-profile profiles/qwen3-embedding-8b-generic-evidence-lmstudio-q4.dev.json \
-  --out LOCAL_TEST_LOADOUT
+See [the Rust CLI guide](crates/rag-builder/README.md) for catalogue search,
+sealed query-vector sets, recovery, local measurements, and analysis handoff.
+See [the provider guide](crates/rag-provider/README.md) for the native provider
+and local SDK lifecycle checks.
 
-cargo run -p rag-builder --bin rag -- inspect --index INDEX
+## RunPod phase
+
+The current cloud phase reuses the exact M45 prepared documents. It uses the
+pinned upstream `Qwen/Qwen3-Embedding-8B` revision
+`1d8ad4ca9b3dd8059ad90a75d4983776a23d44af` and keeps its FP16 cloud vectors
+separate from local LM Studio Q4 vectors.
+
+The Rust contracts, worker, S3 transfer, Pod control, conformance, and sealed
+query-vector paths are implemented and covered by offline contract tests. The
+model artifacts and custom executor image have been built and verified locally.
+No paid Pod has been launched, so
+there is not yet a measured RunPod throughput, cost, or reproducibility result.
+A launch will require explicit credentials and price limits after the offline
+checks pass.
+
+The cloud workflow never uploads occurrence shards because embedding needs only
+prepared documents. It launches a digest-pinned custom executor image, serves
+the model on loopback, writes attempt-scoped outputs, fetches only exact declared
+keys, and terminates the Pod under time and cost guards. Cloud-profile indexes
+use sealed query vectors created by the same profile; local Q4 query vectors
+cannot be mixed with them.
+
+The implemented command family is `rag runpod`. Its exact staged checks and
+current limitations are in [the RunPod embedding guide](docs/runpod-embedding.md).
+
+## Python analysis boundary
+
+The installed project has no `livefire-rag` Python console entry point. The
+supported Python surface is `livefire_rag_analysis` plus reviewer and benchmark
+scripts. For example:
+
+```sh
 uv run --extra analysis python -m livefire_rag_analysis inspect --index INDEX
 uv run --extra analysis python -m livefire_rag_analysis pca \
   --index INDEX --out REPORT_DIR
@@ -111,275 +291,30 @@ uv run --extra analysis python -m livefire_rag_analysis evaluate \
   --planned-query-id q-1 --planned-query-id q-2
 ```
 
-Tool preparation does not modify `INDEX`. It atomically creates a separate
-`LOCAL_TEST_LOADOUT/evidence-index` wrapper using hard links to the verified
-physical files, so the loadout must be created on the same filesystem. The
-external host remains responsible for keeping both paths read-only while the
-provider runs.
+The `src/livefire_rag` modules and old Python command implementations remain in
+the source tree only as frozen test and comparison oracles. They must not be
+used to build or serve the M45 indexes.
 
-`--representative-sample` bounds retained documents and embedding calls per
-searchable relation, but still scans and projects the typed snapshot twice: the
-first pass selects documents and the second spills all occurrences for them.
-Do not start the next released `livefire-ocsf` build until its verified source
-snapshot is available. The Rust provider is packaged with every file and digest
-it needs, then exercised through the SDK as an explicitly local test. Search
-returns pointers to OCSF events, not verified evidence: the released OCSF query
-service must resolve and check those pointers before their fields are used as
-facts. A production host must still enforce file, network, memory, and process
-limits, and Livefire must still connect its desktop or server runner to this
-provider. Wasmtime guest support is also separate future work. The exact
-contracts, implemented status, and remaining gaps are in
-[`docs/rust-experimental-rag-spec.md`](docs/rust-experimental-rag-spec.md).
-The next large-index design separates parallel Rust preparation, replaceable
-local or cloud embedding, and streaming final assembly. Its implementation
-contract and staged test plan are in
-[`docs/portable-embedding-pipeline.md`](docs/portable-embedding-pipeline.md).
-The local scale path is now measured through a 10,000-document LM Studio build,
-version-3 query, recovery checks, and 2,048- and 1,024-dimensional comparison
-indexes. The measured non-network target is 422,566 documents and 5,325,200
-event references. All 16 M41 datasets in that scope are prepared, verified, and
-planned for 92,466,199 exact tokens. Twelve datasets are real embedded and
-indexed: the ten small datasets plus API and HTTP activity, for 23,636
-documents and 165,186 event references. Their sealed catalogue completed 45
-searches across 15 queries with 15 model calls and produced a label-hidden pool
-of 690 unique candidates whose 1,275 unique event pointers were checked against
-typed Parquet. The four largest datasets
-also passed deterministic test-vector assembly as explicitly test-only indexes,
-covering another 398,930 documents and 5,160,014 event references. People still
-need to review pooled search results and mark which are relevant. Returned
-event references still need confirmation through the released OCSF query
-service. A freshly packaged provider also passed the complete local SDK
-handshake/open/search/health/close lifecycle against the HTTP index.
-Runpod is deferred and is not part of the current goal. See
-[`docs/local-first-embedding-scale-plan.md`](docs/local-first-embedding-scale-plan.md).
+## Historical artifacts
 
-The first modular dataset path is implemented. For example, one relation can be
-prepared, embedded, assembled, and queried without rebuilding any other index:
+Older M21/OpenBOTS provider demonstrations, Python promotion code, the M41
+local scale run, and their sealed reports are retained so earlier measurements
+and regression fixtures remain auditable. They are not accepted inputs or
+compatibility targets for the active M45 path.
 
-```sh
-cargo run -p rag-builder --bin rag -- prepare \
-  --snapshot SNAPSHOT --dataset-id DATASET --relation ocsf_detection_finding \
-  --out PREPARED
-cargo run -p rag-builder --bin rag -- verify-prepared --prepared PREPARED
-cargo run -p rag-builder --bin rag -- plan-embeddings \
-  --prepared PREPARED --embedding-profile PROFILE \
-  --tokenizer-json TOKENIZER_JSON --tokenizer-ref TOKENIZER_REF \
-  --maximum-task-tokens 262144 --maximum-task-documents 2048 --out PLAN
-cargo run -p rag-builder --bin rag -- embed \
-  --prepared PREPARED --plan PLAN --embedding-profile PROFILE \
-  --embedding-endpoint http://127.0.0.1:1234 --out EMBEDDINGS
-cargo run -p rag-builder --bin rag -- finalize-embeddings \
-  --prepared PREPARED --plan PLAN --embedding-profile PROFILE \
-  --embeddings EMBEDDINGS
-cargo run -p rag-builder --bin rag -- assemble \
-  --prepared PREPARED --plan PLAN --embeddings EMBEDDINGS \
-  --embedding-profile PROFILE --out INDEX
-cargo run -p rag-builder --bin rag -- query \
-  --index INDEX --mode fused --query 'encoded PowerShell' \
-  --embedding-endpoint http://127.0.0.1:1234
-```
+Key historical documents are explicitly marked at their source:
 
-`plan-embeddings` now emits only the exact-token, token-balanced v2 plan. A v1
-plan is rejected with a migration message instead of being interpreted using
-the new rules. Several `embed` processes may write disjoint task ranges to the
-same output. Each publishes one vector part, a content-bound receipt, and a
-sanitized timing report. `finalize-embeddings` is deliberately separate: it
-refuses partial or extra output and writes `manifest.json` only after every
-planned task is present and valid.
-Planning and embedding verify the prepared manifest and document files, but do
-not read occurrence files that those stages cannot use. `verify-prepared` and
-`assemble` perform the full check, including every occurrence file.
-For larger plans, give separate workers non-overlapping ranges such as
-`--task-range 0..8` and `--task-range 8..16`; each range is checked against the
-actual number of tasks before any model request.
+- [M41 local-first scale plan](docs/local-first-embedding-scale-plan.md)
+- [M41 corpus census](docs/m41-corpus-census.md)
+- [M21 full projection build report](docs/generic-evidence-m21-v1-build-report.md)
+- [Python M21/OpenBOTS provider proof of concept](docs/standalone-provider-poc.md)
+- [early Rust vertical-slice specification](docs/rust-experimental-rag-spec.md)
 
-Occurrence rows and vectors stream in bounded chunks. Preparation writes
-bounded sorted document runs and merges them by document ID, so the former
-600,000-document in-memory limit is removed. Parallel Arrow preparation and
-streaming version-3 SQLite assembly are implemented. LM Studio is the only
-implemented model executor in this branch; the documented Runpod design is
-future work and would reuse the same prepared Parquet and binary vector format.
-
-## Implemented standalone POC commands
-
-```text
-livefire-rag build-fixture --fixture FIXTURE --out INDEX
-livefire-rag promote-prototype --prototype-dir CACHE --out INDEX
-livefire-rag verify --index INDEX
-livefire-rag inspect --index INDEX
-livefire-rag search --index INDEX --request REQUEST
-livefire-rag similar --index INDEX --request REQUEST
-livefire-rag provider
-livefire-rag package-bundle --index INDEX --sdk-specs SDK_SPECS --out BUNDLE
-livefire-rag demo-provider-poc --index INDEX --suite SUITE --out RESULTS
-livefire-rag build-evidence-projection --snapshot-root SNAPSHOT --snapshot-id ID \
-  --index-id ID [--index-uri URI] --out PACK
-livefire-rag verify-evidence-projection --pack PACK --snapshot-root SNAPSHOT \
-  --sdk-specs SDK_SPECS
-livefire-rag inspect-evidence-projection --pack PACK --snapshot-root SNAPSHOT \
-  --sdk-specs SDK_SPECS
-livefire-rag build-evidence-pilot --pack PACK --component-id ID \
-  --sdk-specs SDK_SPECS --out PILOT
-livefire-rag verify-evidence-pilot --pilot PILOT --pack PACK \
-  --sdk-specs SDK_SPECS
-livefire-rag promote-evidence-pilot-index --pack PACK --pilot PILOT \
-  --source-admission-component RECEIPT_REF --embedding-profile PROFILE \
-  --embedding-conformance-fixture FIXTURE --embedding-profile-id ID \
-  --index-id ID --sdk-specs SDK_SPECS --out PILOT_INDEX
-livefire-rag verify-evidence-index --index PILOT_INDEX --pilot-sample PILOT \
-  --sdk-specs SDK_SPECS
-livefire-rag evaluate-evidence-pilot --index PILOT_INDEX \
-  --query-fixture fixtures/generic-evidence-pilot-queries.v1.json \
-  --embedding-endpoint http://127.0.0.1:1234 --component-id ID \
-  --sdk-specs SDK_SPECS --out PILOT_EVALUATION
-livefire-rag report-evidence-pilot-geometry --index PILOT_INDEX --pilot PILOT \
-  --component-id ID --sdk-specs SDK_SPECS --out PILOT_GEOMETRY
-livefire-rag derive-evidence-overlay --pack PACK --snapshot-root SNAPSHOT \
-  --component-id ID --out OVERLAY
-livefire-rag verify-evidence-overlay --overlay OVERLAY
-livefire-rag promote-evidence-index --pack PACK --derivation-pack OVERLAY \
-  --snapshot-root SNAPSHOT --source-admission-component RECEIPT_REF \
-  --embedding-profile PROFILE --embedding-conformance-fixture FIXTURE \
-  --embedding-profile-id ID --index-id ID \
-  --sdk-specs SDK_SPECS --out INDEX
-livefire-rag verify-evidence-index --index INDEX --pack PACK \
-  --derivation-pack OVERLAY --sdk-specs SDK_SPECS
-livefire-rag search-evidence --index INDEX --pack PACK \
-  --derivation-pack OVERLAY --sdk-specs SDK_SPECS --request REQUEST
-livefire-rag evidence-provider --sdk-specs SDK_SPECS
-livefire-rag package-evidence-bundle --sdk-specs SDK_SPECS --out BUNDLE
-livefire-rag prepare-evidence-loadout --index INDEX --bundle BUNDLE \
-  --sdk-specs SDK_SPECS --request REQUEST [--request REQUEST...] --out LOADOUT
-livefire-rag validate-evidence-wire --wire WIRE --loadout LOADOUT \
-  --sdk-specs SDK_SPECS --report REPORT --hydration-requests POINTERS
-```
-
-The immutable POC pack contains canonical `documents.jsonl`, row-major
-little-endian float32 L2 vectors, an object lock, and a content-addressed
-manifest. Exact search accumulates in float64 and breaks equal distances by
-ascending command ID. The SDK provider implements the complete JSONL lifecycle
-and returns typed pointer or miss results.
-
-The generic evidence path admits every typed relation from a completed
-normalized-snapshot build receipt, verifies each Parquet object and row count,
-and emits one terminal occurrence for every source row. A separate immutable
-overlay derives fixed-policy metric/network windows, state transitions, and
-entity summaries without rewriting source occurrences. Promotion converts the
-base and derived documents to canonical Parquet, embeds every and only
-searchable document, and emits a locally verified index. `evidence.search`
-then applies source filters to occurrences before ranking documents and returns
-only source pointers. Local verification and the SDK bundle are implemented;
-the repository deliberately does not claim production host admission or an
-authority signature.
-
-Before full-corpus derivation and embedding, the pilot commands can seal and
-embed a deterministic structural sample of an already verified projection
-pack. Selection is scenario-blind, binds the fixed sampling policy, and retains
-every occurrence for each selected semantic document group. The resulting
-index has the normal physical/query interface, but its manifest and build
-report declare `sample_only_not_corpus_coverage` and
-`local_evaluation_only_not_sdk_admitted`. Every pointer or miss returned from
-that index has partial coverage with
-`pilot_sample_not_corpus_coverage`; a miss is explicitly not a corpus-wide
-absence claim. Pilot promotion does not accept a derivation overlay.
-
-`evaluate-evidence-pilot` freezes the complete execution plan before its first
-search, runs every predeclared query through lexical, dense, and fused retrieval,
-and seals every top-N output plus fixed pairwise ranking comparisons. It verifies
-partial sample scope and exact occurrence-pointer closure. Expected relation
-families are reported only as answer-neutral diagnostics. Until people review
-the pooled results and mark which are relevant, the report makes no
-retrieval-quality claim. PCA/kNN corpus geometry is a
-separate index-only analysis so query metadata cannot influence it; see
-[`docs/evidence-pilot-evaluation.md`](docs/evidence-pilot-evaluation.md).
-
-`prepare-evidence-loadout` creates a deterministic local-test admission receipt,
-exact binding lock, and SDK lifecycle transcript for a promoted index and
-development bundle. It never creates a production authority receipt. After
-`livefire-sdk invoke`, `validate-evidence-wire` validates every successful call
-output and its request/index/lock identities, then exports deduplicated immutable
-pointer requests. It does not hydrate source data; an authoritative OCSF/source
-adapter must resolve and verify those pointers before Livefire treats fields as
-facts.
-
-Generic RAG schemas plus the projection policy and typed-Parquet pointer profile
-are included in the wheel and discovered automatically by projection-pack
-verification. SDK schemas remain a caller-selected host input (`--sdk-specs`);
-the generic verifier loads only evidence schemas and their transitive SDK
-dependencies, never scenario benchmark contracts.
-
-The fixture builder, immutable-index verifier, provider, bundle packager, and
-SDK replay are testable without a Livefire checkout. The one-off prototype
-promotion command reads the pinned local M21/OpenBOTS output paths used to build
-the exploratory corpus; it does not import or modify Livefire source. The
-provider uses the adjacent `livefire-sdk` protocol and standalone harness.
-
-A runnable development-only implementation of the immutable semantic pack,
-standalone CLI, JSONL provider, SDK bundle, and frozen real-data demonstration is
-documented in [`docs/standalone-provider-poc.md`](docs/standalone-provider-poc.md).
-The focused provider suite covers reproducible builds, object corruption,
-document/vector pairing, filters, misses, deadlines, exact ranking, loopback
-search, and both in-process and subprocess lifecycle execution. The real-data
-demo freezes all Q1-Q9 and S1/S2 calls; its SDK replay verifier requires exact
-output equality for request IDs 3 through 13 and records per-case canonical
-digests.
-
-See [`docs/architecture.md`](docs/architecture.md),
-[`docs/source-snapshots.md`](docs/source-snapshots.md),
-[`docs/command-index.md`](docs/command-index.md),
-[`docs/physical-formats.md`](docs/physical-formats.md),
-[`docs/model-selection.md`](docs/model-selection.md), and
-[`docs/implementation-plan.md`](docs/implementation-plan.md). The complete
-source-fidelity, conformance, quality, performance, and reporting program is in
-[`docs/test-program.md`](docs/test-program.md).
-
-The scenario-blind evidence indexing boundary, closure rules, document
-families, and promotion contract are specified in
-[`docs/generic-evidence-index.md`](docs/generic-evidence-index.md).
-The many-to-many derivation boundary and its scenario-blind policies are in
-[`docs/evidence-derivation-overlay.md`](docs/evidence-derivation-overlay.md).
-The Rust-first fast experimental workflow and its future `livefire-ocsf`
-adapter are specified in
-[`docs/rust-experimental-rag-spec.md`](docs/rust-experimental-rag-spec.md).
-The first complete 13.9-million-row M21 projection build and its closure,
-artifact, verification, and performance results are recorded in
-[`docs/generic-evidence-m21-v1-build-report.md`](docs/generic-evidence-m21-v1-build-report.md).
-
-The evaluator-only 23-cloud/53-BOTS fact-to-evidence benchmark is specified in
-[`docs/fact-evidence-benchmark.md`](docs/fact-evidence-benchmark.md). Its metric
-calculator is runnable today without a model or Livefire checkout:
-
-```sh
-python3 tools/evaluate_fact_evidence.py \
-  --inventory fixtures/fact-evidence-synthetic/inventory.json \
-  --queries fixtures/fact-evidence-synthetic/queries.jsonl \
-  --candidate-universes fixtures/fact-evidence-synthetic/candidate-universes.jsonl \
-  --qrels fixtures/fact-evidence-synthetic/qrels.jsonl \
-  --hard-negatives fixtures/fact-evidence-synthetic/hard-negatives.jsonl \
-  --candidate fixtures/fact-evidence-synthetic/candidate-rankings.jsonl \
-  --baseline fixtures/fact-evidence-synthetic/baseline-rankings.jsonl \
-  --gates fixtures/fact-evidence-synthetic/gates.json \
-  --out reports/fact-evidence-synthetic/report.json
-```
-
-Macro nDCG@20 is the primary selection metric. Recall@20, eligible-fact
-coverage, hard-negative discrimination, and pointer/filter correctness are
-required gates. Ranking inputs declare their score kind and direction, so dense
-cosine, BM25, exact-field, and reranker systems share rank-based metrics while
-raw hard-negative margins remain comparable only within one score family. This
-command produces a local comparison and gate report; formal promotion also
-requires the sealed leakage, control, repeatability, and statistical receipts
-specified by the benchmark contract.
-
-Run the evaluator tests and validate every schema/fixture against the adjacent
-private SDK checkout with:
-
-```sh
-uv run --extra test python -m unittest discover -s tests -v
-uv run --with jsonschema python tools/validate_evidence_fixtures.py \
-  --sdk-specs ../livefire-sdk/specs \
-  --report reports/fact-evidence-synthetic/report.json
-```
+The active data and trust rules are in [the data-boundary guide](docs/data-boundary.md),
+the portable file contracts are in
+[the embedding-pipeline specification](docs/portable-embedding-pipeline.md), and
+the active cloud execution plan is in
+[the RunPod embedding guide](docs/runpod-embedding.md).
 
 ## Repository status
 

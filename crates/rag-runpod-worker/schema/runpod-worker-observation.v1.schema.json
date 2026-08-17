@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/runpod-worker-observation.v1.schema.json",
+  "title": "RunPod worker observation supplied after Pod creation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "machine", "accelerator"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.runpod-worker-observation/1"},
+    "machine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pod_id", "machine_id"],
+      "properties": {
+        "pod_id": {"$ref": "#/$defs/identifier"},
+        "machine_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "accelerator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "architecture", "compute_capability", "count"],
+      "properties": {
+        "provider": {"$ref": "#/$defs/text"},
+        "model": {"$ref": "#/$defs/text"},
+        "architecture": {"$ref": "#/$defs/text"},
+        "compute_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "count": {"const": 1}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"}
+  },
+  "$comment": "The host obtains pod_id and machine_id from the RunPod Pod response. The worker also confirms the single GPU model and compute capability locally with nvidia-smi before serving the model."
+}

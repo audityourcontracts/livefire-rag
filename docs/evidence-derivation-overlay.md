@@ -1,5 +1,8 @@
 # Generic evidence derivation overlay
 
+Historical Python design record. This overlay is not part of the active M45
+preparation, embedding, index, or provider path.
+
 The derivation overlay adds deterministic, searchable summaries to a sealed
 generic evidence projection pack. It does not rewrite source occurrences or
 change their terminal dispositions. A separate membership relation allows one

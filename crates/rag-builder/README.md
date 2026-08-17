@@ -46,19 +46,36 @@ rag catalogue build \
 rag catalogue validate --catalogue datasets/catalogue.json
 rag catalogue search --catalogue datasets/catalogue.json \
   --query 'encoded PowerShell' --mode fused --workers 4
+rag similar --index datasets/process/index \
+  --document-id sha256:SEED --top-n 20
+rag catalogue similar --catalogue datasets/catalogue.json \
+  --dataset-id DATASET_ID --document-id sha256:SEED \
+  --top-n 20 --workers 4
 rag catalogue batch-search --catalogue datasets/catalogue.json \
   --requests queries.jsonl --embedding-endpoint http://127.0.0.1:1234 \
   --workers 4 --out catalogue-run
+rag catalogue batch-search --catalogue datasets/catalogue.json \
+  --requests queries.jsonl --query-vector-set sealed-query-vectors \
+  --workers 4 --out cloud-profile-catalogue-run
 ```
 
 All artifact paths must be below the catalogue file's parent directory. Build
-and validation re-open the prepared objects, exact-token plan, result parts,
-receipts, reports, and index files before accepting an entry. Overlapping
+and `catalogue validate` re-open the prepared objects, exact-token plan, result
+parts, receipts, reports, and index files before accepting an entry. Runtime
+search and similarity open and verify each final index and compare its sealed
+prepared/plan/result provenance with the catalogue; they do not reread every
+intermediate embedding part. Overlapping
 relations fail unless named with `--allow-relation-overlap RELATION=REASON`.
 Dense and fused searches embed the query once, search compatible indexes in
 parallel, then merge their per-index ranks. Every hit retains its dataset and
 index identity. Synthetic catalogues require `--test-only` when built and
 `--allow-test-only` each time they are searched.
+
+Similarity resolves the seed by its dataset ID and document ID, reads its
+stored vector, and searches every compatible index without contacting LM
+Studio. The exact seed is excluded by default; `--include-seed` reverses that
+choice. Relation and half-open time filters are applied to candidate event
+references before ranking.
 
 Each `queries.jsonl` row uses the same closed request shape as `batch-query`:
 
@@ -78,6 +95,21 @@ required `--out` path must not exist. The command stages an exact
 `manifest.json`, then publishes the directory with one rename only after every
 request succeeds. A failure publishes nothing. Standard output contains only a
 content-free completion summary.
+
+For an index built with the cloud profile, `--query-vector-set` replaces
+`--embedding-endpoint`. The set must contain the byte-exact same
+`queries.jsonl`, profile, returned model, dimensions, and normalization. Each
+dense or fused row is checked against its query ID, raw query hash, and the
+profile's recomputed query composition before its packed vector is used. The
+run receipt records zero model calls and the sealed set's component digest.
+The two vector sources are mutually exclusive; an all-lexical plan uses
+neither. A single-index frozen query uses the same boundary:
+
+```sh
+rag query --index datasets/process/index \
+  --query-id q-001 --query 'encoded PowerShell' --mode fused \
+  --query-vector-set sealed-query-vectors
+```
 
 The raw run is intentionally ignored by relevance reviewers: it contains
 retrieval modes, ranks, scores, and system identities. For the final reviewer

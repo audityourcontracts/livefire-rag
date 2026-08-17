@@ -30,10 +30,15 @@ GENERIC_EVIDENCE_SCHEMA_NAMES = (
     "catalogue-review-pool-manifest.v1.schema.json",
     "embedding-task-run-report.v1.schema.json",
     "embedding-run-summary.v1.schema.json",
+    "embedding-task-run-report.v2.schema.json",
+    "embedding-run-summary.v2.schema.json",
+    "tei-worker-report-context.v1.schema.json",
     "query-benchmark.v1.schema.json",
     "index-overlap.v1.schema.json",
     "embedding-policy.v1.schema.json",
     "embedding-policy.v2.schema.json",
+    "embedding-policy.v3.schema.json",
+    "tei-model-artifact-set.v1.schema.json",
     "evidence-common.v1.schema.json",
     "evidence-coverage-report.v1.schema.json",
     "evidence-derivation-coverage.v1.schema.json",
@@ -52,6 +57,8 @@ GENERIC_EVIDENCE_SCHEMA_NAMES = (
     "evidence-search.output.v1.schema.json",
     "fast-evidence-search.input.v1.schema.json",
     "fast-evidence-search.output.v1.schema.json",
+    "fast-evidence-similar.input.v1.schema.json",
+    "fast-evidence-similar.output.v1.schema.json",
     "ocsf-hydration-ref.v1.schema.json",
     "fast-index-manifest.v2.schema.json",
     "fast-index-manifest.v3.schema.json",
@@ -73,7 +80,46 @@ GENERIC_EVIDENCE_SCHEMA_NAMES = (
     "embedding-result-set.v2.schema.json",
     "embedding-result-set.v3.schema.json",
     "projection-parity-report.v1.schema.json",
+    "runpod-embedding-bundle.v1.schema.json",
+    "runpod-worker-attempt.v1.schema.json",
+    "runpod-run-report.v1.schema.json",
+    "runpod-tei-conformance-candidate.v1.schema.json",
+    "runpod-tei-conformance-result.v1.schema.json",
+    "runpod-executor-image-build-receipt.v1.schema.json",
+    "runpod-storage-challenge-response.v1.schema.json",
+    "runpod-storage-challenge-receipt.v1.schema.json",
+    "runpod-worker-observation.v1.schema.json",
+    "query-vector-set.v1.schema.json",
 )
+
+PIPELINE_SCHEMA_NAMES = frozenset(
+    {
+        "runpod-embedding-bundle.v1.schema.json",
+        "runpod-worker-attempt.v1.schema.json",
+        "runpod-run-report.v1.schema.json",
+        "runpod-tei-conformance-candidate.v1.schema.json",
+        "runpod-tei-conformance-result.v1.schema.json",
+        "runpod-executor-image-build-receipt.v1.schema.json",
+        "runpod-storage-challenge-response.v1.schema.json",
+        "runpod-storage-challenge-receipt.v1.schema.json",
+        "query-vector-set.v1.schema.json",
+    }
+)
+
+WORKER_SCHEMA_NAMES = frozenset({"runpod-worker-observation.v1.schema.json"})
+
+
+def generic_schema_path(root: Path, name: str) -> Path:
+    """Resolve a schema in an installed bundle or its owning checkout directory."""
+
+    packaged = root / name
+    if packaged.is_file():
+        return packaged
+    if name in PIPELINE_SCHEMA_NAMES:
+        return root.parent / "crates" / "rag-pipeline" / "schema" / name
+    if name in WORKER_SCHEMA_NAMES:
+        return root.parent / "crates" / "rag-runpod-worker" / "schema" / name
+    return packaged
 
 
 def generic_schema_root(explicit: Path | None = None) -> Path:
@@ -85,7 +131,10 @@ def generic_schema_root(explicit: Path | None = None) -> Path:
     module_root = Path(__file__).resolve().parent
     candidates.extend((module_root / "evidence_specs", module_root.parents[1] / "specs"))
     for candidate in candidates:
-        if all((candidate / name).is_file() for name in GENERIC_EVIDENCE_SCHEMA_NAMES):
+        if all(
+            generic_schema_path(candidate, name).is_file()
+            for name in GENERIC_EVIDENCE_SCHEMA_NAMES
+        ):
             return candidate
     if explicit is not None:
         raise EvidenceSchemaError(
@@ -135,7 +184,9 @@ def _offline_registry(
             f"SDK schemas are unavailable; pass an explicit SDK schema directory: {sdk_root}"
         )
 
-    pending: list[Path] = [rag_root / name for name in GENERIC_EVIDENCE_SCHEMA_NAMES]
+    pending: list[Path] = [
+        generic_schema_path(rag_root, name) for name in GENERIC_EVIDENCE_SCHEMA_NAMES
+    ]
     loaded_paths: set[Path] = set()
     while pending:
         path = pending.pop(0).resolve()
@@ -171,7 +222,7 @@ def _offline_registry(
                     raise EvidenceSchemaError(
                         f"generic evidence schema references an unscoped RAG schema: {reference_uri}"
                     )
-                pending.append(rag_root / referenced_name)
+                pending.append(generic_schema_path(rag_root, referenced_name))
             elif parsed.netloc == "livefire.dev" and parsed.path.startswith("/sdk/"):
                 pending.append(sdk_root / Path(parsed.path).name)
             else:
@@ -267,6 +318,7 @@ def validate_evidence_pack_schemas(
 __all__ = [
     "EvidenceSchemaError",
     "GENERIC_EVIDENCE_SCHEMA_NAMES",
+    "generic_schema_path",
     "generic_schema_root",
     "validate_evidence_pack_schemas",
 ]

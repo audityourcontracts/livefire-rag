@@ -8,6 +8,7 @@ description = "Scenario-blind OCSF evidence projection for Livefire RAG"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+base64.workspace = true
 once_cell = "1"
 regex = "1"
 serde.workspace = true

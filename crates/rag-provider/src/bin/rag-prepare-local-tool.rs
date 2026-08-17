@@ -5,11 +5,14 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use clap::Parser;
-use rag_embedding::normalize_loopback_http_endpoint;
+use clap::{Parser, ValueEnum};
+use rag_embedding::{EmbeddingProfile, normalize_loopback_http_endpoint, try_compose_query};
+use rag_pipeline::{ComponentRef, SealedQueryVectorSet};
 use rag_provider::{
-    PROTOCOL, format_ref, format_ref_v3, input_schema_ref, output_schema_ref, retrieval_policy_ref,
-    tool_ref,
+    PROTOCOL, QUERY_VECTOR_SET_COMPONENT_ID, QUERY_VECTOR_SET_COMPONENT_VERSION, format_ref,
+    format_ref_v3, retrieval_policy_ref, search_input_schema_ref, search_output_schema_ref,
+    search_tool_ref, similar_input_schema_ref, similar_output_schema_ref, similar_tool_ref,
+    similarity_policy_ref,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -25,12 +28,31 @@ struct Arguments {
     embedding_profile: PathBuf,
     #[arg(long)]
     source_receipt: PathBuf,
-    #[arg(long, default_value = "http://127.0.0.1:1234")]
-    embedding_endpoint: String,
+    /// Loopback model server for search. Defaults to LM Studio on port 1234
+    /// when neither query-vector option is supplied.
+    #[arg(long, conflicts_with = "query_vector_set")]
+    embedding_endpoint: Option<String>,
+    /// Complete sealed query-vector-set directory for offline dense/fused
+    /// search. Mutually exclusive with --embedding-endpoint.
+    #[arg(long, conflicts_with = "embedding_endpoint")]
+    query_vector_set: Option<PathBuf>,
     #[arg(long)]
     out: PathBuf,
     #[arg(long, default_value = "encoded PowerShell command")]
     query: String,
+    /// Prepare a loadout for free-text search or stored-document similarity.
+    #[arg(long, value_enum, default_value_t = ToolKind::Search)]
+    tool: ToolKind,
+    /// Required when --tool similar is selected.
+    #[arg(long)]
+    document_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum ToolKind {
+    #[default]
+    Search,
+    Similar,
 }
 
 static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -88,7 +110,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let staging = StagedOutput::new(&a.out)?;
     let output = staging.path();
-    let embedding_endpoint = normalize_loopback_http_endpoint(&a.embedding_endpoint)?;
+    if matches!(a.tool, ToolKind::Similar) && a.query_vector_set.is_some() {
+        return Err("--query-vector-set is only valid for --tool search".into());
+    }
+    let embedding_endpoint = if matches!(a.tool, ToolKind::Search) && a.query_vector_set.is_none() {
+        Some(normalize_loopback_http_endpoint(
+            a.embedding_endpoint
+                .as_deref()
+                .unwrap_or("http://127.0.0.1:1234"),
+        )?)
+    } else {
+        None
+    };
+    let (tool, input_schema, output_schema, retrieval_policy) = match a.tool {
+        ToolKind::Search => (
+            search_tool_ref(),
+            search_input_schema_ref(),
+            search_output_schema_ref(),
+            retrieval_policy_ref(),
+        ),
+        ToolKind::Similar => {
+            a.document_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or("--document-id is required for --tool similar")?;
+            (
+                similar_tool_ref(),
+                similar_input_schema_ref(),
+                similar_output_schema_ref(),
+                similarity_policy_ref(),
+            )
+        }
+    };
     let physical = read_json(&a.index.join("index.json"))?;
     refuse_test_only_index(&physical)?;
     let index_contract = index_contract(&physical)?;
@@ -112,6 +165,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let profile = physical["embedding_profile"].clone();
     let profile_ref =
         json!({"id":profile["id"],"version":profile["version"],"sha256":profile["sha256"]});
+    let query_vector_component = if let Some(root) = a.query_vector_set.as_deref() {
+        let expected_profile: ComponentRef = serde_json::from_value(profile_ref.clone())?;
+        let indexed_profile: EmbeddingProfile = serde_json::from_value(profile.clone())?;
+        let sealed = SealedQueryVectorSet::open(
+            root,
+            &expected_profile,
+            profile["model"].as_str().ok_or("embedding profile model")?,
+            u32::try_from(
+                profile["dimensions"]
+                    .as_u64()
+                    .ok_or("embedding profile dimensions")?,
+            )?,
+            profile["normalization"]
+                .as_str()
+                .ok_or("embedding profile normalization")?,
+            None,
+        )?;
+        let composed = try_compose_query(&indexed_profile, &a.query)?;
+        sealed.vector_for_unique_request(&a.query, &composed, "dense", 10, &[])?;
+        Some(json!({
+            "id":QUERY_VECTOR_SET_COMPONENT_ID,
+            "version":QUERY_VECTOR_SET_COMPONENT_VERSION,
+            "sha256":sealed.manifest.component_sha256
+        }))
+    } else {
+        None
+    };
+    let (contract, call_arguments) = match a.tool {
+        ToolKind::Search if query_vector_component.is_some() => (
+            json!({"mode":"offline_closed","network":[],"secret_handles":[],"vendor_services":[]}),
+            json!({"schema_version":"livefire.rag.fast-search.input/1","query":a.query,"mode":"dense","top_n":10}),
+        ),
+        ToolKind::Search => {
+            let endpoint = embedding_endpoint.as_deref().expect("search endpoint");
+            (
+                json!({"mode":"local_component","network":[format!("loopback:{endpoint}")],"secret_handles":[],"vendor_services":[]}),
+                json!({"schema_version":"livefire.rag.fast-search.input/1","query":a.query,"mode":"lexical","top_n":10}),
+            )
+        }
+        ToolKind::Similar => (
+            json!({"mode":"offline_closed","network":[],"secret_handles":[],"vendor_services":[]}),
+            json!({"schema_version":"livefire.rag.fast-similar.input/1","document_id":a.document_id.as_deref().expect("validated document ID"),"top_n":10}),
+        ),
+    };
+    // The SDK index manifest extends the query-time contract with the exact
+    // local components needed by the index. The tool binding lock uses the
+    // smaller protocol contract and deliberately rejects that extra field.
+    let index_query_contract = match a.tool {
+        ToolKind::Search if query_vector_component.is_some() => {
+            json!({"mode":"offline_closed","network":[],"secret_handles":[],"vendor_services":[],"required_local_components":[profile_ref,query_vector_component.as_ref().expect("query vector component")]})
+        }
+        ToolKind::Search => {
+            let endpoint = embedding_endpoint.as_deref().expect("search endpoint");
+            json!({"mode":"local_component","network":[format!("loopback:{endpoint}")],"secret_handles":[],"vendor_services":[],"required_local_components":[profile_ref]})
+        }
+        ToolKind::Similar => {
+            json!({"mode":"offline_closed","network":[],"secret_handles":[],"vendor_services":[],"required_local_components":[]})
+        }
+    };
     let source_receipt_bytes = fs::read(&a.source_receipt)?;
     let source_receipt: Value = serde_json::from_slice(&source_receipt_bytes)?;
     let snapshot = source_component(
@@ -162,10 +274,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       "schema_version":"livefire.index/1","index_id":"com.ayc.livefire-rag.fast-evidence.local-test","index_version":index_contract.index_version,"index_kind":"generic_ocsf_evidence_candidates",
       "format":index_contract.format,"builder":builder,
       "source_bindings":[{"source_snapshot":snapshot,"source_snapshot_profile":source_profile,"source_admission_receipt":source_admission,"record_identity_policy":record_identity}],
-      "policies":{"embedding":profile_ref,"projection":projection,"retrieval":retrieval_policy_ref(),"physical_index":physical_ref,"mapping_pack":mapping},
+      "policies":{"embedding":profile_ref,"projection":projection,"retrieval":retrieval_policy,"physical_index":physical_ref,"mapping_pack":mapping},
       "objects":objects,"source_pointer_table":pointer,
       "coverage":coverage(&physical,&build_report)?,
-      "query_time_contract":{"mode":"local_component","network":[format!("loopback:{embedding_endpoint}")],"secret_handles":[],"vendor_services":[],"required_local_components":[profile_ref]},
+      "query_time_contract":index_query_contract,
       "governance":{"inherits_source_confidentiality":true,"inherits_source_retention":true}
     });
     let wrapped_index = output.join("evidence-index");
@@ -179,34 +291,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Value::String(format!("local-test:{}", canonical_sha256(&unsigned)));
     write_canonical(output.join("index-admission-receipt.json"), &receipt)?;
     let receipt_ref = json!({"id":"com.ayc.livefire-rag.local-test-index-admission","version":"1","sha256":canonical_sha256(&receipt)});
-    let contract = json!({"mode":"local_component","network":[format!("loopback:{embedding_endpoint}")],"secret_handles":[],"vendor_services":[]});
     // Search data is currently loaded once into the provider process. The
     // local-test binding declares a realistic ceiling for a representative
     // index instead of a misleading 256 MiB sandbox claim.
     let limits = json!({"request_bytes":65536,"result_bytes":1048576,"wall_time_ms":30000,"memory_bytes":2147483648_u64,"max_candidates":100});
-    let lock = json!({"schema_version":"livefire.tool-binding-lock/1","descriptor":tool_ref(),"provider":provider,"executable":executable,"input_schema":input_schema_ref(),"output_schema":output_schema_ref(),"index":index_ref,"index_format":index_contract.format,"index_admission_receipt":receipt_ref,"source_snapshots":[snapshot],"retrieval_policy":retrieval_policy_ref(),"query_time_contract":contract,"protocol":PROTOCOL,"limits":limits});
+    let lock = json!({"schema_version":"livefire.tool-binding-lock/1","descriptor":tool,"provider":provider,"executable":executable,"input_schema":input_schema,"output_schema":output_schema,"index":index_ref,"index_format":index_contract.format,"index_admission_receipt":receipt_ref,"source_snapshots":[snapshot],"retrieval_policy":retrieval_policy,"query_time_contract":contract,"protocol":PROTOCOL,"limits":limits});
     write_canonical(output.join("tool-binding-lock.json"), &lock)?;
     let lock_sha = canonical_sha256(&lock);
     let lock_ref = json!({"id":"com.ayc.livefire-rag.local-test-tool-binding","version":"1","sha256":lock_sha});
-    let mounts = json!([
-      {"logical_name":"evidence-index","role":"index","component":index_ref,"access":"read_only","process_path":future_absolute(&a.out.join("evidence-index"))?},
-      {"logical_name":"tool-binding-lock","role":"policy","component":lock_ref,"access":"read_only","process_path":future_absolute(&a.out.join("tool-binding-lock.json"))?},
-      {"logical_name":"index-admission-receipt","role":"policy","component":receipt_ref,"access":"read_only","process_path":future_absolute(&a.out.join("index-admission-receipt.json"))?},
-      {"logical_name":"embedding-profile","role":"model","component":profile_ref,"access":"read_only","process_path":absolute(&a.embedding_profile)?}
-    ]);
+    let mut mounts = vec![
+        json!({"logical_name":"evidence-index","role":"index","component":index_ref,"access":"read_only","process_path":future_absolute(&a.out.join("evidence-index"))?}),
+        json!({"logical_name":"tool-binding-lock","role":"policy","component":lock_ref,"access":"read_only","process_path":future_absolute(&a.out.join("tool-binding-lock.json"))?}),
+        json!({"logical_name":"index-admission-receipt","role":"policy","component":receipt_ref,"access":"read_only","process_path":future_absolute(&a.out.join("index-admission-receipt.json"))?}),
+        json!({"logical_name":"embedding-profile","role":"model","component":profile_ref,"access":"read_only","process_path":absolute(&a.embedding_profile)?}),
+    ];
+    if let (Some(root), Some(component)) = (
+        a.query_vector_set.as_deref(),
+        query_vector_component.as_ref(),
+    ) {
+        mounts.push(json!({
+            "logical_name":"query-vector-set",
+            "role":"model",
+            "component":component,
+            "access":"read_only",
+            "process_path":absolute(root)?
+        }));
+    }
+    let mounts = Value::Array(mounts);
     let deadline = 4_102_444_800_000_u64;
     let requests = [
         request("1", "handshake", json!({}), deadline),
         request(
             "2",
             "open",
-            json!({"provider":provider,"tools":[tool_ref()],"indexes":[index_ref],"source_snapshots":[snapshot],"binding_lock_sha256":lock_sha,"query_time_contract":contract,"limits":limits,"mounts":mounts}),
+            json!({"provider":provider,"tools":[tool],"indexes":[index_ref],"source_snapshots":[snapshot],"binding_lock_sha256":lock_sha,"query_time_contract":contract,"limits":limits,"mounts":mounts}),
             deadline,
         ),
         request(
             "3",
             "call",
-            json!({"session_id":"${session_id}","tool":tool_ref(),"arguments":{"schema_version":"livefire.rag.fast-search.input/1","query":a.query,"mode":"lexical","top_n":10}}),
+            json!({"session_id":"${session_id}","tool":tool,"arguments":call_arguments}),
             deadline,
         ),
         request(

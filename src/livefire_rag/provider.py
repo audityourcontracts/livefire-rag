@@ -1,4 +1,4 @@
-"""Livefire SDK JSONL tool-provider protocol implementation."""
+"""Historical Python provider retained only for tests and comparisons."""
 
 from __future__ import annotations
 

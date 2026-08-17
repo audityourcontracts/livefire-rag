@@ -1,4 +1,4 @@
-"""Livefire SDK JSONL provider for the generic ``evidence.search`` tool."""
+"""Historical Python evidence provider retained only as a test oracle."""
 
 from __future__ import annotations
 

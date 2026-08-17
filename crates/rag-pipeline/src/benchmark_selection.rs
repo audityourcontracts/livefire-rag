@@ -806,6 +806,7 @@ mod tests {
             version: "1".into(),
             source_snapshot: component("snapshot"),
             mapping: component("mapping"),
+            source_admission: vec![],
             included_relations: vec!["relation_a".into(), "relation_b".into()],
             excluded_relations: vec!["network".into()],
             structured_only_relations: vec![],

@@ -2,18 +2,26 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tarfile
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
 from livefire_rag.bundle import package_bundle
+from livefire_rag.evidence_schema import GENERIC_EVIDENCE_SCHEMA_NAMES, _offline_registry
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_offline_schema_registry_names_are_unique(self) -> None:
+        self.assertEqual(
+            len(GENERIC_EVIDENCE_SCHEMA_NAMES),
+            len(set(GENERIC_EVIDENCE_SCHEMA_NAMES)),
+        )
+
     def test_provider_package_refuses_test_only_index_before_copying(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -39,6 +47,13 @@ class PackagingTests(unittest.TestCase):
             )
             [wheel] = output.glob("*.whl")
             with zipfile.ZipFile(wheel) as archive:
+                self.assertFalse(
+                    any(
+                        name.endswith(".dist-info/entry_points.txt")
+                        for name in archive.namelist()
+                    ),
+                    "the analysis/test wheel must not publish the retired Python CLI",
+                )
                 self.assertIn(
                     "livefire_rag/evidence_specs/corpus-census.v1.schema.json",
                     archive.namelist(),
@@ -100,6 +115,24 @@ class PackagingTests(unittest.TestCase):
                         f"livefire_rag/evidence_specs/{reduced_schema}",
                         archive.namelist(),
                     )
+                for cloud_embedding_schema in [
+                    "embedding-policy.v3.schema.json",
+                    "tei-model-artifact-set.v1.schema.json",
+                    "runpod-embedding-bundle.v1.schema.json",
+                    "runpod-worker-attempt.v1.schema.json",
+                    "runpod-run-report.v1.schema.json",
+                    "runpod-tei-conformance-candidate.v1.schema.json",
+                    "runpod-tei-conformance-result.v1.schema.json",
+                    "runpod-executor-image-build-receipt.v1.schema.json",
+                    "runpod-worker-observation.v1.schema.json",
+                ]:
+                    packaged_path = (
+                        f"livefire_rag/evidence_specs/{cloud_embedding_schema}"
+                    )
+                    self.assertEqual(
+                        archive.namelist().count(packaged_path),
+                        1,
+                    )
                 self.assertIn(
                     "livefire_rag/evidence_specs/fast-lexical-profile.v2.json",
                     archive.namelist(),
@@ -107,6 +140,9 @@ class PackagingTests(unittest.TestCase):
                 for report_schema in [
                     "embedding-task-run-report.v1.schema.json",
                     "embedding-run-summary.v1.schema.json",
+                    "embedding-task-run-report.v2.schema.json",
+                    "embedding-run-summary.v2.schema.json",
+                    "tei-worker-report-context.v1.schema.json",
                     "query-benchmark.v1.schema.json",
                     "index-overlap.v1.schema.json",
                 ]:
@@ -121,6 +157,37 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(
                     archive.read(license_paths[0]),
                     (REPOSITORY / "LICENSE").read_bytes(),
+                )
+                unpacked = output / "unpacked"
+                archive.extractall(unpacked)
+
+            _, packaged_schemas = _offline_registry(
+                unpacked / "livefire_rag" / "evidence_specs",
+                REPOSITORY.parent / "livefire-sdk" / "specs",
+            )
+            for schema_name in GENERIC_EVIDENCE_SCHEMA_NAMES:
+                self.assertIn(schema_name, packaged_schemas)
+
+    def test_source_distribution_contains_external_schema_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            subprocess.run(
+                ["uv", "build", "--sdist", "--out-dir", str(output)],
+                cwd=REPOSITORY,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            [source_distribution] = output.glob("*.tar.gz")
+            with tarfile.open(source_distribution, "r:gz") as archive:
+                names = archive.getnames()
+            for schema_path in [
+                "crates/rag-pipeline/schema/runpod-executor-image-build-receipt.v1.schema.json",
+                "crates/rag-runpod-worker/schema/runpod-worker-observation.v1.schema.json",
+            ]:
+                self.assertEqual(
+                    sum(name.endswith(schema_path) for name in names),
+                    1,
                 )
 
 

@@ -1,5 +1,8 @@
 # Standalone provider POC acceptance
 
+Historical Python/OpenBOTS proof-of-concept suite. It remains a regression
+fixture, not an acceptance gate for the active Rust M45 provider.
+
 This is a small, honest acceptance layer for the standalone RAG provider. It
 freezes all nine analyst queries and both command-neighborhood diagnostics from
 the first real OpenBOTS/OCSF prototype. A run must report every case; selecting

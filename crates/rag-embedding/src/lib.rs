@@ -1,8 +1,9 @@
 //! Resumable, content-bound embedding batches for the experimental indexer.
 
+#![recursion_limit = "256"]
+
 use std::{future::Future, path::Path, time::Duration};
 
-use reqwest::Client;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -61,8 +62,16 @@ impl EmbeddingError {
     }
 }
 
+mod openai_compatible;
 mod shard;
 mod task;
+mod tei;
+mod tei_profile;
+
+pub use openai_compatible::{
+    BearerAuthorization, DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES, HARD_MAX_EMBEDDING_RESPONSE_BYTES,
+    OpenAiCompatibleEmbedder, OpenAiCompatibleOptions, canonical_f32_vectors,
+};
 
 pub use shard::{
     AtomicFilePublication, AtomicPublishOutcome, EMBEDDING_SHARD_HEADER_BYTES,
@@ -76,6 +85,20 @@ pub use task::{
     EmbeddingAttemptOutcome, EmbeddingAttemptReport, EmbeddingBatchReport, EmbeddingTaskOptions,
     EmbeddingTaskReport, EmbeddingTaskStats, RetryPolicy, TaskSelection, execute_embedding_task,
     execute_embedding_task_reported,
+};
+pub use tei::{
+    TEI_CONFORMANCE_FIXTURE_SCHEMA_V1, TeiConformanceFixtureV1, TeiEmbedder, TeiIdentityPolicy,
+};
+pub use tei_profile::{
+    ExecutableTokenizerV3, MAX_TEI_CHECKPOINT_PROFILE_BYTES, MAX_TEI_MODEL_OBJECTS,
+    QWEN3_EMBEDDING_8B_ARTIFACT_SET_SHA256, QWEN3_EMBEDDING_8B_REPOSITORY,
+    QWEN3_EMBEDDING_8B_REVISION, QWEN3_EMBEDDING_8B_SNAPSHOT_PATHS,
+    TEI_CHECKPOINT_PROFILE_SCHEMA_V3, TEI_MODEL_ARTIFACT_SET_SCHEMA_V1, TeiAcceleratorPolicyV3,
+    TeiArtifactObject, TeiBatchingV3, TeiCheckpointProfileV3, TeiComponentIdentity,
+    TeiConformanceV3, TeiImageIdentityV3, TeiLoadPolicyV3, TeiModelArtifactSetV1,
+    TeiOutputProcessingV3, TeiResponseLimitsV3, parse_tei_checkpoint_profile_v3,
+    parse_tei_model_artifact_set_v1, tei_model_artifact_set_sha256_v3,
+    validate_tei_checkpoint_profile_v3,
 };
 
 pub const MAX_QUERY_BYTES: usize = 8_192;
@@ -171,6 +194,20 @@ pub struct VectorDerivation {
 pub fn parse_embedding_profile(bytes: &[u8]) -> Result<EmbeddingProfile> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| EmbeddingError::Invalid("embedding profile JSON"))?;
+    if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        == Some(TEI_CHECKPOINT_PROFILE_SCHEMA_V3)
+    {
+        // The existing planner and worker are LM Studio-specific and must not
+        // silently reinterpret a TEI runtime contract. Validate v3 here so a
+        // template is rejected for its real defect, then require callers to
+        // use the explicit TEI checkpoint parser and constructor.
+        parse_tei_checkpoint_profile_v3(bytes)?;
+        return Err(EmbeddingError::Invalid(
+            "TEI checkpoint profile requires the TEI worker path",
+        ));
+    }
     if let Ok(profile) = serde_json::from_value::<EmbeddingProfile>(value.clone()) {
         validate_embedding_profile(&profile)?;
         return Ok(profile);
@@ -434,9 +471,7 @@ pub trait IdentifiedEmbedder: Embedder {
 }
 
 pub struct LmStudioEmbedder {
-    client: Client,
-    endpoint: String,
-    model: String,
+    client: OpenAiCompatibleEmbedder,
 }
 
 impl LmStudioEmbedder {
@@ -447,111 +482,22 @@ impl LmStudioEmbedder {
     }
 
     pub fn with_timeout(endpoint: &str, model: &str, timeout: Duration) -> Result<Self> {
-        if timeout.is_zero() {
-            return Err(EmbeddingError::Invalid("embedding timeout"));
-        }
         Ok(Self {
-            client: Client::builder().timeout(timeout).build()?,
-            endpoint: normalize_loopback_http_endpoint(endpoint)?,
-            model: model.to_owned(),
+            client: OpenAiCompatibleEmbedder::loopback_with_options(
+                endpoint,
+                model,
+                OpenAiCompatibleOptions {
+                    timeout,
+                    ..OpenAiCompatibleOptions::default()
+                },
+            )?,
         })
     }
 }
 
-#[derive(Serialize)]
-struct EmbeddingRequest<'a> {
-    model: &'a str,
-    input: &'a [String],
-}
-
-#[derive(Deserialize)]
-struct EmbeddingResponse {
-    model: String,
-    data: Vec<EmbeddingDatum>,
-}
-
-#[derive(Deserialize)]
-struct EmbeddingDatum {
-    index: usize,
-    embedding: Vec<f32>,
-}
-
 impl LmStudioEmbedder {
-    async fn request_with_digest(
-        &self,
-        texts: &[String],
-    ) -> Result<(IdentifiedEmbeddingBatch, String)> {
-        let response_bytes = self
-            .client
-            .post(format!("{}/v1/embeddings", self.endpoint))
-            .json(&EmbeddingRequest {
-                model: &self.model,
-                input: texts,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
-        let response_value: serde_json::Value = serde_json::from_slice(&response_bytes)?;
-        let mut normalized = response_value
-            .get("data")
-            .and_then(serde_json::Value::as_array)
-            .ok_or(EmbeddingError::Invalid("response data"))?
-            .iter()
-            .map(|datum| {
-                let index = datum
-                    .get("index")
-                    .and_then(serde_json::Value::as_u64)
-                    .ok_or(EmbeddingError::Invalid("response index"))?;
-                let embedding = datum
-                    .get("embedding")
-                    .cloned()
-                    .ok_or(EmbeddingError::Invalid("response embedding"))?;
-                Ok((index, embedding))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        normalized.sort_by_key(|(index, _)| *index);
-        let normalized = serde_json::Value::Array(
-            normalized
-                .into_iter()
-                .map(|(_, embedding)| embedding)
-                .collect(),
-        );
-        let mut normalized_bytes = serde_json_canonicalizer::to_vec(&normalized)?;
-        normalized_bytes.push(b'\n');
-        let normalized_sha256 = hex_digest(&normalized_bytes);
-        let response: EmbeddingResponse = serde_json::from_slice(&response_bytes)?;
-        if response.data.len() != texts.len() {
-            return Err(EmbeddingError::Invalid("response cardinality"));
-        }
-        let mut ordered = vec![None; texts.len()];
-        for datum in response.data {
-            let slot = ordered
-                .get_mut(datum.index)
-                .ok_or(EmbeddingError::Invalid("response index"))?;
-            if slot.replace(datum.embedding).is_some() {
-                return Err(EmbeddingError::Invalid("duplicate response index"));
-            }
-        }
-        let vectors = ordered
-            .into_iter()
-            .map(|value| value.ok_or(EmbeddingError::Invalid("missing response index")))
-            .collect::<Result<Vec<_>>>()?;
-        if response.model.is_empty() {
-            return Err(EmbeddingError::Invalid("response model identity"));
-        }
-        Ok((
-            IdentifiedEmbeddingBatch {
-                vectors,
-                returned_model: response.model,
-            },
-            normalized_sha256,
-        ))
-    }
-
     async fn request(&self, texts: &[String]) -> Result<IdentifiedEmbeddingBatch> {
-        Ok(self.request_with_digest(texts).await?.0)
+        self.client.embed_identified(texts).await
     }
 
     /// Execute the exact server response normalization used by the bound
@@ -560,7 +506,7 @@ impl LmStudioEmbedder {
         &self,
         texts: &[String],
     ) -> Result<(IdentifiedEmbeddingBatch, String)> {
-        self.request_with_digest(texts).await
+        self.client.conformance_probe(texts).await
     }
 }
 

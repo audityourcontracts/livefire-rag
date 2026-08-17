@@ -16,8 +16,8 @@ use rag_index::{
 use rag_pipeline::{
     AtomicDirectory, CatalogueArtifactRef, CatalogueDatasetEntry, CatalogueMode, ComponentRef,
     DATASET_CATALOGUE_SCHEMA, DatasetCatalogue, DatasetIdentity, Digest, RelationOverlapAllowance,
-    SafeRelativePath, canonical_digest, component_digest, digest_bytes, read_json,
-    resolve_existing_artifact, validate_dataset_pipeline_binding, write_canonical_json,
+    SafeRelativePath, SealedQueryVectorSet, canonical_digest, component_digest, digest_bytes,
+    read_json, resolve_existing_artifact, validate_dataset_pipeline_binding, write_canonical_json,
 };
 use rayon::ThreadPool;
 use rayon::prelude::*;
@@ -46,15 +46,31 @@ pub(crate) struct CatalogueSearchOptions<'a> {
     pub top_n: usize,
     pub endpoint: &'a str,
     pub relations: Vec<String>,
+    pub time_start_ms: Option<u64>,
+    pub time_end_ms: Option<u64>,
     pub workers: usize,
     pub allow_test_only: bool,
+}
+
+pub(crate) struct CatalogueSimilarOptions<'a> {
+    pub catalogue: &'a Path,
+    pub dataset_id: &'a str,
+    pub document_id: &'a str,
+    pub top_n: usize,
+    pub relations: Vec<String>,
+    pub time_start_ms: Option<u64>,
+    pub time_end_ms: Option<u64>,
+    pub workers: usize,
+    pub allow_test_only: bool,
+    pub exclude_seed: bool,
 }
 
 pub(crate) struct CatalogueBatchSearchOptions<'a> {
     pub catalogue: &'a Path,
     pub requests: &'a Path,
     pub out: &'a Path,
-    pub endpoint: &'a str,
+    pub endpoint: Option<&'a str>,
+    pub query_vector_set: Option<&'a Path>,
     pub workers: usize,
     pub allow_test_only: bool,
 }
@@ -105,6 +121,19 @@ struct CatalogueSearchOutput<'a> {
 }
 
 #[derive(Serialize)]
+struct CatalogueSimilarOutput<'a> {
+    schema_version: &'static str,
+    catalogue_sha256: &'a Digest,
+    seed_dataset: &'a DatasetIdentity,
+    seed_dataset_sha256: &'a Digest,
+    seed_index_sha256: &'a Digest,
+    seed_document_id: &'a str,
+    seed_excluded: bool,
+    rank_merge: &'a str,
+    hits: &'a [CatalogueSearchHit],
+}
+
+#[derive(Serialize)]
 struct CatalogueBatchSearchOutput<'a> {
     schema_version: &'static str,
     query_id: &'a str,
@@ -131,6 +160,8 @@ struct BatchModelReceipt {
     configured_model: String,
     returned_model: Option<String>,
     calls: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query_vector_set_sha256: Option<Digest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,7 +286,7 @@ pub(crate) fn validate_catalogue(path: &Path) -> Result<()> {
 }
 
 pub(crate) async fn search_catalogue(options: CatalogueSearchOptions<'_>) -> Result<()> {
-    let admitted = admit_catalogue(options.catalogue)?;
+    let admitted = admit_catalogue_for_query(options.catalogue)?;
     require_search_permission(&admitted, options.allow_test_only)?;
     let embedder = LmStudioEmbedder::new(
         options.endpoint,
@@ -282,34 +313,152 @@ pub(crate) async fn search_catalogue(options: CatalogueSearchOptions<'_>) -> Res
     Ok(())
 }
 
+pub(crate) fn similar_catalogue(options: CatalogueSimilarOptions<'_>) -> Result<()> {
+    let admitted = admit_catalogue_for_query(options.catalogue)?;
+    require_search_permission(&admitted, options.allow_test_only)?;
+    let (seed_ordinal, ranked) = similar_admitted_catalogue(&admitted, &options)?;
+    let seed_dataset = &admitted.datasets[seed_ordinal];
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&CatalogueSimilarOutput {
+            schema_version: "livefire.rag.catalogue-similar-result/1",
+            catalogue_sha256: &admitted.catalogue.component_sha256,
+            seed_dataset: &seed_dataset.entry.dataset,
+            seed_dataset_sha256: &seed_dataset.entry.dataset_sha256,
+            seed_index_sha256: &seed_dataset.entry.final_index.component.sha256,
+            seed_document_id: options.document_id,
+            seed_excluded: options.exclude_seed,
+            rank_merge: &admitted.catalogue.rank_merge,
+            hits: &ranked,
+        })?
+    );
+    Ok(())
+}
+
+fn similar_admitted_catalogue(
+    admitted: &AdmittedCatalogue,
+    options: &CatalogueSimilarOptions<'_>,
+) -> Result<(usize, Vec<CatalogueSearchHit>)> {
+    validate_catalogue_similar_options(options)?;
+    let seed_ordinal = admitted
+        .datasets
+        .iter()
+        .position(|dataset| dataset.entry.dataset.id == options.dataset_id)
+        .ok_or_else(|| Error::SeedDatasetNotFound(options.dataset_id.to_owned()))?;
+    let seed_dataset = &admitted.datasets[seed_ordinal];
+    let seed_vector = seed_dataset
+        .index
+        .document_vector(options.document_id)?
+        .ok_or_else(|| Error::SeedDocumentNotFound(options.document_id.to_owned()))?;
+    let filters = SearchFilters {
+        relations: options.relations.iter().cloned().collect(),
+        time_start_ms: options.time_start_ms,
+        time_end_ms: options.time_end_ms,
+    };
+    let pool = catalogue_search_pool(options.workers)?;
+    let searched = pool.install(|| {
+        admitted
+            .datasets
+            .par_iter()
+            .map(|dataset| {
+                let mut excluded = BTreeSet::new();
+                if options.exclude_seed
+                    && dataset.entry.dataset_sha256 == seed_dataset.entry.dataset_sha256
+                {
+                    excluded.insert(options.document_id.to_owned());
+                }
+                let hits = dataset.index.search_dense_with_vector_excluding(
+                    &seed_vector,
+                    &filters,
+                    &excluded,
+                    options.top_n,
+                )?;
+                Ok((dataset, hits))
+            })
+            .collect::<Vec<Result<_>>>()
+    });
+    let mut ranked = Vec::new();
+    for searched_dataset in searched {
+        let (dataset, hits) = searched_dataset?;
+        for hit in hits {
+            let index_rank = hit.rank;
+            ranked.push(CatalogueSearchHit {
+                rank: 0,
+                reciprocal_rank_score: reciprocal_rank_score(index_rank)?,
+                dataset: dataset.entry.dataset.clone(),
+                dataset_sha256: dataset.entry.dataset_sha256.clone(),
+                index_sha256: dataset.entry.final_index.component.sha256.clone(),
+                index_rank,
+                hit,
+            });
+        }
+    }
+    rank_catalogue_hits(&mut ranked, options.top_n);
+    Ok((seed_ordinal, ranked))
+}
+
 pub(crate) async fn batch_search_catalogue(options: CatalogueBatchSearchOptions<'_>) -> Result<()> {
     let plan = read_batch_query_plan(options.requests)?;
-    let admitted = admit_catalogue(options.catalogue)?;
-    let embedder = LmStudioEmbedder::new(
-        options.endpoint,
-        &admitted
+    let admitted = admit_catalogue_for_query(options.catalogue)?;
+    let uses_semantic_search = plan
+        .requests
+        .iter()
+        .any(|request| matches!(request.mode, Mode::Dense | Mode::Fused));
+    if uses_semantic_search != (options.endpoint.is_some() ^ options.query_vector_set.is_some())
+        || (!uses_semantic_search
+            && (options.endpoint.is_some() || options.query_vector_set.is_some()))
+    {
+        return Err(Error::AccountingClosure(
+            "semantic catalogue batch search needs exactly one endpoint or sealed query-vector set; all-lexical search needs neither",
+        ));
+    }
+    let run_options = BatchRunExecutionOptions {
+        requests_path: options.requests,
+        expected_request_sha256: &plan.source_sha256,
+        expected_request_bytes: plan.source_bytes,
+        out: options.out,
+        workers: options.workers,
+        allow_test_only: options.allow_test_only,
+    };
+    let manifest = if let Some(root) = options.query_vector_set {
+        let profile = &admitted
             .datasets
             .first()
             .ok_or(Error::AccountingClosure("dataset catalogue is empty"))?
             .index
             .manifest
-            .embedding_profile
-            .model,
-    );
-    let manifest = publish_batch_search_run(
-        &admitted,
-        &embedder,
-        &plan.requests,
-        BatchRunExecutionOptions {
-            requests_path: options.requests,
-            expected_request_sha256: &plan.source_sha256,
-            expected_request_bytes: plan.source_bytes,
-            out: options.out,
-            workers: options.workers,
-            allow_test_only: options.allow_test_only,
-        },
-    )
-    .await?;
+            .embedding_profile;
+        let profile_component = ComponentRef {
+            id: profile.id.clone(),
+            version: profile.version.clone(),
+            sha256: Digest::new(profile.sha256.clone())?,
+        };
+        let sealed = SealedQueryVectorSet::open(
+            root,
+            &profile_component,
+            &profile.model,
+            profile.dimensions,
+            &profile.normalization,
+            Some(options.requests),
+        )?;
+        publish_batch_search_run_sealed(&admitted, &sealed, &plan.requests, run_options).await?
+    } else if let Some(endpoint) = options.endpoint {
+        let embedder = LmStudioEmbedder::new(
+            endpoint,
+            &admitted
+                .datasets
+                .first()
+                .ok_or(Error::AccountingClosure("dataset catalogue is empty"))?
+                .index
+                .manifest
+                .embedding_profile
+                .model,
+        );
+        publish_batch_search_run(&admitted, &embedder, &plan.requests, run_options).await?
+    } else {
+        let embedder = NeverEmbedder;
+        publish_batch_search_run(&admitted, &embedder, &plan.requests, run_options).await?
+    };
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({
@@ -329,6 +478,52 @@ async fn publish_batch_search_run<E: IdentifiedEmbedder>(
     requests: &[BatchQueryRequest],
     options: BatchRunExecutionOptions<'_>,
 ) -> Result<CatalogueBatchSearchManifest> {
+    publish_batch_search_run_inner(admitted, Some(embedder), None, requests, options).await
+}
+
+async fn publish_batch_search_run_sealed(
+    admitted: &AdmittedCatalogue,
+    sealed: &SealedQueryVectorSet,
+    requests: &[BatchQueryRequest],
+    options: BatchRunExecutionOptions<'_>,
+) -> Result<CatalogueBatchSearchManifest> {
+    publish_batch_search_run_inner::<NeverEmbedder>(admitted, None, Some(sealed), requests, options)
+        .await
+}
+
+struct NeverEmbedder;
+
+impl rag_embedding::Embedder for NeverEmbedder {
+    async fn embed(&self, _texts: &[String]) -> rag_embedding::Result<Vec<Vec<f32>>> {
+        Err(rag_embedding::EmbeddingError::Invalid(
+            "embedding endpoint is unavailable",
+        ))
+    }
+}
+
+impl IdentifiedEmbedder for NeverEmbedder {
+    async fn embed_identified(
+        &self,
+        _texts: &[String],
+    ) -> rag_embedding::Result<rag_embedding::IdentifiedEmbeddingBatch> {
+        Err(rag_embedding::EmbeddingError::Invalid(
+            "embedding endpoint is unavailable",
+        ))
+    }
+}
+
+async fn publish_batch_search_run_inner<E: IdentifiedEmbedder>(
+    admitted: &AdmittedCatalogue,
+    embedder: Option<&E>,
+    sealed: Option<&SealedQueryVectorSet>,
+    requests: &[BatchQueryRequest],
+    options: BatchRunExecutionOptions<'_>,
+) -> Result<CatalogueBatchSearchManifest> {
+    if embedder.is_some() == sealed.is_some() {
+        return Err(Error::AccountingClosure(
+            "catalogue batch query vector source is invalid",
+        ));
+    }
     require_search_permission(admitted, options.allow_test_only)?;
     validate_catalogue_batch_requests(admitted, requests)?;
     let source_requests_receipt =
@@ -364,6 +559,7 @@ async fn publish_batch_search_run<E: IdentifiedEmbedder>(
     let profile = &first.index.manifest.embedding_profile;
     let mut cache = BTreeMap::<String, CachedQueryVector>::new();
     let mut returned_model: Option<String> = None;
+    let mut model_calls = 0_usize;
     let mut result_count = 0_usize;
     for request in requests {
         let options = CatalogueSearchOptions {
@@ -373,6 +569,8 @@ async fn publish_batch_search_run<E: IdentifiedEmbedder>(
             top_n: request.top_n,
             endpoint: "unused-with-supplied-embedder",
             relations: request.relations.clone(),
+            time_start_ms: None,
+            time_end_ms: None,
             workers: options.workers,
             allow_test_only: options.allow_test_only,
         };
@@ -380,8 +578,48 @@ async fn publish_batch_search_run<E: IdentifiedEmbedder>(
         let search_mode: SearchMode = request.mode.into();
         let query_vector = if matches!(search_mode, SearchMode::Dense | SearchMode::Fused) {
             let composed = try_compose_query(profile, &request.query)?;
-            if !cache.contains_key(&composed) {
+            if let Some(sealed) = sealed {
+                let mode = match request.mode {
+                    Mode::Dense => "dense",
+                    Mode::Fused => "fused",
+                    Mode::Lexical => unreachable!("sealed vectors are semantic only"),
+                };
+                let vector = sealed.vector_for_request(
+                    &request.query_id,
+                    &request.query,
+                    &composed,
+                    mode,
+                    request.top_n,
+                    &request.relations,
+                )?;
+                let dimensions = vector.len();
+                let vector_sha256 = query_vector_digest(vector)?;
+                let vector = first.index.validate_query_vector(vector)?;
+                if let Some(cached) = cache.get(&composed) {
+                    if cached.vector.values() != vector.values() {
+                        return Err(Error::AccountingClosure(
+                            "sealed query IDs disagree for one composed query",
+                        ));
+                    }
+                } else {
+                    cache.insert(
+                        composed.clone(),
+                        CachedQueryVector {
+                            receipt: QueryVectorReceipt {
+                                composed_query_sha256: digest_bytes(composed.as_bytes()),
+                                vector_sha256,
+                                dimensions,
+                            },
+                            vector,
+                        },
+                    );
+                }
+                returned_model = Some(sealed.manifest.execution.execution.returned_model.clone());
+            } else if !cache.contains_key(&composed) {
                 let response = embedder
+                    .ok_or(Error::AccountingClosure(
+                        "catalogue embedding endpoint is absent",
+                    ))?
                     .embed_identified(std::slice::from_ref(&composed))
                     .await?;
                 if response.returned_model != profile.model {
@@ -398,6 +636,9 @@ async fn publish_batch_search_run<E: IdentifiedEmbedder>(
                     ));
                 }
                 returned_model = Some(response.returned_model);
+                model_calls = model_calls
+                    .checked_add(1)
+                    .ok_or(Error::AccountingClosure("model call count overflow"))?;
                 let mut vectors = response.vectors;
                 if vectors.len() != 1 {
                     return Err(Error::AccountingClosure(
@@ -505,7 +746,6 @@ async fn publish_batch_search_run<E: IdentifiedEmbedder>(
         .collect::<Vec<_>>();
     query_vectors
         .sort_by(|left, right| left.composed_query_sha256.cmp(&right.composed_query_sha256));
-    let model_calls = query_vectors.len();
     let mut manifest = CatalogueBatchSearchManifest {
         schema_version: "livefire.rag.catalogue-batch-search-run/1",
         component_sha256: Digest::new("0".repeat(64))?,
@@ -521,7 +761,9 @@ async fn publish_batch_search_run<E: IdentifiedEmbedder>(
         relation_filters,
         request_shapes,
         model: BatchModelReceipt {
-            status: if model_calls == 0 {
+            status: if sealed.is_some() && !query_vectors.is_empty() {
+                "sealed_query_vector_set"
+            } else if model_calls == 0 {
                 "not_used_all_lexical"
             } else {
                 "used"
@@ -529,6 +771,8 @@ async fn publish_batch_search_run<E: IdentifiedEmbedder>(
             configured_model: profile.model.clone(),
             returned_model,
             calls: model_calls,
+            query_vector_set_sha256: sealed
+                .map(|vectors| vectors.manifest.component_sha256.clone()),
         },
         query_vectors,
         rank_merge: RankMergeReceipt {
@@ -659,7 +903,6 @@ fn validate_batch_manifest(manifest: &CatalogueBatchSearchManifest) -> Result<()
             .request_shapes
             .iter()
             .any(|shape| shape.rows == 0 || !sorted_unique(&shape.relations))
-        || manifest.model.calls != manifest.query_vectors.len()
         || !manifest
             .query_vectors
             .windows(2)
@@ -675,15 +918,23 @@ fn validate_batch_manifest(manifest: &CatalogueBatchSearchManifest) -> Result<()
         .modes
         .iter()
         .any(|mode| matches!(mode, Mode::Dense | Mode::Fused));
+    let endpoint_semantic = manifest.model.status == "used"
+        && manifest.model.calls == manifest.query_vectors.len()
+        && manifest.model.calls > 0
+        && manifest.model.query_vector_set_sha256.is_none();
+    let sealed_semantic = manifest.model.status == "sealed_query_vector_set"
+        && manifest.model.calls == 0
+        && !manifest.query_vectors.is_empty()
+        && manifest.model.query_vector_set_sha256.is_some();
     if has_semantic_mode
-        != (manifest.model.status == "used"
-            && manifest.model.calls > 0
+        != ((endpoint_semantic || sealed_semantic)
             && manifest.model.returned_model.as_deref()
                 == Some(manifest.model.configured_model.as_str()))
         || (!has_semantic_mode
             && (manifest.model.status != "not_used_all_lexical"
                 || manifest.model.calls != 0
                 || manifest.model.returned_model.is_some()
+                || manifest.model.query_vector_set_sha256.is_some()
                 || !manifest.query_vectors.is_empty()))
         || (manifest.component_sha256 != zero
             && manifest.component_sha256 != component_digest(manifest)?)
@@ -721,8 +972,26 @@ fn validate_catalogue_search_options(options: &CatalogueSearchOptions<'_>) -> Re
         || options.workers == 0
         || options.workers > MAX_CATALOGUE_WORKERS
         || options.relations.iter().any(String::is_empty)
+        || matches!((options.time_start_ms, options.time_end_ms), (Some(start), Some(end)) if start >= end)
     {
         return Err(Error::AccountingClosure("invalid catalogue search options"));
+    }
+    Ok(())
+}
+
+fn validate_catalogue_similar_options(options: &CatalogueSimilarOptions<'_>) -> Result<()> {
+    if options.dataset_id.is_empty()
+        || options.document_id.is_empty()
+        || options.top_n == 0
+        || options.top_n > 100
+        || options.workers == 0
+        || options.workers > MAX_CATALOGUE_WORKERS
+        || options.relations.iter().any(String::is_empty)
+        || matches!((options.time_start_ms, options.time_end_ms), (Some(start), Some(end)) if start >= end)
+    {
+        return Err(Error::AccountingClosure(
+            "invalid catalogue similarity options",
+        ));
     }
     Ok(())
 }
@@ -786,7 +1055,8 @@ fn search_admitted_catalogue_with_vector(
     }
     let filters = SearchFilters {
         relations: options.relations.iter().cloned().collect(),
-        ..Default::default()
+        time_start_ms: options.time_start_ms,
+        time_end_ms: options.time_end_ms,
     };
     let searched = pool.install(|| {
         admitted
@@ -899,6 +1169,76 @@ fn admit_catalogue(path: &Path) -> Result<AdmittedCatalogue> {
         catalogue,
         datasets,
     })
+}
+
+/// Runtime admission verifies the sealed catalogue and every final index but
+/// does not replay prepared occurrence shards or embedding task parts. The
+/// explicit `catalogue validate` command retains that full build-chain check.
+/// Final indexes carry the exact parent component identities in
+/// `pipeline_provenance`, so a changed or swapped parent chain still fails.
+fn admit_catalogue_for_query(path: &Path) -> Result<AdmittedCatalogue> {
+    let path = fs::canonicalize(path)?;
+    let root = path
+        .parent()
+        .ok_or(Error::AccountingClosure("catalogue root is absent"))?;
+    let catalogue: DatasetCatalogue = read_json(&path)?;
+    catalogue.validate()?;
+    let mut datasets = Vec::with_capacity(catalogue.datasets.len());
+    let mut expected_profile: Option<EmbeddingProfile> = None;
+    for entry in &catalogue.datasets {
+        let index_manifest = resolve_existing_artifact(root, &entry.final_index.path)?;
+        require_manifest_name(&index_manifest, "index.json")?;
+        let index_root = artifact_parent(&index_manifest)?;
+        let index = if matches!(catalogue.mode, CatalogueMode::TestOnly) {
+            FastIndex::open_allow_test_only(index_root)?
+        } else {
+            FastIndex::open(index_root)?
+        };
+        validate_runtime_index_entry(entry, &index)?;
+        if expected_profile
+            .as_ref()
+            .is_some_and(|profile| profile != &index.manifest.embedding_profile)
+        {
+            return Err(Error::AccountingClosure(
+                "catalogue indexes have different embedding profiles",
+            ));
+        }
+        expected_profile.get_or_insert_with(|| index.manifest.embedding_profile.clone());
+        datasets.push(AdmittedDataset {
+            entry: entry.clone(),
+            index,
+        });
+    }
+    Ok(AdmittedCatalogue {
+        catalogue,
+        datasets,
+    })
+}
+
+fn validate_runtime_index_entry(entry: &CatalogueDatasetEntry, index: &FastIndex) -> Result<()> {
+    let expected_provenance = PipelineProvenance {
+        dataset_sha256: entry.dataset_sha256.to_string(),
+        prepared_corpus_sha256: entry.prepared_corpus.component.sha256.to_string(),
+        embedding_plan_sha256: entry.embedding_plan.component.sha256.to_string(),
+        embedding_result_set_sha256: entry.embedding_result_set.component.sha256.to_string(),
+    };
+    let profile = &index.manifest.embedding_profile;
+    if entry.final_index.component.sha256.as_str() != index.manifest.component_sha256
+        || entry.searchable_document_count != index.manifest.documents.rows
+        || entry.searchable_reference_count != index.manifest.occurrences.rows
+        || index.manifest.source.snapshot_sha256 != entry.dataset.source_snapshot.sha256.as_str()
+        || index.manifest.source.mapping_sha256 != entry.dataset.mapping.sha256.as_str()
+        || profile.id != entry.embedding_profile.id
+        || profile.version != entry.embedding_profile.version
+        || profile.sha256 != entry.embedding_profile.sha256.as_str()
+        || index.manifest.pipeline_provenance.as_ref() != Some(&expected_provenance)
+        || index.manifest.test_only != entry.test_only
+    {
+        return Err(Error::AccountingClosure(
+            "catalogue runtime index binding differs from the sealed entry",
+        ));
+    }
+    Ok(())
 }
 
 fn load_dataset(paths: DatasetPaths, allow_test_only: bool) -> Result<LoadedDataset> {
@@ -1190,6 +1530,7 @@ mod tests {
             version: "1".into(),
             source_snapshot: component("snapshot", 'a'),
             mapping: component("mapping", 'b'),
+            source_admission: vec![],
             included_relations: vec![format!("relation-{id}")],
             excluded_relations: vec![],
             structured_only_relations: vec![],
@@ -1478,6 +1819,8 @@ mod tests {
             top_n: 4,
             endpoint: "http://127.0.0.1:1234",
             relations: vec![],
+            time_start_ms: None,
+            time_end_ms: None,
             workers,
             allow_test_only: false,
         };
@@ -1499,6 +1842,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn catalogue_similarity_uses_one_stored_seed_and_excludes_only_its_exact_pair() {
+        let (_root, admitted) = admitted_search_fixture();
+        let options = |workers| CatalogueSimilarOptions {
+            catalogue: Path::new("unused-by-admitted-similarity"),
+            dataset_id: "dataset-a",
+            document_id: "dataset-a-first",
+            top_n: 4,
+            relations: vec![],
+            time_start_ms: None,
+            time_end_ms: None,
+            workers,
+            allow_test_only: false,
+            exclude_seed: true,
+        };
+        let (_, serial) = similar_admitted_catalogue(&admitted, &options(1)).unwrap();
+        let (_, parallel) = similar_admitted_catalogue(&admitted, &options(2)).unwrap();
+        assert_eq!(serial, parallel);
+        assert_eq!(serial.len(), 3);
+        assert!(serial.iter().all(|hit| {
+            !(hit.dataset.id == "dataset-a" && hit.hit.document_id == "dataset-a-first")
+        }));
+        assert!(serial.iter().any(|hit| {
+            hit.dataset.id == "dataset-b" && hit.hit.document_id == "dataset-b-first"
+        }));
+
+        let mut missing_dataset = options(1);
+        missing_dataset.dataset_id = "missing";
+        assert!(matches!(
+            similar_admitted_catalogue(&admitted, &missing_dataset),
+            Err(Error::SeedDatasetNotFound(_))
+        ));
+        let mut missing_document = options(1);
+        missing_document.document_id = "missing";
+        assert!(matches!(
+            similar_admitted_catalogue(&admitted, &missing_document),
+            Err(Error::SeedDocumentNotFound(_))
+        ));
+    }
+
     #[tokio::test]
     async fn lexical_catalogue_search_does_not_embed() {
         let (_root, admitted) = admitted_search_fixture();
@@ -1516,6 +1899,8 @@ mod tests {
                 top_n: 4,
                 endpoint: "http://127.0.0.1:1234",
                 relations: vec![],
+                time_start_ms: None,
+                time_end_ms: None,
                 workers: 2,
                 allow_test_only: false,
             },
@@ -1661,6 +2046,147 @@ mod tests {
         let mut wrong_digest = manifest;
         wrong_digest.component_sha256 = digest('1');
         assert!(validate_batch_manifest(&wrong_digest).is_err());
+    }
+
+    fn sealed_query_execution() -> rag_pipeline::QueryVectorExecutionBinding {
+        let profile = ComponentRef {
+            id: "profile".into(),
+            version: "1".into(),
+            sha256: digest('7'),
+        };
+        let build = ComponentRef {
+            id: "executor-build".into(),
+            version: "1".into(),
+            sha256: digest('8'),
+        };
+        let execution = rag_pipeline::RunpodExecutionIdentity {
+            executor_image: ComponentRef {
+                id: "executor-image".into(),
+                version: "1".into(),
+                sha256: digest('9'),
+            },
+            executor_image_build: build.clone(),
+            runtime: ComponentRef {
+                id: "runtime".into(),
+                version: "1".into(),
+                sha256: digest('a'),
+            },
+            worker_binary: ComponentRef {
+                id: "worker".into(),
+                version: "1".into(),
+                sha256: digest('b'),
+            },
+            model_artifact: ComponentRef {
+                id: "model".into(),
+                version: "1".into(),
+                sha256: digest('c'),
+            },
+            embedding_profile: profile.clone(),
+            accelerator: rag_pipeline::RunpodAcceleratorIdentity {
+                provider: "runpod".into(),
+                model: "A100".into(),
+                architecture: "ampere".into(),
+                compute_capability: "8.0".into(),
+                count: 1,
+            },
+            returned_model: "local-model".into(),
+        };
+        rag_pipeline::QueryVectorExecutionBinding {
+            embedding_profile: profile,
+            embedding_policy: ComponentRef {
+                id: "policy".into(),
+                version: "3".into(),
+                sha256: digest('d'),
+            },
+            execution_identity_sha256: canonical_digest(&execution).unwrap(),
+            execution,
+            executor_image_build_receipt: build,
+        }
+    }
+
+    #[tokio::test]
+    async fn catalogue_batch_search_uses_only_exact_sealed_query_vectors() {
+        let (root, admitted) = admitted_search_fixture();
+        let requests = vec![
+            batch_request("q-lexical", Mode::Lexical),
+            batch_request("q-semantic", Mode::Dense),
+            batch_request("q-semantic", Mode::Fused),
+        ];
+        let request_path = write_batch_requests(root.path(), "sealed-input.jsonl", &requests);
+        let set_root = root.path().join("query-vectors");
+        let vector = [1.0_f32, 0.0];
+        rag_pipeline::write_query_vector_set(
+            &set_root,
+            &request_path,
+            sealed_query_execution(),
+            2,
+            "l2",
+            &[rag_pipeline::QueryVectorSetInput {
+                query_id: "q-semantic",
+                raw_query: "encoded process",
+                composed_query: "encoded process",
+                vector: &vector,
+            }],
+        )
+        .unwrap();
+        let sealed = SealedQueryVectorSet::open(
+            &set_root,
+            &admitted.catalogue.embedding_profile,
+            "local-model",
+            2,
+            "l2",
+            Some(&request_path),
+        )
+        .unwrap();
+        let receipt =
+            batch_file_receipt(&request_path, BATCH_REQUEST_FILE, requests.len()).unwrap();
+        let manifest = publish_batch_search_run_sealed(
+            &admitted,
+            &sealed,
+            &requests,
+            BatchRunExecutionOptions {
+                requests_path: &request_path,
+                expected_request_sha256: &receipt.sha256,
+                expected_request_bytes: receipt.bytes,
+                out: &root.path().join("sealed-run"),
+                workers: 2,
+                allow_test_only: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(manifest.model.status, "sealed_query_vector_set");
+        assert_eq!(manifest.model.calls, 0);
+        assert_eq!(
+            manifest.model.query_vector_set_sha256,
+            Some(sealed.manifest.component_sha256.clone())
+        );
+        assert_eq!(manifest.query_vectors.len(), 1);
+
+        let changed = vec![BatchQueryRequest {
+            query: "changed".into(),
+            ..batch_request("q-semantic", Mode::Dense)
+        }];
+        let changed_path = write_batch_requests(root.path(), "changed.jsonl", &changed);
+        let changed_receipt =
+            batch_file_receipt(&changed_path, BATCH_REQUEST_FILE, changed.len()).unwrap();
+        assert!(
+            publish_batch_search_run_sealed(
+                &admitted,
+                &sealed,
+                &changed,
+                BatchRunExecutionOptions {
+                    requests_path: &changed_path,
+                    expected_request_sha256: &changed_receipt.sha256,
+                    expected_request_bytes: changed_receipt.bytes,
+                    out: &root.path().join("changed-run"),
+                    workers: 1,
+                    allow_test_only: false,
+                },
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1911,6 +2437,8 @@ mod tests {
                 top_n: 4,
                 endpoint: "http://127.0.0.1:1234",
                 relations: vec![],
+                time_start_ms: None,
+                time_end_ms: None,
                 workers: 2,
                 allow_test_only: false,
             },
@@ -1954,6 +2482,7 @@ mod tests {
             &dataset.index,
         )
         .unwrap();
+        validate_runtime_index_entry(&dataset.entry, &dataset.index).unwrap();
 
         for field in 0..4 {
             let mut wrong_provenance = expected_provenance.clone();
@@ -1988,6 +2517,7 @@ mod tests {
             )
             .is_err()
         );
+        assert!(validate_runtime_index_entry(&stale_digest, &dataset.index).is_err());
         let mut stale_count = dataset.entry.clone();
         stale_count.searchable_reference_count += 1;
         assert!(
@@ -2000,6 +2530,7 @@ mod tests {
             )
             .is_err()
         );
+        assert!(validate_runtime_index_entry(&stale_count, &dataset.index).is_err());
         let mut mixed_profile = planned_profile;
         mixed_profile.normalization = "none".into();
         assert!(

@@ -8,6 +8,7 @@ members = [
     "crates/rag-pipeline",
     "crates/rag-index",
     "crates/rag-builder",
+    "crates/rag-runpod-worker",
     "crates/rag-provider",
     "crates/rag-testkit",
 ]
@@ -27,8 +28,11 @@ rag-pipeline = { path = "crates/rag-pipeline" }
 rag-index = { path = "crates/rag-index" }
 arrow-array = "58"
 arrow-schema = "58"
+aws-sdk-s3 = { version = "=1.141.0", default-features = false, features = ["default-https-client", "rt-tokio", "rustls"] }
+base64 = "0.22"
 clap = { version = "4.6", features = ["derive"] }
 parquet = { version = "58", default-features = false, features = ["arrow", "zstd"] }
+nix = { version = "0.31", default-features = false, features = ["fs", "process", "user"] }
 rayon = "1.11"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rusqlite = { version = "0.38", features = ["bundled"] }

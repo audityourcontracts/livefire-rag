@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/fast-evidence-similar.input.v1.schema.json",
+  "title": "Fast stored-document similarity input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "document_id", "top_n"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.fast-similar.input/1"},
+    "document_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "top_n": {"type": "integer", "minimum": 1, "maximum": 100},
+    "exclude_seed": {"type": "boolean", "default": true},
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "relations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "time_start_ms": {"type": "integer", "minimum": 0},
+        "time_end_ms": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

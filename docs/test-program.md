@@ -1,6 +1,7 @@
 # Command RAG test, evaluation, and reporting program
 
-Status: implementation plan and draft promotion contract.
+Historical M21/OpenBOTS test plan and draft promotion contract. It is retained
+for regression context, not as the release plan for the active Rust M45 path.
 
 This program evaluates six different things without conflating them:
 

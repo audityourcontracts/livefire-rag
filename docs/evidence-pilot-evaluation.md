@@ -1,5 +1,8 @@
 # Evidence pilot evaluation
 
+Historical Python pilot record. It remains useful for evaluator regression and
+does not describe the active Rust M45 build.
+
 This stage evaluates a sealed, explicitly non-admitted pilot index. It never
 changes projection, sampling, semantic text, embeddings, or the frozen query
 set. Results describe only the selected sample and cannot establish corpus-wide

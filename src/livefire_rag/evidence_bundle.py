@@ -17,7 +17,11 @@ from .canonical import (
     sha256_bytes,
     write_canonical_json,
 )
-from .evidence_schema import GENERIC_EVIDENCE_SCHEMA_NAMES, generic_schema_root
+from .evidence_schema import (
+    GENERIC_EVIDENCE_SCHEMA_NAMES,
+    generic_schema_path,
+    generic_schema_root,
+)
 
 
 PROTOCOL = "livefire.tool/1"
@@ -359,7 +363,7 @@ def package_evidence_provider_bundle(
         )
 
         schema_artifacts: dict[str, dict[str, Any]] = {}
-        rag_specs = repository_root / "specs"
+        rag_specs = generic_schema_root(repository_root / "specs")
         bundle_schema_names = tuple(
             dict.fromkeys(
                 (
@@ -371,7 +375,7 @@ def package_evidence_provider_bundle(
         )
         for name in bundle_schema_names:
             relative = f"lib/livefire_rag/evidence_specs/{name}"
-            shutil.copyfile(rag_specs / name, staging / relative)
+            shutil.copyfile(generic_schema_path(rag_specs, name), staging / relative)
             schema = json.loads((staging / relative).read_text(encoding="utf-8"))
             reference = component_ref(schema["$id"], "1", schema)
             inventory.append(_inventory(reference, "schema", staging, relative, "application/schema+json"))

@@ -41,7 +41,7 @@ def _parquet_row_count(path: Path) -> int:
         import duckdb
     except ImportError as error:  # pragma: no cover - depends on optional install
         raise SnapshotAdmissionError(
-            "DuckDB is required to admit typed Parquet relations; install livefire-rag[prototype]"
+            "DuckDB is required for this historical test oracle; install livefire-rag[test]"
         ) from error
     connection = duckdb.connect()
     try:

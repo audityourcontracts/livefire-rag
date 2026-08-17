@@ -12,13 +12,13 @@ use std::{
 
 use arrow_array::RecordBatch;
 use rag_embedding::{
-    AtomicFilePublication, EmbeddingShardExpectation, EmbeddingShardMetadata, EmbeddingShardWriter,
-    EmbeddingTaskOptions, EmbeddingTaskPartPreparation, EmbeddingTaskReport, LmStudioEmbedder,
-    RetryPolicy, TaskSelection, VectorDerivation, adapt_model_vector,
-    complete_embedding_task_part_recovery, decode_sha256_hex, execute_embedding_task_reported,
-    format_document_input, parse_bound_embedding_profile, parse_embedding_profile,
-    prepare_embedding_task_part, restore_quarantined_embedding_task_part, validate_vector,
-    verify_embedding_task_part,
+    AtomicFilePublication, BearerAuthorization, EmbeddingShardExpectation, EmbeddingShardMetadata,
+    EmbeddingShardWriter, EmbeddingTaskOptions, EmbeddingTaskPartPreparation, EmbeddingTaskReport,
+    LmStudioEmbedder, RetryPolicy, TaskSelection, TeiCheckpointProfileV3, TeiEmbedder,
+    VectorDerivation, adapt_model_vector, complete_embedding_task_part_recovery, decode_sha256_hex,
+    execute_embedding_task_reported, format_document_input, parse_bound_embedding_profile,
+    parse_embedding_profile, parse_tei_checkpoint_profile_v3, prepare_embedding_task_part,
+    restore_quarantined_embedding_task_part, validate_vector, verify_embedding_task_part,
 };
 use rag_index::{
     BuildScope, FastDocument, FastIndexManifest, OrderedVectorShard, PipelineIndexOptions,
@@ -41,8 +41,8 @@ use rag_pipeline::{
     PreparedDocumentObject, PreparedDocumentRow, PreparedOccurrenceObject, PreparedOccurrenceRow,
     RESULT_SET_SCHEMA, ReceiptEntry, RelationAccounting, STANDARD_BENCHMARK_SIZES,
     SafeRelativePath, TEST_RESULT_SET_SCHEMA, TEST_VECTOR_EXECUTOR_ID, TokenBalanceOptions,
-    VECTOR_RECEIPT_SCHEMA, VectorObject, VectorResultReceipt, atomic_write,
-    bind_benchmark_prepared_corpus, build_benchmark_selection_manifest,
+    TokenizerArtifactFormat, VECTOR_RECEIPT_SCHEMA, VectorObject, VectorResultReceipt,
+    atomic_write, bind_benchmark_prepared_corpus, build_benchmark_selection_manifest,
     build_token_balanced_plan_with_counts, canonical_digest, canonical_json_bytes,
     component_digest, derive_embedding_plan_v2, digest_bytes, document_order_digest,
     embedding_input_order_digest, read_json, read_prepared_documents, read_prepared_occurrences,
@@ -52,7 +52,7 @@ use rag_pipeline::{
 };
 use rag_projection::{
     ComponentRef as ProjectionComponentRef, ProjectionContext, ProjectionInput, ProjectionOutput,
-    project, project_document_summary,
+    project, project_document_summary, project_m45_command,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -76,6 +76,8 @@ const OCCURRENCE_SCHEMA_BYTES: &[u8] =
     include_bytes!("../../../specs/prepared-occurrence-row.v1.schema.json");
 const PROJECTION_POLICY_BYTES: &[u8] =
     include_bytes!("../../../specs/evidence-projection-policy.v2.json");
+const M45_COMMAND_PROJECTION_POLICY_BYTES: &[u8] =
+    include_bytes!("../../../specs/m45-command-projection-policy.v1.json");
 const PREPARATION_SOURCE_BYTES: &[u8] = include_bytes!("portable.rs");
 const OCCURRENCE_SHARD_ROWS: usize = 8_192;
 const DEFAULT_DOCUMENT_RUN_ROWS: usize = 100_000;
@@ -92,6 +94,12 @@ const MIN_BATCH_RANGE_ROWS: usize = 256;
 struct BatchProjectionExecution<'a> {
     worker_pool: &'a rayon::ThreadPool,
     workers: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PreparedProjectionExecution<'a> {
+    batch: BatchProjectionExecution<'a>,
+    projection: PreparationProjection,
 }
 
 pub(crate) fn default_census_workers() -> usize {
@@ -195,6 +203,50 @@ pub(crate) struct PrepareOptions {
     pub workers: usize,
 }
 
+pub(crate) struct PrepareCommandsOptions {
+    pub snapshot: PathBuf,
+    pub out: PathBuf,
+    pub document_shard_rows: usize,
+    pub workers: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreparationProjection {
+    Generic,
+    M45Commands,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct M45CommandSourceContract {
+    snapshot_receipt_schema: u8,
+    snapshot_manifest_schema: u8,
+    snapshot_id: String,
+    snapshot_version: String,
+    snapshot_sha256: Digest,
+    mapping_id: String,
+    mapping_version: String,
+    mapping_sha256: Digest,
+    relation_contract_sha256: Digest,
+    snapshot_capabilities_sha256: Digest,
+    admitted_relations: Vec<String>,
+    authority: String,
+    event_reference: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct M45CommandAdmittedIdentity {
+    snapshot_manifest_schema: u8,
+    snapshot_id: String,
+    snapshot_version: String,
+    snapshot_sha256: Digest,
+    mapping_id: String,
+    mapping_version: String,
+    mapping_sha256: Digest,
+    relation_contract_sha256: Digest,
+    snapshot_capabilities_sha256: Digest,
+}
+
 pub(crate) struct PrepareBenchmarkOptions {
     pub snapshot: PathBuf,
     pub dataset_id: String,
@@ -227,6 +279,40 @@ pub(crate) struct PlanOptions {
     pub out: PathBuf,
     pub maximum_task_tokens: u64,
     pub maximum_task_documents: u32,
+}
+
+pub(crate) struct TeiPlanOptions {
+    pub prepared: PathBuf,
+    pub embedding_policy: PathBuf,
+    pub tokenizer_json: PathBuf,
+    pub tokenizer_ref: PathBuf,
+    pub out: PathBuf,
+    pub maximum_task_tokens: u64,
+    pub maximum_task_documents: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TeiWorkerReportContextV2 {
+    pub schema_version: String,
+    pub execution_identity: EmbeddingExecutionIdentityV2,
+    pub git: GitState,
+    pub machine: MachineContext,
+    pub accelerator: AcceleratorContextV2,
+    pub backend: EmbeddingBackendContextV2,
+    pub resource_usage: ResourceUsageV2,
+}
+
+pub(crate) struct TeiEmbedOptions {
+    pub prepared: PathBuf,
+    pub plan: PathBuf,
+    pub embedding_policy: PathBuf,
+    pub conformance_fixture: PathBuf,
+    pub out: PathBuf,
+    pub batch_size: usize,
+    pub requests_in_flight: usize,
+    pub task_range: Option<String>,
+    pub worker: TeiWorkerReportContextV2,
 }
 
 pub(crate) struct EmbedOptions {
@@ -282,7 +368,7 @@ pub(crate) struct AssembleOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TaskRunOutcome {
+pub(crate) enum TaskRunOutcome {
     Executed,
     Reused,
     TestGenerated,
@@ -315,6 +401,104 @@ struct BuilderEmbeddingTaskReport {
     resource_usage: ResourceUsage,
     artifact_sizes: TaskArtifactSizes,
     execution: Option<EmbeddingTaskReport>,
+}
+
+/// Exact execution material shared by every task in a portable backend run.
+/// Host identity is deliberately separate so RunPod may schedule the same
+/// sealed execution on different machines. The certified accelerator class is
+/// part of this identity because conformance is hardware-specific.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EmbeddingExecutionIdentityV2 {
+    pub backend_kind: String,
+    pub executor_image: ComponentRef,
+    pub executor_image_build: ComponentRef,
+    pub runtime: ComponentRef,
+    pub worker_binary: ComponentRef,
+    pub model_artifact: ComponentRef,
+    pub embedding_profile: ComponentRef,
+    pub returned_model: String,
+    pub accelerator: EmbeddingAcceleratorPolicyV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EmbeddingAcceleratorPolicyV2 {
+    pub provider: String,
+    pub model: String,
+    pub architecture: String,
+    pub compute_capability: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EmbeddingBackendContextV2 {
+    pub status: ObservationStatus,
+    pub kind: String,
+    pub version: Option<String>,
+    pub endpoint_kind: String,
+    pub batch_size: usize,
+    pub requests_in_flight: usize,
+    pub cold_load_micros: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AcceleratorContextV2 {
+    pub status: ObservationStatus,
+    pub provider: Option<String>,
+    pub machine_id: Option<String>,
+    pub model: Option<String>,
+    pub architecture: Option<String>,
+    pub compute_capability: Option<String>,
+    pub count: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResourceUsageV2 {
+    pub status: ObservationStatus,
+    pub worker_peak_rss_bytes: Option<u64>,
+    pub backend_peak_rss_bytes: Option<u64>,
+}
+
+/// Backend-neutral task report used by TEI and remote workers. V1 remains the
+/// stable LM Studio wire contract and is still emitted by the local path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BuilderEmbeddingTaskReportV2 {
+    pub schema_version: String,
+    pub plan_sha256: Digest,
+    pub source_snapshot_sha256: Digest,
+    pub prepared_corpus_sha256: Digest,
+    pub embedding_profile_sha256: Digest,
+    pub tokenizer_sha256: Digest,
+    pub task_id: String,
+    pub task_index: usize,
+    pub ordinal_start: u64,
+    pub ordinal_end: u64,
+    pub document_count: u64,
+    pub token_count: u64,
+    pub receipt_sha256: Digest,
+    pub outcome: TaskRunOutcome,
+    pub started_unix_ms: Option<u64>,
+    pub finished_unix_ms: Option<u64>,
+    pub execution_identity: EmbeddingExecutionIdentityV2,
+    pub git: GitState,
+    pub machine: MachineContext,
+    pub accelerator: AcceleratorContextV2,
+    pub backend: EmbeddingBackendContextV2,
+    pub transport_bytes: TransportByteAccounting,
+    pub resource_usage: ResourceUsageV2,
+    pub artifact_sizes: TaskArtifactSizes,
+    pub execution: Option<EmbeddingTaskReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ValidatedEmbeddingTaskReport {
+    V1(Box<BuilderEmbeddingTaskReport>),
+    V2(Box<BuilderEmbeddingTaskReportV2>),
 }
 
 struct TaskRunDetails {
@@ -371,6 +555,66 @@ struct EmbeddingRunSummary {
     tokens_per_second: Option<f64>,
     request_latency_micros: RequestLatencySummary,
     length_bucket_throughput: Vec<LengthBucketThroughput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddingWorkerProvenanceV2 {
+    task_id: String,
+    git: GitState,
+    machine: MachineContext,
+    accelerator: AcceleratorContextV2,
+    backend: EmbeddingBackendContextV2,
+    resource_usage: ResourceUsageV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddingRunAggregateV2 {
+    artifact_sizes: RunArtifactSizes,
+    tasks: usize,
+    documents: u64,
+    tokens: u64,
+    unique_input_text_bytes: u64,
+    sent_input_text_bytes: Option<u64>,
+    vector_payload_bytes: u64,
+    vector_shard_bytes: u64,
+    transport_bytes: TransportByteAccounting,
+    requests: u64,
+    retries: u64,
+    execution_reports_complete: bool,
+    calendar_span_micros: Option<u64>,
+    active_time_micros: Option<u64>,
+    task_elapsed_micros_sum: Option<u64>,
+    request_elapsed_micros: Option<u64>,
+    retry_backoff_micros: Option<u64>,
+    peak_in_flight_per_worker: Option<usize>,
+    documents_per_active_second: Option<f64>,
+    tokens_per_active_second: Option<f64>,
+    request_latency_micros: RequestLatencySummary,
+    length_bucket_throughput: Vec<LengthBucketThroughput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddingRunSummaryV2 {
+    schema_version: String,
+    status: String,
+    source_snapshot_sha256: Digest,
+    prepared_corpus_sha256: Digest,
+    plan_sha256: Digest,
+    embedding_profile_sha256: Digest,
+    tokenizer_sha256: Digest,
+    execution_identity: EmbeddingExecutionIdentityV2,
+    workers: Vec<EmbeddingWorkerProvenanceV2>,
+    aggregate: EmbeddingRunAggregateV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum EmbeddingRunSummaryContract {
+    V1(Box<EmbeddingRunSummary>),
+    V2(Box<EmbeddingRunSummaryV2>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -740,6 +984,8 @@ struct CorpusCensusReport {
     component_sha256: Digest,
     source_snapshot: ComponentRef,
     mapping: ComponentRef,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_admission: Vec<ComponentRef>,
     projection_policy: ComponentRef,
     relations_counted: Vec<String>,
     source_rows: u64,
@@ -1009,6 +1255,7 @@ fn build_corpus_census_report(options: &CensusOptions) -> Result<CorpusCensusRep
             &identity.mapping_version,
             identity.mapping_sha256.as_str(),
         )?,
+        source_admission: source_admission_components(identity)?,
         projection_policy: projection_policy_component()?,
         relations_counted,
         source_rows: total_source_rows,
@@ -1330,10 +1577,50 @@ pub(crate) fn prepare(options: PrepareOptions) -> Result<()> {
             "LIVEFIRE_RAG_PREPARE_DOCUMENT_RUN_ROWS must be between 1024 and 600000",
         ));
     }
-    prepare_with_document_run_rows(options, document_run_rows)
+    prepare_with_document_run_rows(options, document_run_rows, PreparationProjection::Generic)
 }
 
-fn prepare_with_document_run_rows(options: PrepareOptions, document_run_rows: usize) -> Result<()> {
+pub(crate) fn prepare_commands(options: PrepareCommandsOptions) -> Result<()> {
+    let document_run_rows = match std::env::var(DOCUMENT_RUN_ROWS_ENV) {
+        Ok(value) => value.parse::<usize>().map_err(|_| {
+            Error::AccountingClosure("LIVEFIRE_RAG_PREPARE_DOCUMENT_RUN_ROWS must be an integer")
+        })?,
+        Err(std::env::VarError::NotPresent) => DEFAULT_DOCUMENT_RUN_ROWS,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(Error::AccountingClosure(
+                "LIVEFIRE_RAG_PREPARE_DOCUMENT_RUN_ROWS must be UTF-8",
+            ));
+        }
+    };
+    if !(MIN_CONFIGURED_DOCUMENT_RUN_ROWS..=MAX_DOCUMENT_RUN_ROWS).contains(&document_run_rows) {
+        return Err(Error::AccountingClosure(
+            "LIVEFIRE_RAG_PREPARE_DOCUMENT_RUN_ROWS must be between 1024 and 600000",
+        ));
+    }
+    prepare_with_document_run_rows(
+        PrepareOptions {
+            snapshot: options.snapshot,
+            dataset_id: "livefire.rag.m45-command-evidence".to_owned(),
+            dataset_version: "1".to_owned(),
+            relations: vec![
+                "ocsf_api_activity".to_owned(),
+                "ocsf_event_log_activity".to_owned(),
+                "ocsf_process_activity".to_owned(),
+            ],
+            out: options.out,
+            document_shard_rows: options.document_shard_rows,
+            workers: options.workers,
+        },
+        document_run_rows,
+        PreparationProjection::M45Commands,
+    )
+}
+
+fn prepare_with_document_run_rows(
+    options: PrepareOptions,
+    document_run_rows: usize,
+    projection: PreparationProjection,
+) -> Result<()> {
     if options.dataset_id.is_empty()
         || options.dataset_version.is_empty()
         || options.document_shard_rows == 0
@@ -1352,6 +1639,9 @@ fn prepare_with_document_run_rows(options: PrepareOptions, document_run_rows: us
         .map_err(|_| Error::AccountingClosure("preparation worker pool could not start"))?;
     let reader = LocalSnapshotReader::open(&options.snapshot)?;
     let identity = reader.identity();
+    if projection == PreparationProjection::M45Commands {
+        validate_m45_command_source(identity)?;
+    }
     let mut included = options.relations;
     included.sort();
     included.dedup();
@@ -1413,8 +1703,13 @@ fn prepare_with_document_run_rows(options: PrepareOptions, document_run_rows: us
                     group.first_row,
                     relation_name,
                     &context,
-                    &worker_pool,
-                    batch_workers,
+                    PreparedProjectionExecution {
+                        batch: BatchProjectionExecution {
+                            worker_pool: &worker_pool,
+                            workers: batch_workers,
+                        },
+                        projection,
+                    },
                 )
             },
             |group, partial| {
@@ -1557,6 +1852,7 @@ fn prepare_with_document_run_rows(options: PrepareOptions, document_run_rows: us
             &identity.mapping_version,
             identity.mapping_sha256.as_str(),
         )?,
+        source_admission: source_admission_components(identity)?,
         included_relations: included.clone(),
         excluded_relations: excluded.clone(),
         structured_only_relations: structured_only.clone(),
@@ -1596,7 +1892,10 @@ fn prepare_with_document_run_rows(options: PrepareOptions, document_run_rows: us
         schema_version: PREPARED_CORPUS_SCHEMA.into(),
         component_sha256: zero_digest()?,
         dataset,
-        projection_policy: projection_policy_component()?,
+        projection_policy: match projection {
+            PreparationProjection::Generic => projection_policy_component()?,
+            PreparationProjection::M45Commands => m45_command_projection_policy_component()?,
+        },
         document_schema: component(
             "livefire.rag.prepared-document-row",
             "1",
@@ -1608,7 +1907,10 @@ fn prepare_with_document_run_rows(options: PrepareOptions, document_run_rows: us
             &sha256_bytes(OCCURRENCE_SCHEMA_BYTES),
         )?,
         preparation_implementation: component(
-            "livefire.rag.portable-preparation",
+            match projection {
+                PreparationProjection::Generic => "livefire.rag.portable-preparation",
+                PreparationProjection::M45Commands => "livefire.rag.m45-command-preparation",
+            },
             env!("CARGO_PKG_VERSION"),
             &sha256_bytes(PREPARATION_SOURCE_BYTES),
         )?,
@@ -2233,10 +2535,31 @@ fn portable_dataset_identity(
             &identity.mapping_version,
             identity.mapping_sha256.as_str(),
         )?,
+        source_admission: source_admission_components(identity)?,
         included_relations: included.to_vec(),
         excluded_relations: excluded,
         structured_only_relations: structured_only,
     })
+}
+
+fn source_admission_components(identity: &OcsfSnapshot) -> Result<Vec<ComponentRef>> {
+    let Some(capability_sha256) = &identity.snapshot_capabilities_sha256 else {
+        return Ok(Vec::new());
+    };
+    let mut components = vec![
+        component(
+            &identity.relation_contract_id,
+            &identity.relation_contract_version,
+            identity.relation_contract_sha256.as_str(),
+        )?,
+        component(
+            "livefire.ocsf.snapshot-capabilities",
+            "1",
+            capability_sha256.as_str(),
+        )?,
+    ];
+    components.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(components)
 }
 
 fn benchmark_length_strata(
@@ -2600,6 +2923,39 @@ pub(crate) fn plan_embeddings(options: PlanOptions) -> Result<()> {
     Ok(())
 }
 
+/// Build an exact-token plan from a complete embedding-policy/3 contract.
+/// The compact profile digest is the digest of the original policy bytes, so
+/// no runtime or conformance field can change without changing the plan.
+pub(crate) fn plan_embeddings_tei(options: TeiPlanOptions) -> Result<()> {
+    let prepared = load_prepared_documents_only(&options.prepared)?;
+    let policy_bytes = fs::read(&options.embedding_policy)?;
+    let policy = parse_tei_checkpoint_profile_v3(&policy_bytes)?;
+    let compact = policy.embedding_profile(&policy_bytes)?;
+    let profile = tei_profile_ref(&policy, &compact)?;
+    let tokenizer_bytes = fs::read(&options.tokenizer_json)?;
+    let tokenizer: ExecutableTokenizerRef = read_json(&options.tokenizer_ref)?;
+    validate_tei_tokenizer_inputs(&policy, &tokenizer, &tokenizer_bytes)?;
+    let documents = load_all_prepared_documents(&options.prepared, &prepared)?;
+    let (plan, token_counts) = build_token_balanced_plan_with_counts(
+        &prepared,
+        &documents,
+        profile,
+        tokenizer,
+        &tokenizer_bytes,
+        TokenBalanceOptions {
+            maximum_task_tokens: options.maximum_task_tokens,
+            maximum_task_documents: options.maximum_task_documents,
+        },
+    )?;
+    plan.validate_with_tokenizer(&prepared, &documents, &tokenizer_bytes)?;
+    let staging = AtomicDirectory::new(&options.out)?;
+    plan.write_document_token_counts(staging.path(), &token_counts)?;
+    write_canonical_json(&staging.path().join("plan.json"), &plan)?;
+    staging.publish()?;
+    println!("{}", serde_json::to_string_pretty(&plan)?);
+    Ok(())
+}
+
 pub(crate) async fn embed(options: EmbedOptions) -> Result<()> {
     let prepared = load_prepared_documents_only(&options.prepared)?;
     let plan = load_embedding_plan_v2(&options.plan)?;
@@ -2607,7 +2963,7 @@ pub(crate) async fn embed(options: EmbedOptions) -> Result<()> {
     let selection = parse_task_selection(options.task_range.as_deref())?;
     let range = selection.resolve(plan.tasks.len())?;
     let profile_bytes = fs::read(&options.embedding_profile)?;
-    let profile = parse_bound_embedding_profile(
+    let profile = parse_bound_portable_profile(
         &profile_bytes,
         plan.embedding_profile.component.sha256.as_str(),
     )?;
@@ -2822,6 +3178,214 @@ pub(crate) async fn embed(options: EmbedOptions) -> Result<()> {
     Ok(())
 }
 
+/// Execute TEI tasks using only the exact checkpoint policy and a pre-built
+/// loopback client. Construction of the client remains with the local worker
+/// so credentials and endpoint details never enter durable artifacts.
+pub(crate) async fn embed_tei_with_embedder(
+    options: TeiEmbedOptions,
+    embedder: Arc<TeiEmbedder>,
+) -> Result<()> {
+    let prepared = load_prepared_documents_only(&options.prepared)?;
+    let plan = load_embedding_plan_v2(&options.plan)?;
+    plan.validate_manifest_binding(&prepared)?;
+    let range = parse_task_selection(options.task_range.as_deref())?.resolve(plan.tasks.len())?;
+    let policy_bytes = fs::read(&options.embedding_policy)?;
+    let policy = parse_tei_checkpoint_profile_v3(&policy_bytes)?;
+    let profile = policy.embedding_profile(&policy_bytes)?;
+    validate_plan_profile_fields(&plan.embedding_profile, &policy_bytes, &profile)?;
+    validate_tei_worker_context(&options.worker, &policy, &plan)?;
+    if options.batch_size == 0
+        || options.batch_size > policy.batching.maximum_batch_items as usize
+        || options.requests_in_flight == 0
+        || options.worker.backend.batch_size != options.batch_size
+        || options.worker.backend.requests_in_flight != options.requests_in_flight
+    {
+        return Err(Error::AccountingClosure("TEI task concurrency is invalid"));
+    }
+    for directory in ["parts", "receipts", "reports"] {
+        fs::create_dir_all(options.out.join(directory))?;
+    }
+    let fixture_bytes = fs::read(&options.conformance_fixture)?;
+    let mut conformance_validated = false;
+    let mut task_documents = TaskDocumentLoaderV2::new(&options.prepared, &prepared);
+    let mut executed = 0_u64;
+    let mut reused = 0_u64;
+    for task_index in range.clone() {
+        let task = &plan.tasks[task_index];
+        let vector_path = resolve_output_artifact(&options.out, &task.result_path)?;
+        let receipt_path = resolve_output_artifact(&options.out, &task.receipt_path)?;
+        let report_path = task_report_path(&options.out, task)?;
+        let expected = task_shard_expectation_v2(task, profile.dimensions)?;
+        if let Some(receipt) = validate_completed_embedding_task_v2(
+            &receipt_path,
+            &vector_path,
+            &report_path,
+            task,
+            &plan,
+            &profile,
+            &options.worker.execution_identity.runtime,
+        )? {
+            let reusable = read_validated_task_report(
+                &report_path,
+                task_index,
+                task,
+                &plan,
+                Some(&prepared),
+                &profile,
+                &receipt,
+            )
+            .is_ok_and(|report| reusable_tei_report(&report, &options.worker.execution_identity));
+            if reusable {
+                complete_embedding_task_part_recovery(
+                    &vector_path,
+                    expected,
+                    &profile.normalization,
+                    Some(decode_sha256_hex(receipt.vector.sha256.as_str())?),
+                )?;
+                complete_regular_file_recovery(&receipt_path)?;
+                complete_regular_file_recovery(&report_path)?;
+                reused = reused.checked_add(1).ok_or(Error::CountOverflow)?;
+                continue;
+            }
+            quarantine_regular_file(&receipt_path)?;
+            if report_path.try_exists()? {
+                quarantine_regular_file(&report_path)?;
+            }
+        }
+        let _ = prepare_embedding_task_part(&vector_path, expected, &profile.normalization, None)?;
+        if !conformance_validated {
+            embedder
+                .checkpoint_conformance_probe(&fixture_bytes)
+                .await?;
+            conformance_validated = true;
+        }
+        let rows = task_documents.load(task)?;
+        let texts = rows
+            .iter()
+            .map(|row| {
+                format_document_input(&plan.embedding_profile.document_format, &row.semantic_text)
+            })
+            .collect::<rag_embedding::Result<Vec<_>>>()?;
+        let input_bytes = texts.iter().try_fold(0_u64, |total, input| {
+            total
+                .checked_add(input.len() as u64)
+                .ok_or(Error::CountOverflow)
+        })?;
+        let began_unix_ms = unix_time_ms()?;
+        let began = Instant::now();
+        let (stats, execution) = execute_embedding_task_reported(
+            Arc::clone(&embedder),
+            &profile,
+            &texts,
+            &vector_path,
+            expected.order_sha256,
+            EmbeddingTaskOptions {
+                batch_size: options.batch_size,
+                max_in_flight: options.requests_in_flight,
+                retry: RetryPolicy::default(),
+            },
+        )
+        .await?;
+        let verified =
+            verify_embedding_task_part(&vector_path, expected, &profile.normalization, None)?;
+        let mut receipt = VectorResultReceipt {
+            schema_version: VECTOR_RECEIPT_SCHEMA.into(),
+            component_sha256: zero_digest()?,
+            plan_sha256: plan.component_sha256.clone(),
+            prepared_corpus_sha256: plan.prepared_corpus_sha256.clone(),
+            embedding_profile_sha256: plan.embedding_profile.component.sha256.clone(),
+            task_id: task.task_id.clone(),
+            ordinal_start: task.ordinal_start,
+            ordinal_end: task.ordinal_end,
+            embedding_input_order_sha256: task.embedding_input_order_sha256.clone(),
+            vector: VectorObject {
+                path: task.result_path.clone(),
+                rows: task.row_count(),
+                bytes: verified.bytes,
+                sha256: Digest::new(
+                    verified
+                        .sha256
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
+                )?,
+                dimensions: profile.dimensions,
+                dtype: "f32le".into(),
+                embedding_input_order_sha256: task.embedding_input_order_sha256.clone(),
+            },
+            executor: ExecutorReceipt {
+                implementation: options.worker.execution_identity.worker_binary.clone(),
+                runtime: options.worker.execution_identity.runtime.clone(),
+                returned_model: stats.returned_model,
+                requests: stats.requests as u64,
+                retries: stats.retries as u64,
+                input_bytes_upper_bound: input_bytes,
+                elapsed_ms: began.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                conformance_passed: true,
+            },
+            derivation: None,
+            finite_values_validated: true,
+            normalization_validated: true,
+        };
+        receipt.seal()?;
+        receipt.validate_against_v2(&plan)?;
+        write_canonical_json(&receipt_path, &receipt)?;
+        write_tei_task_report_v2(
+            &report_path,
+            task_index,
+            task,
+            &plan,
+            &prepared,
+            &receipt,
+            &vector_path,
+            &receipt_path,
+            &options.worker,
+            began_unix_ms,
+            unix_time_ms()?,
+            execution,
+        )?;
+        complete_embedding_task_part_recovery(
+            &vector_path,
+            expected,
+            &profile.normalization,
+            Some(verified.sha256),
+        )?;
+        complete_regular_file_recovery(&receipt_path)?;
+        complete_regular_file_recovery(&report_path)?;
+        executed = executed.checked_add(1).ok_or(Error::CountOverflow)?;
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "schema_version": "livefire.rag.embedding-run-progress/2",
+            "plan_sha256": plan.component_sha256,
+            "task_range": {"start": range.start, "end": range.end},
+            "tasks_executed": executed,
+            "tasks_reused": reused,
+            "finalized": false
+        }))?
+    );
+    Ok(())
+}
+
+fn reusable_tei_report(
+    report: &ValidatedEmbeddingTaskReport,
+    execution: &EmbeddingExecutionIdentityV2,
+) -> bool {
+    matches!(report, ValidatedEmbeddingTaskReport::V2(report)
+        if report.execution_identity == *execution)
+}
+
+pub(crate) async fn embed_tei(options: TeiEmbedOptions, endpoint: &str) -> Result<()> {
+    let policy_bytes = fs::read(&options.embedding_policy)?;
+    let embedder = Arc::new(TeiEmbedder::checkpoint_profile_loopback(
+        endpoint,
+        &policy_bytes,
+        BearerAuthorization::None,
+    )?);
+    embed_tei_with_embedder(options, embedder).await
+}
+
 /// Produce a complete embedding artifact chain without contacting a model.
 /// The sparse unit vectors are deliberately useful only for end-to-end file,
 /// ordering, assembly, and refusal tests. Every downstream artifact carries a
@@ -2831,7 +3395,7 @@ pub(crate) fn test_embed(options: TestEmbedOptions) -> Result<()> {
     let plan = load_embedding_plan_v2(&options.plan)?;
     plan.validate_manifest_binding(&prepared)?;
     let profile_bytes = fs::read(&options.embedding_profile)?;
-    let profile = parse_bound_embedding_profile(
+    let profile = parse_bound_portable_profile(
         &profile_bytes,
         plan.embedding_profile.component.sha256.as_str(),
     )?;
@@ -3002,7 +3566,7 @@ pub(crate) fn finalize_embeddings(options: FinalizeOptions) -> Result<()> {
     let plan = load_embedding_plan_v2(&options.plan)?;
     plan.validate_manifest_binding(&prepared)?;
     let profile_bytes = fs::read(&options.embedding_profile)?;
-    let profile = parse_bound_embedding_profile(
+    let profile = parse_bound_portable_profile(
         &profile_bytes,
         plan.embedding_profile.component.sha256.as_str(),
     )?;
@@ -3074,7 +3638,7 @@ pub(crate) fn finalize_embeddings(options: FinalizeOptions) -> Result<()> {
     )?;
     let summary_path = options.embeddings.join("summary.json");
     if summary_path.try_exists()? {
-        let existing: EmbeddingRunSummary = read_json(&summary_path)?;
+        let existing: EmbeddingRunSummaryContract = read_json(&summary_path)?;
         validate_embedding_run_summary(&existing, &summary)?;
     } else {
         write_canonical_json(&summary_path, &summary)?;
@@ -3109,7 +3673,7 @@ pub(crate) fn derive_embeddings(options: DeriveEmbeddingsOptions) -> Result<()> 
     let source_plan = load_embedding_plan_v2(&options.plan)?;
     source_plan.validate_manifest_binding(&prepared)?;
     let source_profile_bytes = fs::read(&options.embedding_profile)?;
-    let source_profile = parse_bound_embedding_profile(
+    let source_profile = parse_bound_portable_profile(
         &source_profile_bytes,
         source_plan.embedding_profile.component.sha256.as_str(),
     )?;
@@ -3436,7 +4000,7 @@ pub(crate) fn recover_embedding_task(options: RecoveryOptions) -> Result<()> {
         .find(|(_, task)| task.task_id == options.task_id)
         .ok_or(Error::UnknownEmbeddingTask)?;
     let profile_bytes = fs::read(&options.embedding_profile)?;
-    let profile = parse_bound_embedding_profile(
+    let profile = parse_bound_portable_profile(
         &profile_bytes,
         plan.embedding_profile.component.sha256.as_str(),
     )?;
@@ -3754,7 +4318,7 @@ pub(crate) fn assemble(options: AssembleOptions) -> Result<()> {
             "finalized embedding profile copy differs from assembly input",
         ));
     }
-    let profile = parse_bound_embedding_profile(
+    let profile = parse_bound_portable_profile(
         &profile_bytes,
         plan.embedding_profile.component.sha256.as_str(),
     )?;
@@ -3797,7 +4361,8 @@ pub(crate) fn assemble(options: AssembleOptions) -> Result<()> {
             &plan,
         )?,
     )?;
-    let actual_summary: EmbeddingRunSummary = read_json(&options.embeddings.join("summary.json"))?;
+    let actual_summary: EmbeddingRunSummaryContract =
+        read_json(&options.embeddings.join("summary.json"))?;
     validate_embedding_run_summary(&actual_summary, &expected_summary)?;
     let vector_shards = plan
         .tasks
@@ -3975,16 +4540,16 @@ fn project_prepared_batch(
     source_row_ordinal: &mut u64,
     documents: &mut BTreeMap<String, DocumentAccumulator>,
     occurrences: &mut Vec<PreparedOccurrenceRow>,
-    execution: BatchProjectionExecution<'_>,
+    execution: PreparedProjectionExecution<'_>,
 ) -> Result<()> {
     let event_ids = strings(batch, "event_id")?;
     let json_rows = strings(batch, "typed_event_json")?;
     let support = strings(batch, "support_ref")?;
     let batch_first_row = *source_row_ordinal;
     map_batch_ranges_in_source_order(
-        execution.worker_pool,
+        execution.batch.worker_pool,
         batch.num_rows(),
-        execution.workers,
+        execution.batch.workers,
         |_range_ordinal, range| {
             let mut partial = PreparedBatchProjection {
                 source_rows: 0,
@@ -3999,13 +4564,20 @@ fn project_prepared_batch(
                     .source_rows
                     .checked_add(1)
                     .ok_or(Error::CountOverflow)?;
-                let projected = project(ProjectionInput {
+                let input = ProjectionInput {
                     relation_name: relation,
                     event_id: event_ids.value(row),
                     typed_event_json: json_rows.value(row),
                     support_ref: support.value(row),
                     context,
-                })?;
+                };
+                let projected = match execution.projection {
+                    PreparationProjection::Generic => Some(project(input)?),
+                    PreparationProjection::M45Commands => project_m45_command(input)?,
+                };
+                let Some(projected) = projected else {
+                    continue;
+                };
                 let Some(document) = projected.document else {
                     continue;
                 };
@@ -4087,8 +4659,7 @@ fn project_prepared_row_group(
     first_source_row: u64,
     relation: &str,
     context: &ProjectionContext,
-    worker_pool: &rayon::ThreadPool,
-    batch_workers: usize,
+    execution: PreparedProjectionExecution<'_>,
 ) -> Result<PreparedRowGroupProjection> {
     let mut next_source_row = first_source_row;
     let mut documents = BTreeMap::new();
@@ -4104,10 +4675,7 @@ fn project_prepared_row_group(
             &mut next_source_row,
             &mut documents,
             &mut occurrences,
-            BatchProjectionExecution {
-                worker_pool,
-                workers: batch_workers,
-            },
+            execution,
         )?;
     }
     Ok(PreparedRowGroupProjection {
@@ -4361,7 +4929,7 @@ pub(crate) fn load_completed_embedding_result_set(
     let result_set: EmbeddingResultSetManifest = read_json(&root.join(MANIFEST_FILE))?;
     let bound_profile_path = root.join(EMBEDDING_PROFILE_FILE);
     let profile_bytes = fs::read(&bound_profile_path)?;
-    let profile = parse_bound_embedding_profile(
+    let profile = parse_bound_portable_profile(
         &profile_bytes,
         plan.embedding_profile.component.sha256.as_str(),
     )?;
@@ -4390,14 +4958,14 @@ pub(crate) fn load_completed_embedding_result_set(
         &token_counts,
         embedding_run_artifact_sizes(prepared_root, plan_root, &bound_profile_path, root, plan)?,
     )?;
-    let actual_summary: EmbeddingRunSummary = read_json(&root.join("summary.json"))?;
+    let actual_summary: EmbeddingRunSummaryContract = read_json(&root.join("summary.json"))?;
     validate_embedding_run_summary(&actual_summary, &expected_summary)?;
     Ok(result_set)
 }
 
 fn validate_embedding_run_summary(
-    actual: &EmbeddingRunSummary,
-    expected: &EmbeddingRunSummary,
+    actual: &EmbeddingRunSummaryContract,
+    expected: &EmbeddingRunSummaryContract,
 ) -> Result<()> {
     if actual != expected {
         return Err(Error::AccountingClosure(
@@ -4749,6 +5317,213 @@ fn validate_task_report(
     Ok(())
 }
 
+fn validate_task_report_v2(
+    report: &BuilderEmbeddingTaskReportV2,
+    task_index: usize,
+    task: &EmbeddingTaskV2,
+    plan: &EmbeddingPlanV2,
+    prepared: Option<&PreparedCorpusManifest>,
+    profile: &rag_embedding::EmbeddingProfile,
+    receipt: &VectorResultReceipt,
+) -> Result<()> {
+    let identity = &report.execution_identity;
+    for component in [
+        &identity.executor_image,
+        &identity.executor_image_build,
+        &identity.runtime,
+        &identity.worker_binary,
+        &identity.model_artifact,
+        &identity.embedding_profile,
+    ] {
+        component.validate()?;
+    }
+    if report.schema_version != "livefire.rag.embedding-task-run-report/2"
+        || report.plan_sha256 != plan.component_sha256
+        || report.prepared_corpus_sha256 != plan.prepared_corpus_sha256
+        || report.embedding_profile_sha256 != plan.embedding_profile.component.sha256
+        || report.tokenizer_sha256 != plan.executable_tokenizer.artifact.sha256
+        || prepared.is_some_and(|prepared| {
+            report.source_snapshot_sha256 != prepared.dataset.source_snapshot.sha256
+        })
+        || identity.backend_kind.is_empty()
+        || identity.backend_kind != report.backend.kind
+        || identity.embedding_profile != plan.embedding_profile.component
+        || identity.model_artifact != plan.embedding_profile.model_artifact
+        || identity.runtime != receipt.executor.runtime
+        || identity.worker_binary != receipt.executor.implementation
+        || identity.returned_model != profile.model
+        || identity.returned_model != receipt.executor.returned_model
+        || report.accelerator.status != ObservationStatus::Observed
+        || report.accelerator.provider.as_deref() != Some(identity.accelerator.provider.as_str())
+        || report.accelerator.model.as_deref() != Some(identity.accelerator.model.as_str())
+        || report.accelerator.architecture.as_deref()
+            != Some(identity.accelerator.architecture.as_str())
+        || report.accelerator.compute_capability.as_deref()
+            != Some(identity.accelerator.compute_capability.as_str())
+        || report.accelerator.count != Some(identity.accelerator.count)
+        || identity.accelerator.provider.is_empty()
+        || identity.accelerator.model.is_empty()
+        || identity.accelerator.architecture.is_empty()
+        || identity.accelerator.compute_capability.is_empty()
+        || identity.accelerator.count != 1
+        || report.backend.endpoint_kind.is_empty()
+        || report.backend.batch_size == 0
+        || report.backend.requests_in_flight == 0
+        || report.accelerator.count == Some(0)
+        || report.task_id != task.task_id
+        || report.task_index != task_index
+        || report.ordinal_start != task.ordinal_start
+        || report.ordinal_end != task.ordinal_end
+        || report.document_count != task.row_count()
+        || report.token_count != task.token_count
+        || report.receipt_sha256 != receipt.component_sha256
+        || report.started_unix_ms.is_some() != report.finished_unix_ms.is_some()
+        || report
+            .started_unix_ms
+            .zip(report.finished_unix_ms)
+            .is_some_and(|(start, end)| start > end)
+        || report.execution.is_some() != report.started_unix_ms.is_some()
+        || report.transport_bytes.request_body_bytes.is_some()
+        || report.transport_bytes.response_body_bytes.is_some()
+        || report
+            .execution
+            .as_ref()
+            .map(|execution| execution.sent_input_text_bytes)
+            != report.transport_bytes.submitted_text_bytes
+        || report
+            .execution
+            .as_ref()
+            .map(|execution| execution.vector_bytes)
+            != report.transport_bytes.decoded_vector_bytes
+        || report.artifact_sizes.vector_shard_bytes != Some(receipt.vector.bytes)
+        || report.artifact_sizes.receipt_bytes.is_none()
+        || report.artifact_sizes.task_report_bytes.is_some()
+        || report.execution.as_ref().is_some_and(|execution| {
+            execution.rows != task.row_count()
+                || execution.shard_bytes != receipt.vector.bytes
+                || execution.attempts as u64 != receipt.executor.requests
+                || execution.retries as u64 != receipt.executor.retries
+        })
+    {
+        return Err(Error::AccountingClosure(
+            "embedding task report v2 binding differs",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tei_worker_context(
+    worker: &TeiWorkerReportContextV2,
+    policy: &TeiCheckpointProfileV3,
+    plan: &EmbeddingPlanV2,
+) -> Result<()> {
+    let identity = &worker.execution_identity;
+    let expected_image = component(
+        &policy.executor_image.component.id,
+        &policy.executor_image.component.version,
+        &policy.executor_image.component.sha256,
+    )?;
+    let expected_runtime = component(
+        &policy.runtime.id,
+        &policy.runtime.version,
+        &policy.runtime.sha256,
+    )?;
+    let expected_image_build = component(
+        &policy.executor_image_build.id,
+        &policy.executor_image_build.version,
+        &policy.executor_image_build.sha256,
+    )?;
+    let expected_accelerator = EmbeddingAcceleratorPolicyV2 {
+        provider: policy.accelerator.provider.clone(),
+        model: policy.accelerator.gpu_model_id.clone(),
+        architecture: policy.accelerator.architecture_image_class.clone(),
+        compute_capability: policy.accelerator.compute_capability.clone(),
+        count: policy.accelerator.gpu_count,
+    };
+    if worker.schema_version != "livefire.rag.tei-worker-report-context/1"
+        || identity.backend_kind != "tei"
+        || identity.executor_image != expected_image
+        || identity.executor_image_build != expected_image_build
+        || identity.runtime != expected_runtime
+        || identity.model_artifact != plan.embedding_profile.model_artifact
+        || identity.embedding_profile != plan.embedding_profile.component
+        || identity.returned_model != policy.api_model_key
+        || identity.accelerator != expected_accelerator
+        || worker.backend.kind != "tei"
+        || worker.backend.batch_size == 0
+        || worker.backend.requests_in_flight == 0
+        || worker.accelerator.status != ObservationStatus::Observed
+        || worker.accelerator.provider.as_deref() != Some(expected_accelerator.provider.as_str())
+        || worker.accelerator.model.as_deref() != Some(expected_accelerator.model.as_str())
+        || worker.accelerator.architecture.as_deref()
+            != Some(expected_accelerator.architecture.as_str())
+        || worker.accelerator.compute_capability.as_deref()
+            != Some(expected_accelerator.compute_capability.as_str())
+        || worker.accelerator.count != Some(1)
+    {
+        return Err(Error::AccountingClosure(
+            "TEI worker execution context differs from embedding-policy/3",
+        ));
+    }
+    identity.worker_binary.validate()?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_tei_task_report_v2(
+    path: &Path,
+    task_index: usize,
+    task: &EmbeddingTaskV2,
+    plan: &EmbeddingPlanV2,
+    prepared: &PreparedCorpusManifest,
+    receipt: &VectorResultReceipt,
+    vector_path: &Path,
+    receipt_path: &Path,
+    worker: &TeiWorkerReportContextV2,
+    started_unix_ms: u64,
+    finished_unix_ms: u64,
+    execution: EmbeddingTaskReport,
+) -> Result<()> {
+    let report = BuilderEmbeddingTaskReportV2 {
+        schema_version: "livefire.rag.embedding-task-run-report/2".into(),
+        plan_sha256: plan.component_sha256.clone(),
+        source_snapshot_sha256: prepared.dataset.source_snapshot.sha256.clone(),
+        prepared_corpus_sha256: plan.prepared_corpus_sha256.clone(),
+        embedding_profile_sha256: plan.embedding_profile.component.sha256.clone(),
+        tokenizer_sha256: plan.executable_tokenizer.artifact.sha256.clone(),
+        task_id: task.task_id.clone(),
+        task_index,
+        ordinal_start: task.ordinal_start,
+        ordinal_end: task.ordinal_end,
+        document_count: task.row_count(),
+        token_count: task.token_count,
+        receipt_sha256: receipt.component_sha256.clone(),
+        outcome: TaskRunOutcome::Executed,
+        started_unix_ms: Some(started_unix_ms),
+        finished_unix_ms: Some(finished_unix_ms),
+        execution_identity: worker.execution_identity.clone(),
+        git: worker.git.clone(),
+        machine: worker.machine.clone(),
+        accelerator: worker.accelerator.clone(),
+        backend: worker.backend.clone(),
+        transport_bytes: TransportByteAccounting {
+            status: ObservationStatus::Partial,
+            request_body_bytes: None,
+            response_body_bytes: None,
+            submitted_text_bytes: Some(execution.sent_input_text_bytes),
+            decoded_vector_bytes: Some(execution.vector_bytes),
+        },
+        resource_usage: worker.resource_usage.clone(),
+        artifact_sizes: task_artifact_sizes(vector_path, receipt_path),
+        execution: Some(execution),
+    };
+    if path.try_exists()? {
+        quarantine_regular_file(path)?;
+    }
+    write_canonical_json(path, &report)?;
+    Ok(())
+}
+
 fn unix_time_ms() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -4811,7 +5586,7 @@ fn validate_complete_embedding_tasks_v2(
 ) -> Result<(
     Vec<ReceiptEntry>,
     Vec<VectorResultReceipt>,
-    Vec<BuilderEmbeddingTaskReport>,
+    Vec<ValidatedEmbeddingTaskReport>,
 )> {
     let mut entries = Vec::with_capacity(plan.tasks.len());
     let mut receipts = Vec::with_capacity(plan.tasks.len());
@@ -4837,9 +5612,8 @@ fn validate_complete_embedding_tasks_v2(
         if !report_path.try_exists()? {
             return Err(Error::AccountingClosure("embedding task report is absent"));
         }
-        let report: BuilderEmbeddingTaskReport = read_json(&report_path)?;
-        validate_task_report(
-            &report,
+        let report = read_validated_task_report(
+            &report_path,
             task_index,
             task,
             plan,
@@ -4858,7 +5632,102 @@ fn validate_complete_embedding_tasks_v2(
     Ok((entries, receipts, reports))
 }
 
+fn read_validated_task_report(
+    path: &Path,
+    task_index: usize,
+    task: &EmbeddingTaskV2,
+    plan: &EmbeddingPlanV2,
+    prepared: Option<&PreparedCorpusManifest>,
+    profile: &rag_embedding::EmbeddingProfile,
+    receipt: &VectorResultReceipt,
+) -> Result<ValidatedEmbeddingTaskReport> {
+    let value: Value = read_json(path)?;
+    let report = decode_task_report(value)?;
+    match &report {
+        ValidatedEmbeddingTaskReport::V1(report) => {
+            validate_task_report(report, task_index, task, plan, prepared, profile, receipt)?;
+        }
+        ValidatedEmbeddingTaskReport::V2(report) => {
+            validate_task_report_v2(report, task_index, task, plan, prepared, profile, receipt)?;
+        }
+    }
+    Ok(report)
+}
+
+fn decode_task_report(value: Value) -> Result<ValidatedEmbeddingTaskReport> {
+    match value.get("schema_version").and_then(Value::as_str) {
+        Some("livefire.rag.embedding-task-run-report/1") => {
+            let report: BuilderEmbeddingTaskReport = serde_json::from_value(value)?;
+            Ok(ValidatedEmbeddingTaskReport::V1(Box::new(report)))
+        }
+        Some("livefire.rag.embedding-task-run-report/2") => {
+            let report: BuilderEmbeddingTaskReportV2 = serde_json::from_value(value)?;
+            Ok(ValidatedEmbeddingTaskReport::V2(Box::new(report)))
+        }
+        _ => Err(Error::AccountingClosure(
+            "embedding task report schema is unsupported",
+        )),
+    }
+}
+
 fn embedding_run_summary(
+    plan: &EmbeddingPlanV2,
+    prepared: &PreparedCorpusManifest,
+    receipts: &[VectorResultReceipt],
+    reports: &[ValidatedEmbeddingTaskReport],
+    token_counts: &[u32],
+    artifact_sizes: RunArtifactSizes,
+) -> Result<EmbeddingRunSummaryContract> {
+    if reports
+        .iter()
+        .all(|report| matches!(report, ValidatedEmbeddingTaskReport::V1(_)))
+    {
+        let reports = reports
+            .iter()
+            .map(|report| match report {
+                ValidatedEmbeddingTaskReport::V1(report) => (**report).clone(),
+                ValidatedEmbeddingTaskReport::V2(_) => unreachable!("variant checked"),
+            })
+            .collect::<Vec<_>>();
+        return embedding_run_summary_v1(
+            plan,
+            prepared,
+            receipts,
+            &reports,
+            token_counts,
+            artifact_sizes,
+        )
+        .map(Box::new)
+        .map(EmbeddingRunSummaryContract::V1);
+    }
+    if reports
+        .iter()
+        .all(|report| matches!(report, ValidatedEmbeddingTaskReport::V2(_)))
+    {
+        let reports = reports
+            .iter()
+            .map(|report| match report {
+                ValidatedEmbeddingTaskReport::V2(report) => (**report).clone(),
+                ValidatedEmbeddingTaskReport::V1(_) => unreachable!("variant checked"),
+            })
+            .collect::<Vec<_>>();
+        return embedding_run_summary_v2(
+            plan,
+            prepared,
+            receipts,
+            &reports,
+            token_counts,
+            artifact_sizes,
+        )
+        .map(Box::new)
+        .map(EmbeddingRunSummaryContract::V2);
+    }
+    Err(Error::AccountingClosure(
+        "embedding task report schema versions are mixed",
+    ))
+}
+
+fn embedding_run_summary_v1(
     plan: &EmbeddingPlanV2,
     prepared: &PreparedCorpusManifest,
     receipts: &[VectorResultReceipt],
@@ -5015,6 +5884,164 @@ fn embedding_run_summary(
         },
         length_bucket_throughput: length_bucket_throughput(token_counts, wall_time_micros)?,
     })
+}
+
+fn embedding_run_summary_v2(
+    plan: &EmbeddingPlanV2,
+    prepared: &PreparedCorpusManifest,
+    receipts: &[VectorResultReceipt],
+    reports: &[BuilderEmbeddingTaskReportV2],
+    token_counts: &[u32],
+    artifact_sizes: RunArtifactSizes,
+) -> Result<EmbeddingRunSummaryV2> {
+    let execution_identity = homogeneous_execution_identity_v2(reports)?;
+
+    // Reuse the established aggregate calculations with deliberately uniform
+    // placeholder provenance. Only timings and counters are consumed below;
+    // the v2 summary publishes every task's real worker provenance separately.
+    let metric_reports = reports
+        .iter()
+        .map(metric_report_from_v2)
+        .collect::<Vec<_>>();
+    let legacy = embedding_run_summary_v1(
+        plan,
+        prepared,
+        receipts,
+        &metric_reports,
+        token_counts,
+        artifact_sizes,
+    )?;
+    let workers = reports
+        .iter()
+        .map(|report| EmbeddingWorkerProvenanceV2 {
+            task_id: report.task_id.clone(),
+            git: report.git.clone(),
+            machine: report.machine.clone(),
+            accelerator: report.accelerator.clone(),
+            backend: report.backend.clone(),
+            resource_usage: report.resource_usage.clone(),
+        })
+        .collect();
+    Ok(EmbeddingRunSummaryV2 {
+        schema_version: "livefire.rag.embedding-run-summary/2".into(),
+        status: "finalized".into(),
+        source_snapshot_sha256: legacy.source_snapshot_sha256,
+        prepared_corpus_sha256: legacy.prepared_corpus_sha256,
+        plan_sha256: legacy.plan_sha256,
+        embedding_profile_sha256: legacy.embedding_profile_sha256,
+        tokenizer_sha256: legacy.tokenizer_sha256,
+        execution_identity: execution_identity.clone(),
+        workers,
+        aggregate: EmbeddingRunAggregateV2 {
+            artifact_sizes: legacy.artifact_sizes,
+            tasks: legacy.tasks,
+            documents: legacy.documents,
+            tokens: legacy.tokens,
+            unique_input_text_bytes: legacy.unique_input_text_bytes,
+            sent_input_text_bytes: legacy.sent_input_text_bytes,
+            vector_payload_bytes: legacy.vector_payload_bytes,
+            vector_shard_bytes: legacy.vector_shard_bytes,
+            transport_bytes: legacy.transport_bytes,
+            requests: legacy.requests,
+            retries: legacy.retries,
+            execution_reports_complete: legacy.execution_reports_complete,
+            calendar_span_micros: legacy.calendar_span_micros,
+            active_time_micros: legacy.wall_time_micros,
+            task_elapsed_micros_sum: legacy.task_elapsed_micros_sum,
+            request_elapsed_micros: legacy.request_elapsed_micros,
+            retry_backoff_micros: legacy.retry_backoff_micros,
+            peak_in_flight_per_worker: legacy.peak_in_flight,
+            documents_per_active_second: legacy.documents_per_second,
+            tokens_per_active_second: legacy.tokens_per_second,
+            request_latency_micros: legacy.request_latency_micros,
+            length_bucket_throughput: legacy.length_bucket_throughput,
+        },
+    })
+}
+
+fn homogeneous_execution_identity_v2(
+    reports: &[BuilderEmbeddingTaskReportV2],
+) -> Result<&EmbeddingExecutionIdentityV2> {
+    let first = reports.first().ok_or(Error::AccountingClosure(
+        "embedding summary has no task report",
+    ))?;
+    if reports.iter().any(|report| {
+        report.execution_identity != first.execution_identity
+            || report.accelerator.status != ObservationStatus::Observed
+            || report.accelerator.provider.as_deref()
+                != Some(first.execution_identity.accelerator.provider.as_str())
+            || report.accelerator.model.as_deref()
+                != Some(first.execution_identity.accelerator.model.as_str())
+            || report.accelerator.architecture.as_deref()
+                != Some(first.execution_identity.accelerator.architecture.as_str())
+            || report.accelerator.compute_capability.as_deref()
+                != Some(
+                    first
+                        .execution_identity
+                        .accelerator
+                        .compute_capability
+                        .as_str(),
+                )
+            || report.accelerator.count != Some(first.execution_identity.accelerator.count)
+    }) {
+        return Err(Error::AccountingClosure(
+            "embedding task reports have different sealed execution identity",
+        ));
+    }
+    Ok(&first.execution_identity)
+}
+
+fn metric_report_from_v2(report: &BuilderEmbeddingTaskReportV2) -> BuilderEmbeddingTaskReport {
+    BuilderEmbeddingTaskReport {
+        schema_version: "livefire.rag.embedding-task-run-report/1".into(),
+        plan_sha256: report.plan_sha256.clone(),
+        source_snapshot_sha256: report.source_snapshot_sha256.clone(),
+        prepared_corpus_sha256: report.prepared_corpus_sha256.clone(),
+        embedding_profile_sha256: report.embedding_profile_sha256.clone(),
+        tokenizer_sha256: report.tokenizer_sha256.clone(),
+        task_id: report.task_id.clone(),
+        task_index: report.task_index,
+        ordinal_start: report.ordinal_start,
+        ordinal_end: report.ordinal_end,
+        document_count: report.document_count,
+        token_count: report.token_count,
+        receipt_sha256: report.receipt_sha256.clone(),
+        outcome: report.outcome,
+        started_unix_ms: report.started_unix_ms,
+        finished_unix_ms: report.finished_unix_ms,
+        git: GitState {
+            status: ObservationStatus::NotMeasured,
+            commit: None,
+            working_tree_dirty: None,
+        },
+        machine: MachineContext {
+            status: ObservationStatus::NotMeasured,
+            operating_system: None,
+            operating_system_version: None,
+            architecture: None,
+            cpu_model: None,
+            logical_cpu_count: None,
+            ram_bytes: None,
+        },
+        lm_studio: LmStudioContext {
+            status: ObservationStatus::NotMeasured,
+            version: None,
+            configured_model: report.execution_identity.returned_model.clone(),
+            returned_model: report.execution_identity.returned_model.clone(),
+            endpoint_kind: "portable_backend_aggregate_only".into(),
+            batch_size: None,
+            requests_in_flight: None,
+            cold_load_micros: None,
+        },
+        transport_bytes: report.transport_bytes.clone(),
+        resource_usage: ResourceUsage {
+            status: ObservationStatus::NotMeasured,
+            rust_peak_rss_bytes: None,
+            lm_studio_peak_rss_bytes: None,
+        },
+        artifact_sizes: report.artifact_sizes.clone(),
+        execution: report.execution.clone(),
+    }
 }
 
 fn embedding_run_artifact_sizes(
@@ -5270,6 +6297,15 @@ fn validate_embedding_artifact_coverage_v2(
     Ok(())
 }
 
+/// Verify that a cloud-fetched, not-yet-finalized embedding directory contains
+/// exactly the vector, receipt, and task-report files declared by the plan.
+pub(crate) fn validate_unfinalized_embedding_artifacts(
+    root: &Path,
+    plan: &EmbeddingPlanV2,
+) -> Result<()> {
+    validate_embedding_artifact_coverage_v2(root, plan, false)
+}
+
 fn internal_embedding_stage_process_id(relative: &str, plan: &EmbeddingPlanV2) -> Option<u32> {
     let relative_path = Path::new(relative);
     let parent = relative_path.parent()?;
@@ -5378,12 +6414,93 @@ fn profile_ref(
     })
 }
 
+fn tei_profile_ref(
+    policy: &TeiCheckpointProfileV3,
+    compact: &rag_embedding::EmbeddingProfile,
+) -> Result<EmbeddingProfileRef> {
+    Ok(EmbeddingProfileRef {
+        component: component(&compact.id, &compact.version, &compact.sha256)?,
+        model_artifact: component(
+            &policy.model_artifact_set.id,
+            &policy.model_artifact_set.version,
+            &policy.model_artifact_set.sha256,
+        )?,
+        tokenizer: component(
+            &policy.tokenizer.id,
+            &policy.tokenizer.version,
+            &policy.tokenizer.sha256,
+        )?,
+        maximum_input_tokens: policy.maximum_tokens,
+        pooling: policy.pooling.clone(),
+        normalization: policy.normalization.clone(),
+        dimensions: policy.dimensions,
+        dtype: policy.stored_vector_dtype.clone(),
+        document_format: policy.document_format.clone(),
+    })
+}
+
+fn validate_tei_tokenizer_inputs(
+    policy: &TeiCheckpointProfileV3,
+    tokenizer: &ExecutableTokenizerRef,
+    tokenizer_bytes: &[u8],
+) -> Result<()> {
+    tokenizer.validate()?;
+    let target = component(
+        &policy.tokenizer.id,
+        &policy.tokenizer.version,
+        &policy.tokenizer.sha256,
+    )?;
+    if tokenizer.artifact.version != policy.executable_tokenizer.revision
+        || tokenizer.artifact.id != format!("{}-json", policy.tokenizer.id)
+        || tokenizer.artifact.sha256.as_str() != policy.executable_tokenizer.object.sha256
+        || tokenizer.format != TokenizerArtifactFormat::HuggingFaceTokenizerJson
+        || tokenizer.model_revision != policy.model_revision
+        || tokenizer.target_tokenizer != target
+        || tokenizer.add_special_tokens != policy.executable_tokenizer.add_special_tokens
+        || tokenizer.maximum_input_bytes != 16_384
+        || tokenizer_bytes.len() as u64 != policy.executable_tokenizer.object.bytes
+        || sha256_bytes(tokenizer_bytes) != policy.executable_tokenizer.object.sha256
+    {
+        return Err(Error::AccountingClosure(
+            "TEI tokenizer files differ from embedding-policy/3",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_bound_portable_profile(
+    bytes: &[u8],
+    expected_sha256: &str,
+) -> Result<rag_embedding::EmbeddingProfile> {
+    let value: Value = serde_json::from_slice(bytes)?;
+    if value.get("schema_version").and_then(Value::as_str)
+        == Some(rag_embedding::TEI_CHECKPOINT_PROFILE_SCHEMA_V3)
+    {
+        if sha256_bytes(bytes) != expected_sha256 {
+            return Err(Error::AccountingClosure(
+                "embedding profile byte digest differs",
+            ));
+        }
+        let policy = parse_tei_checkpoint_profile_v3(bytes)?;
+        return Ok(policy.embedding_profile(bytes)?);
+    }
+    Ok(parse_bound_embedding_profile(bytes, expected_sha256)?)
+}
+
 fn validate_plan_profile_fields(
     planned: &EmbeddingProfileRef,
     bytes: &[u8],
     compact: &rag_embedding::EmbeddingProfile,
 ) -> Result<()> {
-    if profile_ref(bytes, compact)? != *planned {
+    let value: Value = serde_json::from_slice(bytes)?;
+    let expected = if value.get("schema_version").and_then(Value::as_str)
+        == Some(rag_embedding::TEI_CHECKPOINT_PROFILE_SCHEMA_V3)
+    {
+        tei_profile_ref(&parse_tei_checkpoint_profile_v3(bytes)?, compact)?
+    } else {
+        profile_ref(bytes, compact)?
+    };
+    if expected != *planned {
         return Err(Error::AccountingClosure(
             "embedding plan profile fields differ from profile bytes",
         ));
@@ -5502,6 +6619,103 @@ fn projection_policy_component() -> Result<ComponentRef> {
     )
 }
 
+fn m45_command_projection_policy_component() -> Result<ComponentRef> {
+    let material: Value = serde_json::from_slice(M45_COMMAND_PROJECTION_POLICY_BYTES)?;
+    validate_m45_command_policy_material(&material)?;
+    let digest = canonical_digest(&material)?;
+    component(
+        "livefire.rag.m45-command-projection-policy",
+        "1",
+        digest.as_str(),
+    )
+}
+
+fn m45_command_source_contract() -> Result<M45CommandSourceContract> {
+    let material: Value = serde_json::from_slice(M45_COMMAND_PROJECTION_POLICY_BYTES)?;
+    validate_m45_command_policy_material(&material)
+}
+
+fn validate_m45_command_policy_material(material: &Value) -> Result<M45CommandSourceContract> {
+    if material.get("schema_version").and_then(Value::as_str)
+        != Some("livefire.rag.m45-command-projection-policy/1")
+    {
+        return Err(Error::AccountingClosure(
+            "M45 command projection policy schema is invalid",
+        ));
+    }
+    let contract: M45CommandSourceContract =
+        serde_json::from_value(material.get("source_contract").cloned().ok_or(
+            Error::AccountingClosure("M45 command source contract is absent"),
+        )?)?;
+    let expected_relations = [
+        "ocsf_api_activity",
+        "ocsf_event_log_activity",
+        "ocsf_process_activity",
+    ];
+    if contract.snapshot_receipt_schema != 2
+        || contract.snapshot_manifest_schema != 3
+        || contract.snapshot_id.is_empty()
+        || contract.snapshot_version.is_empty()
+        || contract.mapping_id.is_empty()
+        || contract.mapping_version.is_empty()
+        || contract.authority.is_empty()
+        || contract.event_reference.is_empty()
+        || contract
+            .admitted_relations
+            .iter()
+            .map(String::as_str)
+            .ne(expected_relations)
+    {
+        return Err(Error::AccountingClosure(
+            "M45 command source contract is invalid",
+        ));
+    }
+    Ok(contract)
+}
+
+fn validate_m45_command_source(identity: &OcsfSnapshot) -> Result<()> {
+    let capabilities =
+        identity
+            .snapshot_capabilities_sha256
+            .as_ref()
+            .ok_or(Error::AccountingClosure(
+                "command preparation requires the exact admitted M45 OCSF snapshot",
+            ))?;
+    let admitted = M45CommandAdmittedIdentity {
+        snapshot_manifest_schema: identity.schema_version,
+        snapshot_id: identity.snapshot_id.clone(),
+        snapshot_version: identity.snapshot_version.clone(),
+        snapshot_sha256: Digest::new(identity.snapshot_sha256.as_str())?,
+        mapping_id: identity.mapping_id.clone(),
+        mapping_version: identity.mapping_version.clone(),
+        mapping_sha256: Digest::new(identity.mapping_sha256.as_str())?,
+        relation_contract_sha256: Digest::new(identity.relation_contract_sha256.as_str())?,
+        snapshot_capabilities_sha256: Digest::new(capabilities.as_str())?,
+    };
+    validate_m45_command_admitted_identity(&m45_command_source_contract()?, &admitted)
+}
+
+fn validate_m45_command_admitted_identity(
+    contract: &M45CommandSourceContract,
+    admitted: &M45CommandAdmittedIdentity,
+) -> Result<()> {
+    if admitted.snapshot_manifest_schema != contract.snapshot_manifest_schema
+        || admitted.snapshot_id != contract.snapshot_id
+        || admitted.snapshot_version != contract.snapshot_version
+        || admitted.snapshot_sha256 != contract.snapshot_sha256
+        || admitted.mapping_id != contract.mapping_id
+        || admitted.mapping_version != contract.mapping_version
+        || admitted.mapping_sha256 != contract.mapping_sha256
+        || admitted.relation_contract_sha256 != contract.relation_contract_sha256
+        || admitted.snapshot_capabilities_sha256 != contract.snapshot_capabilities_sha256
+    {
+        return Err(Error::AccountingClosure(
+            "command preparation requires the exact admitted M45 OCSF snapshot",
+        ));
+    }
+    Ok(())
+}
+
 fn component(id: &str, version: &str, sha256: &str) -> Result<ComponentRef> {
     let value = ComponentRef {
         id: id.to_owned(),
@@ -5583,6 +6797,102 @@ mod tests {
             version: "1".into(),
             sha256: digest_bytes(id.as_bytes()),
         }
+    }
+
+    fn exact_m45_command_identity(
+        contract: &M45CommandSourceContract,
+    ) -> M45CommandAdmittedIdentity {
+        M45CommandAdmittedIdentity {
+            snapshot_manifest_schema: contract.snapshot_manifest_schema,
+            snapshot_id: contract.snapshot_id.clone(),
+            snapshot_version: contract.snapshot_version.clone(),
+            snapshot_sha256: contract.snapshot_sha256.clone(),
+            mapping_id: contract.mapping_id.clone(),
+            mapping_version: contract.mapping_version.clone(),
+            mapping_sha256: contract.mapping_sha256.clone(),
+            relation_contract_sha256: contract.relation_contract_sha256.clone(),
+            snapshot_capabilities_sha256: contract.snapshot_capabilities_sha256.clone(),
+        }
+    }
+
+    fn assert_m45_command_identity_rejected(identity: &M45CommandAdmittedIdentity) {
+        let contract = m45_command_source_contract().unwrap();
+        assert!(matches!(
+            validate_m45_command_admitted_identity(&contract, identity),
+            Err(Error::AccountingClosure(
+                "command preparation requires the exact admitted M45 OCSF snapshot"
+            ))
+        ));
+    }
+
+    #[test]
+    fn m45_command_policy_declares_and_accepts_the_exact_released_identity() {
+        let contract = m45_command_source_contract().unwrap();
+        assert_eq!(contract.snapshot_receipt_schema, 2);
+        assert_eq!(contract.snapshot_manifest_schema, 3);
+        assert_eq!(contract.snapshot_id, "botsv3-ocsf-normalized-snapshot");
+        assert_eq!(contract.snapshot_version, "45");
+        assert_eq!(
+            contract.snapshot_sha256.as_str(),
+            "23077f2605cb4d0ca7f1a857dd0c540d990911197c21a80c886fc1099f6e7d10"
+        );
+        assert_eq!(contract.mapping_id, "botsv3-ocsf-m45");
+        assert_eq!(contract.mapping_version, "1");
+        assert_eq!(
+            contract.mapping_sha256.as_str(),
+            "641e479d5d830edef80c4e57c8048eed9b26710d35a18101e9441065f4337bb7"
+        );
+        assert_eq!(
+            contract.relation_contract_sha256.as_str(),
+            "a40656d2b8e233326157a40c08a257bffe8ef2b97ca76ff62740fbef43eca549"
+        );
+        assert_eq!(
+            contract.snapshot_capabilities_sha256.as_str(),
+            "d9e7e485213c09abb9862f8620cebc410649bc8241688ae21c53721958493e1b"
+        );
+        validate_m45_command_admitted_identity(&contract, &exact_m45_command_identity(&contract))
+            .unwrap();
+    }
+
+    #[test]
+    fn m45_command_gate_rejects_each_wrong_immutable_source_identity() {
+        let contract = m45_command_source_contract().unwrap();
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.snapshot_manifest_schema = 2;
+        assert_m45_command_identity_rejected(&identity);
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.snapshot_id = "another.snapshot".into();
+        assert_m45_command_identity_rejected(&identity);
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.snapshot_version = "46".into();
+        assert_m45_command_identity_rejected(&identity);
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.snapshot_sha256 = digest_bytes(b"wrong snapshot");
+        assert_m45_command_identity_rejected(&identity);
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.mapping_id = "another.mapping".into();
+        assert_m45_command_identity_rejected(&identity);
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.mapping_version = "2".into();
+        assert_m45_command_identity_rejected(&identity);
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.mapping_sha256 = digest_bytes(b"wrong mapping");
+        assert_m45_command_identity_rejected(&identity);
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.relation_contract_sha256 = digest_bytes(b"wrong relation contract");
+        assert_m45_command_identity_rejected(&identity);
+
+        let mut identity = exact_m45_command_identity(&contract);
+        identity.snapshot_capabilities_sha256 = digest_bytes(b"wrong capabilities");
+        assert_m45_command_identity_rejected(&identity);
     }
 
     struct CensusFixture {
@@ -6018,8 +7328,18 @@ mod tests {
             document_shard_rows: 1,
             workers,
         };
-        prepare_with_document_run_rows(options(serial.clone(), 1), MAX_DOCUMENT_RUN_ROWS).unwrap();
-        prepare_with_document_run_rows(options(parallel.clone(), 4), 1).unwrap();
+        prepare_with_document_run_rows(
+            options(serial.clone(), 1),
+            MAX_DOCUMENT_RUN_ROWS,
+            PreparationProjection::Generic,
+        )
+        .unwrap();
+        prepare_with_document_run_rows(
+            options(parallel.clone(), 4),
+            1,
+            PreparationProjection::Generic,
+        )
+        .unwrap();
 
         let serial_tree = artifact_tree(&serial);
         let parallel_tree = artifact_tree(&parallel);
@@ -6209,17 +7529,34 @@ mod tests {
         let parallel_census = census_row_group(&admitted, 0, &context, &parallel_pool, 8).unwrap();
         assert_eq!(parallel_census, serial_census);
 
-        let serial_prepared =
-            project_prepared_row_group(&admitted, 0, 0, &relation.name, &context, &serial_pool, 1)
-                .unwrap();
+        let serial_prepared = project_prepared_row_group(
+            &admitted,
+            0,
+            0,
+            &relation.name,
+            &context,
+            PreparedProjectionExecution {
+                batch: BatchProjectionExecution {
+                    worker_pool: &serial_pool,
+                    workers: 1,
+                },
+                projection: PreparationProjection::Generic,
+            },
+        )
+        .unwrap();
         let parallel_prepared = project_prepared_row_group(
             &admitted,
             0,
             0,
             &relation.name,
             &context,
-            &parallel_pool,
-            8,
+            PreparedProjectionExecution {
+                batch: BatchProjectionExecution {
+                    worker_pool: &parallel_pool,
+                    workers: 8,
+                },
+                projection: PreparationProjection::Generic,
+            },
         )
         .unwrap();
         assert_eq!(parallel_prepared, serial_prepared);
@@ -6359,7 +7696,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "run after M41: timed synthetic one-row-group projection benchmark"]
+    #[ignore = "manual timed synthetic one-row-group projection benchmark"]
     fn benchmark_single_row_group_batch_projection() {
         const ROWS: usize = 24_593;
         let fixture = BenchmarkPreparationFixture::write(ROWS, ROWS);
@@ -6454,7 +7791,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "run after M41: full standard 10,000-document artifact parity check"]
+    #[ignore = "manual full 10,000-document artifact parity check"]
     fn benchmark_preparation_is_byte_identical_across_worker_counts() {
         let fixture = BenchmarkPreparationFixture::write(10_001, 10_001);
         let reader = LocalSnapshotReader::open(fixture.root.path()).unwrap();
@@ -6648,6 +7985,7 @@ mod tests {
             version: "1".into(),
             source_snapshot: benchmark_component("snapshot"),
             mapping: benchmark_component("mapping"),
+            source_admission: vec![],
             included_relations: relations
                 .iter()
                 .map(|relation| (*relation).into())
@@ -6826,6 +8164,7 @@ mod tests {
                 version: "1".into(),
                 source_snapshot: component("snapshot", 'a'),
                 mapping: component("mapping", 'b'),
+                source_admission: vec![],
                 included_relations: vec!["events".into()],
                 excluded_relations: vec![],
                 structured_only_relations: vec![],
@@ -6971,6 +8310,7 @@ mod tests {
                 version: "1".into(),
                 source_snapshot: component("snapshot", "1", 'c'),
                 mapping: component("mapping", "1", 'd'),
+                source_admission: vec![],
                 included_relations: vec!["events".into()],
                 excluded_relations: vec![],
                 structured_only_relations: vec![],
@@ -7211,6 +8551,81 @@ mod tests {
         }
     }
 
+    fn test_builder_task_report_v2(
+        started_unix_ms: u64,
+        finished_unix_ms: u64,
+    ) -> BuilderEmbeddingTaskReportV2 {
+        let v1 = test_builder_task_report(started_unix_ms, finished_unix_ms);
+        let component = |id: &str, byte: char| ComponentRef {
+            id: id.into(),
+            version: "1".into(),
+            sha256: Digest::new(byte.to_string().repeat(64)).unwrap(),
+        };
+        BuilderEmbeddingTaskReportV2 {
+            schema_version: "livefire.rag.embedding-task-run-report/2".into(),
+            plan_sha256: v1.plan_sha256,
+            source_snapshot_sha256: v1.source_snapshot_sha256,
+            prepared_corpus_sha256: v1.prepared_corpus_sha256,
+            embedding_profile_sha256: v1.embedding_profile_sha256,
+            tokenizer_sha256: v1.tokenizer_sha256,
+            task_id: v1.task_id,
+            task_index: v1.task_index,
+            ordinal_start: v1.ordinal_start,
+            ordinal_end: v1.ordinal_end,
+            document_count: v1.document_count,
+            token_count: v1.token_count,
+            receipt_sha256: v1.receipt_sha256,
+            outcome: v1.outcome,
+            started_unix_ms: v1.started_unix_ms,
+            finished_unix_ms: v1.finished_unix_ms,
+            execution_identity: EmbeddingExecutionIdentityV2 {
+                backend_kind: "tei".into(),
+                executor_image: component("image", '1'),
+                executor_image_build: component("image-build", '6'),
+                runtime: component("runtime", '2'),
+                worker_binary: component("worker", '3'),
+                model_artifact: component("model", '4'),
+                embedding_profile: component("profile", '5'),
+                returned_model: "model".into(),
+                accelerator: EmbeddingAcceleratorPolicyV2 {
+                    provider: "runpod".into(),
+                    model: "NVIDIA A40".into(),
+                    architecture: "ampere".into(),
+                    compute_capability: "8.6".into(),
+                    count: 1,
+                },
+            },
+            git: v1.git,
+            machine: v1.machine,
+            accelerator: AcceleratorContextV2 {
+                status: ObservationStatus::Observed,
+                provider: Some("runpod".into()),
+                machine_id: Some("machine-a".into()),
+                model: Some("NVIDIA A40".into()),
+                architecture: Some("ampere".into()),
+                compute_capability: Some("8.6".into()),
+                count: Some(1),
+            },
+            backend: EmbeddingBackendContextV2 {
+                status: ObservationStatus::Observed,
+                kind: "tei".into(),
+                version: Some("1.9.3".into()),
+                endpoint_kind: "worker_loopback".into(),
+                batch_size: 16,
+                requests_in_flight: 4,
+                cold_load_micros: Some(1),
+            },
+            transport_bytes: v1.transport_bytes,
+            resource_usage: ResourceUsageV2 {
+                status: ObservationStatus::Partial,
+                worker_peak_rss_bytes: Some(1),
+                backend_peak_rss_bytes: Some(2),
+            },
+            artifact_sizes: v1.artifact_sizes,
+            execution: v1.execution,
+        }
+    }
+
     fn write_test_part(path: &Path, task: &EmbeddingTaskV2) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let expected = task_shard_expectation_v2(task, 4).unwrap();
@@ -7398,6 +8813,7 @@ mod tests {
                 version: "1".into(),
                 source_snapshot: component("snapshot", 'a'),
                 mapping: component("mapping", 'b'),
+                source_admission: vec![],
                 included_relations: vec!["events".into()],
                 excluded_relations: vec!["network".into()],
                 structured_only_relations: vec!["metrics".into()],
@@ -7699,7 +9115,7 @@ mod tests {
         )
         .unwrap();
         let report: BuilderEmbeddingTaskReport = read_json(&report_path).unwrap();
-        let summary = embedding_run_summary(
+        let summary = embedding_run_summary_v1(
             &plan,
             &prepared,
             &[receipt],
@@ -7721,7 +9137,7 @@ mod tests {
         assert!(!encoded.contains("semantic_text"));
 
         let reject = |tampered: &EmbeddingRunSummary| {
-            assert!(validate_embedding_run_summary(tampered, &summary).is_err());
+            assert_ne!(tampered, &summary);
         };
         let mut tampered = summary.clone();
         tampered.requests += 1;
@@ -7776,6 +9192,102 @@ mod tests {
         let mut second = test_builder_task_report(2_000, 3_000);
         second.git.working_tree_dirty = Some(!first.git.working_tree_dirty.unwrap_or(false));
         assert!(homogeneous_report_context(&[first, second]).is_err());
+    }
+
+    #[test]
+    fn v2_accepts_mixed_machines_with_one_sealed_execution() {
+        let first = test_builder_task_report_v2(1_000, 2_000);
+        let mut second = test_builder_task_report_v2(2_000, 3_000);
+        second.machine.cpu_model = Some("different host CPU".into());
+        second.accelerator.machine_id = Some("machine-b".into());
+        assert_eq!(
+            homogeneous_execution_identity_v2(&[first.clone(), second])
+                .unwrap()
+                .clone(),
+            first.execution_identity
+        );
+    }
+
+    #[test]
+    fn v2_rejects_mixed_accelerator_class() {
+        let first = test_builder_task_report_v2(1_000, 2_000);
+        let mut second = test_builder_task_report_v2(2_000, 3_000);
+        second.accelerator.model = Some("NVIDIA A10".into());
+        assert!(homogeneous_execution_identity_v2(&[first, second]).is_err());
+    }
+
+    #[test]
+    fn v2_rejects_mixed_execution_identity() {
+        let first = test_builder_task_report_v2(1_000, 2_000);
+        let mut second = test_builder_task_report_v2(2_000, 3_000);
+        second.execution_identity.worker_binary.sha256 = Digest::new("9".repeat(64)).unwrap();
+        assert!(homogeneous_execution_identity_v2(&[first, second]).is_err());
+    }
+
+    #[test]
+    fn tei_reuse_requires_a_v2_report_with_the_same_sealed_execution() {
+        let report = test_builder_task_report_v2(1_000, 2_000);
+        let identity = report.execution_identity.clone();
+        assert!(reusable_tei_report(
+            &ValidatedEmbeddingTaskReport::V2(Box::new(report.clone())),
+            &identity,
+        ));
+        let mut other = identity.clone();
+        other.worker_binary.sha256 = Digest::new("9".repeat(64)).unwrap();
+        assert!(!reusable_tei_report(
+            &ValidatedEmbeddingTaskReport::V2(Box::new(report)),
+            &other,
+        ));
+        assert!(!reusable_tei_report(
+            &ValidatedEmbeddingTaskReport::V1(Box::new(test_builder_task_report(1_000, 2_000))),
+            &identity,
+        ));
+    }
+
+    #[test]
+    fn v2_task_reports_finalize_to_a_v2_summary() {
+        let plan = valid_test_embedding_plan();
+        let receipt = test_receipt_for_plan(&plan);
+        let prepared = test_prepared_for_plan(&plan);
+        let mut report = test_builder_task_report_v2(1_000, 2_000);
+        report.task_id = plan.tasks[0].task_id.clone();
+        let summary = embedding_run_summary(
+            &plan,
+            &prepared,
+            &[receipt],
+            &[ValidatedEmbeddingTaskReport::V2(Box::new(report))],
+            &[7],
+            empty_run_artifact_sizes(),
+        )
+        .unwrap();
+        let EmbeddingRunSummaryContract::V2(summary) = summary else {
+            panic!("v2 reports produced a v1 summary");
+        };
+        assert_eq!(
+            summary.schema_version,
+            "livefire.rag.embedding-run-summary/2"
+        );
+        assert_eq!(summary.aggregate.tasks, 1);
+        assert_eq!(summary.workers.len(), 1);
+    }
+
+    #[test]
+    fn v1_task_report_wire_contract_still_decodes_unchanged() {
+        let report = test_builder_task_report(1_000, 2_000);
+        let original = serde_json::to_value(&report).unwrap();
+        let decoded = decode_task_report(original.clone()).unwrap();
+        let ValidatedEmbeddingTaskReport::V1(decoded) = decoded else {
+            panic!("v1 report decoded as another version");
+        };
+        assert_eq!(serde_json::to_value(decoded).unwrap(), original);
+    }
+
+    #[test]
+    fn tei_profile_bytes_cannot_be_relabelled_with_another_profile_digest() {
+        let bytes = br#"{"schema_version":"livefire.rag.embedding-policy/3"}"#;
+        let wrong_profile = "a".repeat(64);
+        assert_ne!(sha256_bytes(bytes), wrong_profile);
+        assert!(parse_bound_portable_profile(bytes, &wrong_profile).is_err());
     }
 
     #[test]

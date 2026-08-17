@@ -148,6 +148,7 @@ class CatalogueBatchContractTests(unittest.TestCase):
                 "catalogue-batch-search-run.v1.schema.json",
                 "catalogue-review-pool-row.v1.schema.json",
                 "catalogue-review-pool-manifest.v1.schema.json",
+                "query-vector-set.v1.schema.json",
             )
         }
 
@@ -191,6 +192,78 @@ class CatalogueBatchContractTests(unittest.TestCase):
             lexical, ("component_sha256",)
         )
         self.validators["catalogue-batch-search-run.v1.schema.json"].validate(lexical)
+
+        sealed = copy.deepcopy(manifest)
+        sealed["model"] = {
+            "status": "sealed_query_vector_set",
+            "configured_model": "local-model",
+            "returned_model": "local-model",
+            "calls": 0,
+            "query_vector_set_sha256": SHA,
+        }
+        sealed["component_sha256"] = canonical_sha256_omitting(
+            sealed, ("component_sha256",)
+        )
+        self.validators["catalogue-batch-search-run.v1.schema.json"].validate(sealed)
+
+    def test_query_vector_set_schema_is_strict(self) -> None:
+        component = {"id": "component", "version": "1", "sha256": SHA}
+        execution = {
+            "executor_image": component,
+            "executor_image_build": component,
+            "runtime": component,
+            "worker_binary": component,
+            "model_artifact": component,
+            "embedding_profile": component,
+            "accelerator": {
+                "provider": "runpod",
+                "model": "A100",
+                "architecture": "ampere",
+                "compute_capability": "8.0",
+                "count": 1,
+            },
+            "returned_model": "model",
+        }
+        manifest = {
+            "schema_version": "livefire.rag.query-vector-set/1",
+            "component_sha256": SHA,
+            "status": "complete",
+            "query_plan": {"path": "queries.jsonl", "bytes": 100, "sha256": SHA},
+            "request_rows": 2,
+            "semantic_request_rows": 2,
+            "execution": {
+                "embedding_profile": component,
+                "embedding_policy": component,
+                "execution_identity_sha256": SHA,
+                "execution": execution,
+                "executor_image_build_receipt": component,
+            },
+            "vectors": {
+                "path": "vectors.f32le",
+                "bytes": 32768,
+                "sha256": SHA,
+                "rows": 2,
+                "dimensions": 4096,
+                "dtype": "f32le",
+                "normalization": "l2",
+                "order_sha256": SHA,
+            },
+            "queries": [
+                {
+                    "ordinal": ordinal,
+                    "query_id": f"q-{ordinal}",
+                    "raw_query_sha256": SHA,
+                    "composed_query_sha256": SHA,
+                    "vector_sha256": SHA,
+                }
+                for ordinal in range(2)
+            ],
+        }
+        validator = self.validators["query-vector-set.v1.schema.json"]
+        validator.validate(manifest)
+        manifest["raw_vector"] = [1.0]
+        with self.assertRaises(ValidationError):
+            validator.validate(manifest)
 
     def test_review_contract_excludes_system_labels(self) -> None:
         row = review_row()

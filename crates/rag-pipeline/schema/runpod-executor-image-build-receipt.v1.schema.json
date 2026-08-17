@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/runpod-executor-image-build-receipt.v1.schema.json",
+  "title": "Sealed RunPod executor image build receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "executor_image", "tei_base_image", "platform", "dockerfile", "worker_binary"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.runpod-executor-image-build-receipt/1"},
+    "component_sha256": {"$ref": "#/$defs/digest"},
+    "executor_image": {"$ref": "#/$defs/image"},
+    "tei_base_image": {"$ref": "#/$defs/image"},
+    "platform": {"const": "linux/amd64"},
+    "dockerfile": {"$ref": "#/$defs/artifact"},
+    "worker_binary": {"$ref": "#/$defs/boundArtifact"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plainText": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!.*://)[^\\u0000-\\u001f\\u007f]+$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*//)(?!.*[\\\\:])[^/]+(?:/[^/]+)*$"},
+    "positiveSafeInteger": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "component": {
+      "type": "object", "additionalProperties": false, "required": ["id", "version", "sha256"],
+      "properties": {"id": {"$ref": "#/$defs/plainText"}, "version": {"$ref": "#/$defs/plainText"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "image": {
+      "type": "object", "additionalProperties": false, "required": ["component", "repository", "digest"],
+      "properties": {"component": {"$ref": "#/$defs/component"}, "repository": {"$ref": "#/$defs/plainText"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["path", "media_type", "bytes", "sha256"],
+      "properties": {"path": {"$ref": "#/$defs/path"}, "media_type": {"$ref": "#/$defs/plainText"}, "bytes": {"$ref": "#/$defs/positiveSafeInteger"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "boundArtifact": {
+      "type": "object", "additionalProperties": false, "required": ["component_sha256", "object"],
+      "properties": {"component_sha256": {"$ref": "#/$defs/digest"}, "object": {"$ref": "#/$defs/artifact"}}
+    }
+  }
+}

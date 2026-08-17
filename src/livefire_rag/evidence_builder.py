@@ -190,7 +190,7 @@ def _iter_parquet(source: RelationSource, batch_size: int) -> Iterator[dict[str,
         import duckdb
     except ImportError as error:  # pragma: no cover - depends on installation extras
         raise EvidencePackError(
-            "DuckDB is required for Parquet input; install livefire-rag[prototype]"
+            "DuckDB is required for this historical test oracle; install livefire-rag[test]"
         ) from error
     path = source.path
     before_stat = path.stat()

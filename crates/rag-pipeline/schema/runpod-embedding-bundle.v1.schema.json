@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/runpod-embedding-bundle.v1.schema.json",
+  "title": "Content-bound RunPod embedding bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "prepared_corpus_sha256", "plan_sha256", "embedding_profile_sha256", "tokenizer_sha256", "model_sha256", "document_count", "task_count", "total_tokens", "artifacts", "execution", "query_vector_output", "assignments"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.runpod-embedding-bundle/1"},
+    "component_sha256": {"$ref": "#/$defs/digest"},
+    "prepared_corpus_sha256": {"$ref": "#/$defs/digest"},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "embedding_profile_sha256": {"$ref": "#/$defs/digest"},
+    "tokenizer_sha256": {"$ref": "#/$defs/digest"},
+    "model_sha256": {"$ref": "#/$defs/digest"},
+    "document_count": {"$ref": "#/$defs/safeInteger"},
+    "task_count": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+    "total_tokens": {"$ref": "#/$defs/positiveSafeInteger"},
+    "artifacts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["prepared_manifest", "embedding_plan", "document_token_counts", "embedding_profile", "executor_image_build", "executable_tokenizer", "conformance_fixture", "query_plan", "worker_binary", "model_manifest", "model_objects", "prepared_documents"],
+      "properties": {
+        "prepared_manifest": {"$ref": "#/$defs/componentArtifact"},
+        "embedding_plan": {"$ref": "#/$defs/componentArtifact"},
+        "document_token_counts": {"$ref": "#/$defs/object"},
+        "embedding_profile": {"$ref": "#/$defs/componentArtifact"},
+        "executor_image_build": {"$ref": "#/$defs/componentArtifact"},
+        "executable_tokenizer": {"$ref": "#/$defs/componentArtifact"},
+        "conformance_fixture": {"$ref": "#/$defs/object"},
+        "query_plan": {"$ref": "#/$defs/object"},
+        "worker_binary": {"$ref": "#/$defs/componentArtifact"},
+        "model_manifest": {"$ref": "#/$defs/componentArtifact"},
+        "model_objects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/object"}},
+        "prepared_documents": {"type": "array", "items": {"$ref": "#/$defs/preparedDocument"}}
+      }
+    },
+    "execution": {"$ref": "#/$defs/execution"},
+    "query_vector_output": {"$ref": "#/$defs/expectedQueryVectorOutput"},
+    "assignments": {"type": "array", "minItems": 1, "maxItems": 65535, "items": {"$ref": "#/$defs/assignment"}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"},
+    "text": {"type": "string", "minLength": 1},
+    "boundedText": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"},
+    "safeInteger": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "positiveSafeInteger": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*//)(?!.*[\\\\:])[^/]+(?:/[^/]+)*$"},
+    "component": {
+      "type": "object", "additionalProperties": false, "required": ["id", "version", "sha256"],
+      "properties": {"id": {"$ref": "#/$defs/text"}, "version": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "object": {
+      "type": "object", "additionalProperties": false, "required": ["key", "bytes", "sha256"],
+      "properties": {"key": {"$ref": "#/$defs/path"}, "bytes": {"$ref": "#/$defs/positiveSafeInteger"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "componentArtifact": {
+      "type": "object", "additionalProperties": false, "required": ["component_sha256", "object"],
+      "properties": {"component_sha256": {"$ref": "#/$defs/digest"}, "object": {"$ref": "#/$defs/object"}}
+    },
+    "preparedDocument": {
+      "type": "object", "additionalProperties": false, "required": ["prepared_path", "object"],
+      "properties": {"prepared_path": {"$ref": "#/$defs/path"}, "object": {"$ref": "#/$defs/object"}}
+    },
+    "expectedQueryVectorOutput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["worker_id", "manifest_key", "query_plan_key", "vectors_key"],
+      "properties": {
+        "worker_id": {"const": "worker-0000"},
+        "manifest_key": {"const": "query-vectors/manifest.json"},
+        "query_plan_key": {"const": "query-vectors/queries.jsonl"},
+        "vectors_key": {"const": "query-vectors/vectors.f32le"}
+      }
+    },
+    "execution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["executor_image", "executor_image_build", "runtime", "worker_binary", "model_artifact", "embedding_profile", "accelerator", "returned_model"],
+      "properties": {
+        "executor_image": {"$ref": "#/$defs/component"}, "executor_image_build": {"$ref": "#/$defs/component"}, "runtime": {"$ref": "#/$defs/component"},
+        "worker_binary": {"$ref": "#/$defs/component"}, "model_artifact": {"$ref": "#/$defs/component"}, "embedding_profile": {"$ref": "#/$defs/component"},
+        "accelerator": {"$ref": "#/$defs/accelerator"},
+        "returned_model": {"$ref": "#/$defs/text"}
+      }
+    },
+    "accelerator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "model", "architecture", "compute_capability", "count"],
+      "properties": {
+        "provider": {"$ref": "#/$defs/boundedText"}, "model": {"$ref": "#/$defs/boundedText"},
+        "architecture": {"$ref": "#/$defs/boundedText"}, "compute_capability": {"$ref": "#/$defs/boundedText"},
+        "count": {"const": 1}
+      }
+    },
+    "expectedTask": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "task_ordinal", "ordinal_start", "ordinal_end", "token_count", "result_key", "receipt_key", "report_key"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/identifier"}, "task_ordinal": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "ordinal_start": {"$ref": "#/$defs/safeInteger"}, "ordinal_end": {"$ref": "#/$defs/positiveSafeInteger"},
+        "token_count": {"$ref": "#/$defs/positiveSafeInteger"}, "result_key": {"$ref": "#/$defs/path"}, "receipt_key": {"$ref": "#/$defs/path"}, "report_key": {"$ref": "#/$defs/path"}
+      }
+    },
+    "assignment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component_sha256", "worker_id", "task_start", "task_end", "ordinal_start", "ordinal_end", "token_count", "tasks"],
+      "properties": {
+        "component_sha256": {"$ref": "#/$defs/digest"}, "worker_id": {"$ref": "#/$defs/identifier"},
+        "task_start": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "task_end": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "ordinal_start": {"$ref": "#/$defs/safeInteger"}, "ordinal_end": {"$ref": "#/$defs/positiveSafeInteger"},
+        "token_count": {"$ref": "#/$defs/positiveSafeInteger"}, "tasks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/expectedTask"}}
+      }
+    }
+  }
+}

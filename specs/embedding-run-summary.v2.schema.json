@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-run-summary.v2.schema.json",
+  "title": "Portable embedding run summary v2",
+  "description": "The closed aggregate of v2 task reports from one sealed execution, including each task's actual worker provenance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "status", "source_snapshot_sha256", "prepared_corpus_sha256",
+    "plan_sha256", "embedding_profile_sha256", "tokenizer_sha256",
+    "execution_identity", "workers", "aggregate"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.embedding-run-summary/2"},
+    "status": {"const": "finalized"},
+    "source_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "prepared_corpus_sha256": {"$ref": "#/$defs/sha256"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "embedding_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "tokenizer_sha256": {"$ref": "#/$defs/sha256"},
+    "execution_identity": {"$ref": "embedding-task-run-report.v2.schema.json#/$defs/execution_identity"},
+    "workers": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/worker"}
+    },
+    "aggregate": {"$ref": "#/$defs/aggregate"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "nullable_count": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
+    "nullable_rate": {"type": ["number", "null"], "minimum": 0},
+    "worker": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_id", "git", "machine", "accelerator", "backend", "resource_usage"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "git": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/git"},
+        "machine": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/machine"},
+        "accelerator": {"$ref": "embedding-task-run-report.v2.schema.json#/$defs/accelerator"},
+        "backend": {"$ref": "embedding-task-run-report.v2.schema.json#/$defs/backend"},
+        "resource_usage": {"$ref": "embedding-task-run-report.v2.schema.json#/$defs/resource_usage"}
+      }
+    },
+    "aggregate": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "artifact_sizes", "tasks", "documents", "tokens", "unique_input_text_bytes",
+        "sent_input_text_bytes", "vector_payload_bytes", "vector_shard_bytes",
+        "transport_bytes", "requests", "retries", "execution_reports_complete",
+        "calendar_span_micros", "active_time_micros", "task_elapsed_micros_sum",
+        "request_elapsed_micros", "retry_backoff_micros", "peak_in_flight_per_worker",
+        "documents_per_active_second", "tokens_per_active_second",
+        "request_latency_micros", "length_bucket_throughput"
+      ],
+      "properties": {
+        "artifact_sizes": {"$ref": "embedding-run-summary.v1.schema.json#/$defs/artifact_sizes"},
+        "tasks": {"type": "integer", "minimum": 1},
+        "documents": {"type": "integer", "minimum": 1},
+        "tokens": {"type": "integer", "minimum": 1},
+        "unique_input_text_bytes": {"$ref": "#/$defs/count"},
+        "sent_input_text_bytes": {"$ref": "#/$defs/nullable_count"},
+        "vector_payload_bytes": {"$ref": "#/$defs/count"},
+        "vector_shard_bytes": {"$ref": "#/$defs/count"},
+        "transport_bytes": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/transport_bytes"},
+        "requests": {"$ref": "#/$defs/count"},
+        "retries": {"$ref": "#/$defs/count"},
+        "execution_reports_complete": {"type": "boolean"},
+        "calendar_span_micros": {"$ref": "#/$defs/nullable_count"},
+        "active_time_micros": {"$ref": "#/$defs/nullable_count"},
+        "task_elapsed_micros_sum": {"$ref": "#/$defs/nullable_count"},
+        "request_elapsed_micros": {"$ref": "#/$defs/nullable_count"},
+        "retry_backoff_micros": {"$ref": "#/$defs/nullable_count"},
+        "peak_in_flight_per_worker": {"$ref": "#/$defs/nullable_count"},
+        "documents_per_active_second": {"$ref": "#/$defs/nullable_rate"},
+        "tokens_per_active_second": {"$ref": "#/$defs/nullable_rate"},
+        "request_latency_micros": {"$ref": "embedding-run-summary.v1.schema.json#/$defs/latency"},
+        "length_bucket_throughput": {
+          "type": "array", "minItems": 1,
+          "items": {"$ref": "embedding-run-summary.v1.schema.json#/$defs/length_bucket"}
+        }
+      }
+    }
+  },
+  "$comment": "active_time_micros is the union of task intervals, so overlap is counted once and idle gaps are excluded. Per-worker hardware provenance is retained instead of inventing one homogeneous machine."
+}

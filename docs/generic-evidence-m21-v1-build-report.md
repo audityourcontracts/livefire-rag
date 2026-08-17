@@ -1,5 +1,9 @@
 # Generic evidence M21 v1 build report
 
+Historical sealed build evidence. This report records the earlier Python M21
+projection and is retained for audit and regression comparison. M21 and direct
+OpenBOTS inputs are not supported by the active Rust M45 path.
+
 ## Result
 
 The scenario-blind generic evidence projector completed a full build from the

@@ -1178,6 +1178,7 @@ mod tests {
                 version: "1".into(),
                 source_snapshot: component("snapshot", "1", digest('1')),
                 mapping: component("mapping", "1", digest('2')),
+                source_admission: vec![],
                 included_relations: vec!["events".into()],
                 excluded_relations: vec![],
                 structured_only_relations: vec![],

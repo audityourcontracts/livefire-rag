@@ -1,5 +1,9 @@
 # Local embedding model selection
 
+Local experiment record. It documents the LM Studio profile and the upstream
+model choice, but cloud execution identity and measured admission are governed
+by [`runpod-embedding.md`](runpod-embedding.md).
+
 ## Quality-first candidate
 
 The v1 quality-first candidate is `Qwen/Qwen3-Embedding-8B` from Hugging Face under

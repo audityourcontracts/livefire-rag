@@ -1,5 +1,9 @@
 # Physical snapshot and index profiles (normative draft v1)
 
+Historical command-snapshot draft. The current prepared, embedding, and fast
+index formats are implemented by Rust and documented in
+[`portable-embedding-pipeline.md`](portable-embedding-pipeline.md).
+
 ## Command source snapshot profile
 
 `livefire.rag.command-snapshot-profile/1` contains one or more Parquet objects

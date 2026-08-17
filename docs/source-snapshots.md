@@ -1,5 +1,10 @@
 # Immutable command source snapshots
 
+Historical adapter-neutral design. The active RAG repository no longer accepts
+direct vendor or OpenBOTS command snapshots. It consumes only a completed
+normalized `livefire-ocsf` M45 build; see
+[`data-boundary.md`](data-boundary.md).
+
 ## Purpose
 
 A source adapter converts one bounded data export into canonical command records.

@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-policy.v3.schema.json",
+  "title": "Livefire RAG direct Qwen checkpoint TEI profile v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "admission_status", "purpose", "model_repository",
+    "model_revision", "model_snapshot_completeness", "model_artifact_set",
+    "model_objects", "tokenizer", "executable_tokenizer", "tei_image", "executor_image", "executor_image_build",
+    "runtime", "inference_engine", "load_policy", "runtime_mode",
+    "api_contract", "api_model_key", "dimensions", "checkpoint_compute_dtype",
+    "api_vector_dtype", "stored_vector_dtype", "pooling", "normalization",
+    "maximum_tokens", "document_format", "query_instruction",
+    "query_composition", "batching", "response_limits", "output_processing",
+    "accelerator", "conformance"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.embedding-policy/3"},
+    "admission_status": {"enum": ["development_only", "production_candidate"]},
+    "purpose": {"enum": ["semantic_search", "action_novelty", "target_novelty"]},
+    "model_repository": {"const": "Qwen/Qwen3-Embedding-8B"},
+    "model_revision": {"const": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af"},
+    "model_snapshot_completeness": {"const": "complete_hugging_face_snapshot"},
+    "model_artifact_set": {"$ref": "#/$defs/modelArtifactSetComponent"},
+    "model_objects": {
+      "type": "array",
+      "minItems": 17,
+      "maxItems": 17,
+      "uniqueItems": true,
+      "prefixItems": [
+        {"$ref": "#/$defs/object_gitattributes"},
+        {"$ref": "#/$defs/object_pooling_config"},
+        {"$ref": "#/$defs/object_license"},
+        {"$ref": "#/$defs/object_readme"},
+        {"$ref": "#/$defs/object_config"},
+        {"$ref": "#/$defs/object_sentence_config"},
+        {"$ref": "#/$defs/object_generation_config"},
+        {"$ref": "#/$defs/object_merges"},
+        {"$ref": "#/$defs/object_shard_1"},
+        {"$ref": "#/$defs/object_shard_2"},
+        {"$ref": "#/$defs/object_shard_3"},
+        {"$ref": "#/$defs/object_shard_4"},
+        {"$ref": "#/$defs/object_safetensors_index"},
+        {"$ref": "#/$defs/object_modules"},
+        {"$ref": "#/$defs/object_tokenizer"},
+        {"$ref": "#/$defs/object_tokenizer_config"},
+        {"$ref": "#/$defs/object_vocab"}
+      ],
+      "items": false
+    },
+    "tokenizer": {"$ref": "#/$defs/component"},
+    "executable_tokenizer": {"$ref": "#/$defs/tokenizer"},
+    "tei_image": {"$ref": "#/$defs/image"},
+    "executor_image": {"$ref": "#/$defs/executor_image"},
+    "executor_image_build": {"$ref": "#/$defs/component"},
+    "runtime": {"$ref": "#/$defs/component"},
+    "inference_engine": {"$ref": "#/$defs/component"},
+    "load_policy": {"$ref": "#/$defs/load_policy"},
+    "runtime_mode": {"const": "tei_loopback_worker"},
+    "api_contract": {"const": "openai_compatible_v1_embeddings"},
+    "api_model_key": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "dimensions": {"const": 4096},
+    "checkpoint_compute_dtype": {"enum": ["float16", "float32"], "description": "Dtype forced through the TEI --dtype runtime option; checkpoint-file storage types remain bound by model_objects."},
+    "api_vector_dtype": {"const": "float32"},
+    "stored_vector_dtype": {"const": "f32le"},
+    "pooling": {"const": "last_token"},
+    "normalization": {"const": "l2"},
+    "maximum_tokens": {"const": 8192},
+    "document_format": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[^{}]*\\{semantic_text\\}[^{}]*$"
+    },
+    "query_instruction": {"type": "string", "minLength": 1, "maxLength": 8192},
+    "query_composition": {"const": "Instruct: {query_instruction}\nQuery: {query}"},
+    "batching": {"$ref": "#/$defs/batching"},
+    "response_limits": {"$ref": "#/$defs/response_limits"},
+    "output_processing": {"$ref": "#/$defs/output_processing"},
+    "accelerator": {"$ref": "#/$defs/accelerator"},
+    "conformance": {"$ref": "#/$defs/conformance"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^(?!0{40}$)[0-9a-f]{40}$"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?:(?!\\.\\.?(?:/|$))[^/\\\\:\\u0000]+/)*(?!\\.\\.?$)[^/\\\\:\\u0000]+$"
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "modelArtifactSetComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"const": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af"},
+        "sha256": {"const": "99beb578f3ca8c20eb204484178bf08fea6f0d7f016ab49ca33a8590e1af2dcb"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "media_type", "bytes", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "media_type": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "object_gitattributes": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": ".gitattributes"}}}]},
+    "object_pooling_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "1_Pooling/config.json"}}}]},
+    "object_license": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "LICENSE"}}}]},
+    "object_readme": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "README.md"}}}]},
+    "object_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "config.json"}}}]},
+    "object_sentence_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "config_sentence_transformers.json"}}}]},
+    "object_generation_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "generation_config.json"}}}]},
+    "object_merges": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "merges.txt"}}}]},
+    "object_shard_1": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model-00001-of-00004.safetensors"}}}]},
+    "object_shard_2": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model-00002-of-00004.safetensors"}}}]},
+    "object_shard_3": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model-00003-of-00004.safetensors"}}}]},
+    "object_shard_4": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model-00004-of-00004.safetensors"}}}]},
+    "object_safetensors_index": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model.safetensors.index.json"}}}]},
+    "object_modules": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "modules.json"}}}]},
+    "object_tokenizer": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "tokenizer.json"}}}]},
+    "object_tokenizer_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "tokenizer_config.json"}}}]},
+    "object_vocab": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "vocab.json"}}}]},
+    "tokenizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "format", "object", "add_special_tokens"],
+      "properties": {
+        "repository": {"const": "Qwen/Qwen3-Embedding-8B"},
+        "revision": {"$ref": "#/$defs/revision"},
+        "format": {"const": "hugging_face_tokenizer_json"},
+        "object": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"type": "object", "properties": {"path": {"const": "tokenizer.json"}}}
+          ]
+        },
+        "add_special_tokens": {"type": "boolean"}
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "repository", "digest"],
+      "properties": {
+        "component": {"$ref": "#/$defs/component"},
+        "repository": {"const": "ghcr.io/huggingface/text-embeddings-inference"},
+        "digest": {"type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"}
+      }
+    },
+    "executor_image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "repository", "digest"],
+      "properties": {
+        "component": {"$ref": "#/$defs/component"},
+        "repository": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!.*://)[^\\u0000-\\u001f\\u007f]+$"},
+        "digest": {"type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"}
+      }
+    },
+    "load_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component", "model_source", "revision_policy", "local_files_only",
+        "trust_remote_code", "safetensors_only"
+      ],
+      "properties": {
+        "component": {"$ref": "#/$defs/component"},
+        "model_source": {"const": "mounted_complete_snapshot"},
+        "revision_policy": {"const": "exact"},
+        "local_files_only": {"const": true},
+        "trust_remote_code": {"const": false},
+        "safetensors_only": {"const": true}
+      }
+    },
+    "batching": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum_batch_items", "maximum_batch_tokens", "maximum_concurrent_requests", "order", "overlength"],
+      "properties": {
+        "maximum_batch_items": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maximum_batch_tokens": {"type": "integer", "minimum": 40960, "maximum": 262144},
+        "maximum_concurrent_requests": {"type": "integer", "minimum": 1, "maximum": 256},
+        "order": {"const": "preserve_input_order"},
+        "overlength": {"const": "reject"}
+      }
+    },
+    "response_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_timeout_ms", "maximum_response_bytes"],
+      "properties": {
+        "request_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
+        "maximum_response_bytes": {"type": "integer", "minimum": 1024, "maximum": 268435456}
+      }
+    },
+    "output_processing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client_normalization", "required_l2_norm_tolerance_millionths"],
+      "properties": {
+        "client_normalization": {"const": "none"},
+        "required_l2_norm_tolerance_millionths": {"const": 100}
+      }
+    },
+    "accelerator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "gpu_model_id", "compute_capability", "architecture_image_class", "gpu_count"],
+      "properties": {
+        "provider": {"const": "runpod"},
+        "gpu_model_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "compute_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "architecture_image_class": {"type": "string", "minLength": 1, "maxLength": 128},
+        "gpu_count": {"const": 1}
+      }
+    },
+    "conformance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode", "measured", "fixture", "input_count", "returned_model",
+        "normalized_output_sha256", "accelerator", "candidate_sha256",
+        "initial_result_sha256", "fresh_pod_replay_result_sha256"
+      ],
+      "properties": {
+        "mode": {"const": "exact_digest"},
+        "measured": {"const": true},
+        "fixture": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"type": "object", "properties": {"media_type": {"const": "application/json"}}}
+          ]
+        },
+        "input_count": {"type": "integer", "minimum": 1, "maximum": 32},
+        "returned_model": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "normalized_output_sha256": {"$ref": "#/$defs/sha256"},
+        "accelerator": {"$ref": "#/$defs/accelerator"},
+        "candidate_sha256": {"$ref": "#/$defs/sha256"},
+        "initial_result_sha256": {"$ref": "#/$defs/sha256"},
+        "fresh_pod_replay_result_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$comment": "Rust validation additionally requires every component and object digest to be nonzero; the exact pinned 17-object upstream inventory and its RFC 8785 artifact-set digest; tokenizer object identity to match the same pinned revision; TEI image component digest to equal its OCI digest; distinct model, tokenizer, image, runtime, engine, and load-policy component IDs; forced TEI runtime dtype to be float16 or float32; batch-token and item limits to agree; returned_model to equal api_model_key; the accelerator policy to match the two fresh-Pod measurements; distinct sealed initial and replay result digests; and exact measured output conformance. A template or pending conformance profile is not executable."
+}

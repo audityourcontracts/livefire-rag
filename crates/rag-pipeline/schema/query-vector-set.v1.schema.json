@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/query-vector-set.v1.schema.json",
+  "title": "Sealed offline query vector set v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component_sha256", "status", "query_plan", "request_rows", "semantic_request_rows", "execution", "vectors", "queries"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.query-vector-set/1"},
+    "component_sha256": {"$ref": "#/$defs/sha256"},
+    "status": {"const": "complete"},
+    "query_plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": {"const": "queries.jsonl"},
+        "bytes": {"$ref": "#/$defs/positive"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "request_rows": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "semantic_request_rows": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "execution": {"$ref": "#/$defs/execution_binding"},
+    "vectors": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "rows", "dimensions", "dtype", "normalization", "order_sha256"],
+      "properties": {
+        "path": {"const": "vectors.f32le"},
+        "bytes": {"type": "integer", "minimum": 4, "maximum": 536870912},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "rows": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "dimensions": {"type": "integer", "minimum": 1},
+        "dtype": {"const": "f32le"},
+        "normalization": {"enum": ["l2", "none"]},
+        "order_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "queries": {
+      "type": "array", "minItems": 1, "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["ordinal", "query_id", "raw_query_sha256", "composed_query_sha256", "vector_sha256"],
+        "properties": {
+          "ordinal": {"type": "integer", "minimum": 0, "maximum": 9999},
+          "query_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "\\S"},
+          "raw_query_sha256": {"$ref": "#/$defs/sha256"},
+          "composed_query_sha256": {"$ref": "#/$defs/sha256"},
+          "vector_sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "positive": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "component": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "accelerator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "model", "architecture", "compute_capability", "count"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "architecture": {"type": "string", "minLength": 1},
+        "compute_capability": {"type": "string", "minLength": 1},
+        "count": {"const": 1}
+      }
+    },
+    "runpod_execution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["executor_image", "executor_image_build", "runtime", "worker_binary", "model_artifact", "embedding_profile", "accelerator", "returned_model"],
+      "properties": {
+        "executor_image": {"$ref": "#/$defs/component"},
+        "executor_image_build": {"$ref": "#/$defs/component"},
+        "runtime": {"$ref": "#/$defs/component"},
+        "worker_binary": {"$ref": "#/$defs/component"},
+        "model_artifact": {"$ref": "#/$defs/component"},
+        "embedding_profile": {"$ref": "#/$defs/component"},
+        "accelerator": {"$ref": "#/$defs/accelerator"},
+        "returned_model": {"type": "string", "minLength": 1}
+      }
+    },
+    "execution_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["embedding_profile", "embedding_policy", "execution_identity_sha256", "execution", "executor_image_build_receipt"],
+      "properties": {
+        "embedding_profile": {"$ref": "#/$defs/component"},
+        "embedding_policy": {"$ref": "#/$defs/component"},
+        "execution_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "execution": {"$ref": "#/$defs/runpod_execution"},
+        "executor_image_build_receipt": {"$ref": "#/$defs/component"}
+      }
+    }
+  },
+  "$comment": "Rust runtime validation additionally requires RFC 8785 component and execution digests; byte-exact queries.jsonl and packed f32le objects; consecutive unique query IDs in first semantic-plan occurrence order; raw, composed, per-vector, and order digests; exact profile/model/dimension/normalization binding; finite vectors and declared normalization; and equality between the profile and executor-build components repeated inside the execution identity."
+}

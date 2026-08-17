@@ -1,0 +1,70 @@
+{
+  "schema_version": "livefire.rag.m45-command-projection-policy/1",
+  "source_contract": {
+    "snapshot_receipt_schema": 2,
+    "snapshot_manifest_schema": 3,
+    "snapshot_id": "botsv3-ocsf-normalized-snapshot",
+    "snapshot_version": "45",
+    "snapshot_sha256": "23077f2605cb4d0ca7f1a857dd0c540d990911197c21a80c886fc1099f6e7d10",
+    "mapping_id": "botsv3-ocsf-m45",
+    "mapping_version": "1",
+    "mapping_sha256": "641e479d5d830edef80c4e57c8048eed9b26710d35a18101e9441065f4337bb7",
+    "relation_contract_sha256": "a40656d2b8e233326157a40c08a257bffe8ef2b97ca76ff62740fbef43eca549",
+    "snapshot_capabilities_sha256": "d9e7e485213c09abb9862f8620cebc410649bc8241688ae21c53721958493e1b",
+    "admitted_relations": [
+      "ocsf_api_activity",
+      "ocsf_event_log_activity",
+      "ocsf_process_activity"
+    ],
+    "authority": "receipt-bound normalized Parquet only",
+    "event_reference": "preserve each normalized event_id and support_ref without replacement"
+  },
+  "field_selection": {
+    "process_precedence": [
+      "ocsf.process.cmd_line",
+      "process.cmd_line",
+      "command_line",
+      "ocsf.unmapped paired /Event/EventData/Data/@Name and /Event/EventData/Data/#text where the name is CommandLine",
+      "ocsf.unmapped $token/<number> values ordered by number",
+      "ocsf.unmapped columns.cmdline, columns.command_line, cmdline, command_line, or CommandLine"
+    ],
+    "event_log_precedence": [
+      "ocsf.unmapped ScriptBlockText, script_block, script, or body",
+      "ocsf.unmapped paired EventData arrays where the name is ScriptBlockText",
+      "ocsf.message only when normalized event_id is 4104"
+    ],
+    "api": [
+      "operation or ocsf.api.operation",
+      "service, resource, and status when present",
+      "ocsf.unmapped.requestParameters when present"
+    ]
+  },
+  "powershell_encoded_command": {
+    "accepted_switches": ["-enc", "-encodedcommand"],
+    "base64_alphabet": "standard",
+    "decode_order": ["UTF-16LE", "UTF-8"],
+    "maximum_encoded_characters": 65536,
+    "maximum_decoded_bytes": 49152,
+    "failure_policy": "retain the admitted command and omit decoded_script"
+  },
+  "redaction": {
+    "implementation": "livefire.rag.generic-evidence-projection-policy/2 in-band secret and identifier redaction",
+    "applies_to": ["command", "decoded_script", "script", "API request parameters"],
+    "raw_secret_values_in_semantic_text": false
+  },
+  "bounds": {
+    "source_reading": "receipt-admitted Parquet row groups with bounded worker waves",
+    "output_grouping": "bounded sorted document runs and fixed-size occurrence shards",
+    "semantic_text": "generic evidence projection bounds"
+  },
+  "known_source_limit": {
+    "powershell_4104": "Only fields present in the admitted M45 typed row are projected. A script body absent from M45 cannot be restored. A retained message header is labelled powershell_4104_message and is not described as a full script body."
+  },
+  "excluded_sources": [
+    "non-normalized upstream event files",
+    "XML reparsing",
+    "lossy raw text fallback",
+    "external source receipts",
+    "Python preparation"
+  ]
+}

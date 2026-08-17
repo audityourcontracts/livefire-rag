@@ -1,5 +1,8 @@
 # Prototype query results
 
+Historical M21/OpenBOTS experiment. These results are retained as evidence of
+the early prototype and must not be presented as M45 search results.
+
 Status: **ad-hoc prototype; informational only**
 
 Conformance: **incomplete**

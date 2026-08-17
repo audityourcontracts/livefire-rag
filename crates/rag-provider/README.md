@@ -1,9 +1,23 @@
 # rag-provider
 
-Native JSONL provider for the fast experimental evidence index. It implements
-the Livefire SDK handshake/open/call/health/close lifecycle and returns
-snapshot-scoped OCSF event references for authoritative hydration. Component
+Native JSONL provider for the fast evidence index. It implements the Livefire
+SDK handshake/open/call/health/close lifecycle and exposes two separately
+granted tools:
+
+- `evidence.search` embeds natural-language text through the exact bound local
+  LM Studio model, then returns ranked OCSF event references.
+- `evidence.similar` reads one indexed document's stored vector, makes no model
+  or network call, excludes the seed by default, and returns nearby event
+  references.
+
+Each SDK session grants exactly one tool. The binding lock must name that
+tool's descriptor, input and output schemas, and retrieval policy. Component
 admission and production packaging remain host responsibilities.
+
+Create local SDK loadouts with `rag-prepare-local-tool --tool search` or
+`--tool similar`. Similarity additionally requires `--document-id` for its
+seed. The preparer writes separate index-admission and tool-binding contracts;
+it never modifies the assembled physical index.
 
 This executable is an experimental lifecycle and retrieval harness, not an
 admission or sandbox boundary. The host must mount the entire index directory

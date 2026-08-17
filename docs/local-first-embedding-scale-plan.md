@@ -1,13 +1,16 @@
 # Local-first RAG scale plan
 
-Status: local implementation and evidence complete through the 12-index
-catalogue and reviewer-safe pool; Runpod deferred
+Historical phase record: local implementation and evidence completed through
+the 16-index M41 non-network catalogue, Rust similarity/provider checks, and
+reviewer-safe pool. It is not the current source or execution plan. The active
+work rebuilds from normalized M45 data and implements RunPod; see
+[`runpod-embedding.md`](runpod-embedding.md).
 
 ## 1. Outcome
 
-The local goal was to prove and measure the modular Rust RAG pipeline with LM
-Studio. That goal stops before Runpod: no Runpod code, cloud credentials, or
-data upload is part of the current work.
+The completed local goal proved and measured the modular Rust RAG pipeline with
+LM Studio. It stopped before RunPod; statements below about the "current goal"
+describe that historical phase, not the active M45 cloud goal.
 
 The order is deliberate:
 
@@ -563,9 +566,15 @@ Current document counts guide the order:
 | Configuration snapshots | 148,110 |
 | Event-log activity | 199,749 |
 
-The ten small relation datasets plus API and HTTP activity are now real
-embedded and independently indexed: 23,636 documents and 165,186 event
-references in total.
+All 16 non-network relation datasets are now real embedded and independently
+indexed: 422,566 documents and 5,325,200 event references in total.
+Across the 16 finalized embedding summaries, LM Studio processed 92,466,199
+exact tokens in 1,658 resumable tasks and 105,647 HTTP requests with zero
+retries. The sum of Rust's monotonic task timers was 149,425 seconds (41.51
+hours), while the sum of the per-dataset timestamp intervals was 165,085
+seconds (45.86 hours). The monotonic total is the best measure of active local
+executor work; neither total is a promise about uninterrupted elapsed time
+because the laptop slept and the work was resumed in separate ranges.
 API required 2,738,612 exact tokens, 1,633 requests, and zero retries. Its summed
 executor time was 4,215.78 seconds, or 649.53 tokens per second, and its
 version-3 assembly took 3.74 seconds. The small row is a scheduling group, not
@@ -593,26 +602,49 @@ doing that would count the same source rows 16 times.
 
 - Complete: all 16 relation datasets are prepared, verified, and exactly
   token-planned.
-- Complete: API and HTTP activity are embedded, assembled, inspected, and
-  searched. All 12 real indexes passed individual fused searches.
-- Complete: a sealed 12-index catalogue covers 23,636 documents and 165,186
-  event references. A frozen 15-query plan ran lexical, dense, and fused modes
-  in 45 searches with 15 model calls. It produced 690 unique label-hidden
-  review candidates. A sealed private receipt binds the M41 snapshot and records
-  that 1,275 unique event pointers across all 12 relations passed exact typed
-  Parquet membership checks. System names, modes, ranks, and scores remain in
-  the private audit directory rather than the reviewer files.
-- Complete: deterministic test-vector result sets and version-3 indexes cover
-  the four largest datasets: 398,930 documents and 5,160,014 event references.
-  The result sets occupy about 6.1 GiB and the indexes about 12.5 GiB. The
-  configuration index alone contains 4,448,673 references, occupies 7.1 GiB,
-  and assembled in 408.99 seconds. Their four-index test-only catalogue
-  validates and returns lexical hits with the embedding endpoint unavailable;
-  normal inspection, query, and catalogue search refuse the synthetic data.
+- Complete: all 16 datasets are embedded, assembled as real SQLite-v3 indexes,
+  inspected, and admitted into one sealed catalogue. The largest event-log
+  dataset contains 199,749 documents and 407,729 event references. Its 50,135,863
+  tokens were embedded in 781 tasks and 49,938 requests with zero retries.
+- Measured: the full local embedding work used batches of four and at most two
+  client requests in flight. It completed all 422,566 documents with zero
+  retries in 41.51 hours of summed monotonic task time, an aggregate 2.828
+  documents or 618.81 tokens per active second. This proves bounded client-side
+  concurrency. It does not prove that LM Studio ran two model predictions at
+  once: LM Studio continued to report no parallel-prediction setting for this
+  embedding model.
+- Complete: the sealed 16-index catalogue covers 422,566 documents and
+  5,325,200 event references. A frozen 15-query plan ran lexical, dense, and
+  fused modes in 45 searches with 15 model calls. It produced 709 unique
+  label-hidden review candidates. A sealed private receipt binds the M41
+  snapshot and records that 1,244 unique event pointers across all 16 relations
+  passed exact typed Parquet membership checks. System names, modes, ranks, and
+  scores remain in the private audit directory rather than the reviewer files.
+- Complete: deterministic test-vector builds previously exercised the four
+  largest datasets without model calls and proved that normal consumers refuse
+  synthetic vectors. Those scale tests are superseded by the real LM Studio
+  indexes, but remain useful assembly and safety evidence.
+- Complete: native Rust stored-document similarity works for one index and for
+  the complete catalogue without a model call. The denied IAM access-key seed
+  retrieves denied CreateUser, DeleteAccessKey, and ListAccessKeys neighbours
+  from the API index.
+- Complete: separately granted Rust `evidence.search` and `evidence.similar`
+  tools passed SDK handshake, open, call, health, and close against the real
+  process-activity index. The similarity session used an offline contract.
 - Complete for forecasting: the exact token distribution and measured
   length-sensitive local throughput are available.
-- Pending: people review the 690-candidate local pool and mark which documents are
+- Pending: people review the 709-candidate local pool and mark which documents are
   relevant before it is used as a search-quality baseline.
+
+The historical 3,806-document Python command prototype is a comparison oracle,
+not the production path. Its old Q1-Q9 questions execute through the new Rust
+catalogue, but the literal acceptance rules do not pass because the admitted
+M41 OCSF records do not contain several raw PowerShell script bodies, full
+command arguments, or unredacted identities used by that prototype. Dataset
+routing does not change that result. Reproducing those exact command behaviors
+requires a separate Rust command projection backed by an admitted raw
+command/script source; changing the general evidence projection or restoring
+sensitive identifiers merely to satisfy the old fixture would be incorrect.
 
 ## 12. Phase L8: local representation and search experiments
 
@@ -661,7 +693,7 @@ start until all of the following are true:
 5. Restart, timeout, retry, corruption, wrong-model, and order tests pass.
 6. The 10,000-document build is complete and its time forecast is recorded.
 7. Every non-network relation is prepared locally with measured artifact size.
-8. One complete medium relation and a 12-index catalogue work locally.
+8. All 16 non-network relation indexes and their catalogue work locally.
 9. Human-reviewed local search results provide a comparison baseline.
 10. Only prepared document shards, the plan, and the cloud profile are in the
     reviewed upload set; occurrence data remains local.

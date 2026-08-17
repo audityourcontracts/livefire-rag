@@ -1,4 +1,9 @@
-"""Command-line entrypoint for the standalone semantic index and provider."""
+"""Historical Python prototype CLI retained for tests and comparisons.
+
+The project does not publish this module as a console entry point. Current M44
+preparation, embedding, indexing, query, packaging, and provider execution use
+the Rust binaries.
+"""
 
 from __future__ import annotations
 

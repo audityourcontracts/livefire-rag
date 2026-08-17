@@ -1,5 +1,10 @@
 # M41 corpus census
 
+Historical measured evidence. This report is preserved unchanged in meaning so
+the completed local M41 run remains auditable. M41 is not accepted by the
+active builder path; current corpus identities and status are in
+[`runpod-embedding.md`](runpod-embedding.md).
+
 This report fixes the local embedding target used by the scale work. It was
 produced by the read-only Rust `rag census` command from the accepted M41 OCSF
 snapshot. It counts projected document groups; it does not create embeddings or

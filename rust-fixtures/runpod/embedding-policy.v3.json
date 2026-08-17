@@ -1,0 +1,237 @@
+{
+  "accelerator": {
+    "architecture_image_class": "sm90-cuda12",
+    "compute_capability": "9.0",
+    "gpu_count": 1,
+    "gpu_model_id": "NVIDIA H100 PCIe",
+    "provider": "runpod"
+  },
+  "admission_status": "development_only",
+  "api_contract": "openai_compatible_v1_embeddings",
+  "api_model_key": "Qwen/Qwen3-Embedding-8B",
+  "api_vector_dtype": "float32",
+  "batching": {
+    "maximum_batch_items": 8,
+    "maximum_batch_tokens": 65536,
+    "maximum_concurrent_requests": 4,
+    "order": "preserve_input_order",
+    "overlength": "reject"
+  },
+  "checkpoint_compute_dtype": "float16",
+  "conformance": {
+    "accelerator": {
+      "architecture_image_class": "sm90-cuda12",
+      "compute_capability": "9.0",
+      "gpu_count": 1,
+      "gpu_model_id": "NVIDIA H100 PCIe",
+      "provider": "runpod"
+    },
+    "candidate_sha256": "97533a36626e6cdd2a575a6271417a46f1d837dd04340275043d78bd30f7ff73",
+    "fixture": {
+      "bytes": 321,
+      "media_type": "application/json",
+      "path": "fixtures/qwen3-embedding-8b-tei-conformance.v1.json",
+      "sha256": "6abd7a31499713733a9de0bf371b3bc0e1f3bddf6cd34f7ea57547be854650ae"
+    },
+    "fresh_pod_replay_result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "initial_result_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "input_count": 1,
+    "measured": true,
+    "mode": "exact_digest",
+    "normalized_output_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "returned_model": "Qwen/Qwen3-Embedding-8B"
+  },
+  "dimensions": 4096,
+  "document_format": "{semantic_text}",
+  "executable_tokenizer": {
+    "add_special_tokens": true,
+    "format": "hugging_face_tokenizer_json",
+    "object": {
+      "bytes": 11422947,
+      "media_type": "application/json",
+      "path": "tokenizer.json",
+      "sha256": "83cdf8c3a34f68862319cb1810ee7b1e2c0a44e0864ae930194ddb76bb7feb8d"
+    },
+    "repository": "Qwen/Qwen3-Embedding-8B",
+    "revision": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af"
+  },
+  "executor_image": {
+    "component": {
+      "id": "test.executor-image",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "version": "1"
+    },
+    "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "repository": "ghcr.io/example/livefire-rag-worker"
+  },
+  "executor_image_build": {
+    "id": "test.executor-image-build",
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "version": "1"
+  },
+  "inference_engine": {
+    "id": "test.tei-engine",
+    "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "version": "1.9.3"
+  },
+  "load_policy": {
+    "component": {
+      "id": "test.load-policy",
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "version": "1"
+    },
+    "local_files_only": true,
+    "model_source": "mounted_complete_snapshot",
+    "revision_policy": "exact",
+    "safetensors_only": true,
+    "trust_remote_code": false
+  },
+  "maximum_tokens": 8192,
+  "model_artifact_set": {
+    "id": "test.model-artifact-set",
+    "sha256": "99beb578f3ca8c20eb204484178bf08fea6f0d7f016ab49ca33a8590e1af2dcb",
+    "version": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af"
+  },
+  "model_objects": [
+    {
+      "bytes": 1570,
+      "media_type": "text/plain",
+      "path": ".gitattributes",
+      "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+    },
+    {
+      "bytes": 313,
+      "media_type": "application/json",
+      "path": "1_Pooling/config.json",
+      "sha256": "2e1da26b3fd65cf7e370d2fabf28a8c59efa7edb525d1b8b50be8e5ca1048ea6"
+    },
+    {
+      "bytes": 11343,
+      "media_type": "text/plain",
+      "path": "LICENSE",
+      "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+    },
+    {
+      "bytes": 17253,
+      "media_type": "text/markdown",
+      "path": "README.md",
+      "sha256": "1fd6f3583d642a3319efb3eb8c22b6aa6320e6ab92263447bd84fd92615206d4"
+    },
+    {
+      "bytes": 729,
+      "media_type": "application/json",
+      "path": "config.json",
+      "sha256": "dcccf7c7890c8debc4af8dace8d6acd8dd50bd56d50d4d8b60529381ba3de3d7"
+    },
+    {
+      "bytes": 215,
+      "media_type": "application/json",
+      "path": "config_sentence_transformers.json",
+      "sha256": "10667c72ddb772627bf1780cb7f86af8e2ae0032b8c243c731172064105c6961"
+    },
+    {
+      "bytes": 117,
+      "media_type": "application/json",
+      "path": "generation_config.json",
+      "sha256": "28396d421a2108acce96383f6a7de78008f7f1b17f807958f3c14c51dbfb65fb"
+    },
+    {
+      "bytes": 1671853,
+      "media_type": "text/plain",
+      "path": "merges.txt",
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+    },
+    {
+      "bytes": 4900037024,
+      "media_type": "application/vnd.safetensors",
+      "path": "model-00001-of-00004.safetensors",
+      "sha256": "99b343597fe840706146144699a8b9188dd3387e43eb61faf0231b70b249d451"
+    },
+    {
+      "bytes": 4915959512,
+      "media_type": "application/vnd.safetensors",
+      "path": "model-00002-of-00004.safetensors",
+      "sha256": "dff635b0f6dbbaad2a2d633ef037ec0a39bc165cc1806c712fbd6fcbcb4526c0"
+    },
+    {
+      "bytes": 4983067656,
+      "media_type": "application/vnd.safetensors",
+      "path": "model-00003-of-00004.safetensors",
+      "sha256": "30b1d4c53d84eb018f642cad7b373f0aabf79699872d8702c1f38577c0a59a2f"
+    },
+    {
+      "bytes": 335570376,
+      "media_type": "application/vnd.safetensors",
+      "path": "model-00004-of-00004.safetensors",
+      "sha256": "36cbc9c60375693629f25743c1e77ebb1724af58e671b2376463193c7fd21ef6"
+    },
+    {
+      "bytes": 30432,
+      "media_type": "application/json",
+      "path": "model.safetensors.index.json",
+      "sha256": "ceaf1429bfa18eecc75d079737e8d1fe8dc0627f5ec7e6a985514626d1ac6a77"
+    },
+    {
+      "bytes": 349,
+      "media_type": "application/json",
+      "path": "modules.json",
+      "sha256": "84e40c8e006c9b1d6c122e02cba9b02458120b5fb0c87b746c41e0207cf642cf"
+    },
+    {
+      "bytes": 11422947,
+      "media_type": "application/json",
+      "path": "tokenizer.json",
+      "sha256": "83cdf8c3a34f68862319cb1810ee7b1e2c0a44e0864ae930194ddb76bb7feb8d"
+    },
+    {
+      "bytes": 7256,
+      "media_type": "application/json",
+      "path": "tokenizer_config.json",
+      "sha256": "2f58f4bbd7bbce15d683f525954ef3a92cd82f5e06415a9c513859bf8ab72436"
+    },
+    {
+      "bytes": 2776833,
+      "media_type": "application/json",
+      "path": "vocab.json",
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
+  ],
+  "model_repository": "Qwen/Qwen3-Embedding-8B",
+  "model_revision": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af",
+  "model_snapshot_completeness": "complete_hugging_face_snapshot",
+  "normalization": "l2",
+  "output_processing": {
+    "client_normalization": "none",
+    "required_l2_norm_tolerance_millionths": 100
+  },
+  "pooling": "last_token",
+  "purpose": "semantic_search",
+  "query_composition": "Instruct: {query_instruction}\nQuery: {query}",
+  "query_instruction": "Retrieve relevant evidence.",
+  "response_limits": {
+    "maximum_response_bytes": 1048576,
+    "request_timeout_ms": 120000
+  },
+  "runtime": {
+    "id": "test.runtime",
+    "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "version": "1"
+  },
+  "runtime_mode": "tei_loopback_worker",
+  "schema_version": "livefire.rag.embedding-policy/3",
+  "stored_vector_dtype": "f32le",
+  "tei_image": {
+    "component": {
+      "id": "test.tei-image",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "version": "1.9.3"
+    },
+    "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "repository": "ghcr.io/huggingface/text-embeddings-inference"
+  },
+  "tokenizer": {
+    "id": "test.tokenizer",
+    "sha256": "83cdf8c3a34f68862319cb1810ee7b1e2c0a44e0864ae930194ddb76bb7feb8d",
+    "version": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af"
+  }
+}

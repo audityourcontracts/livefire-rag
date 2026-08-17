@@ -322,6 +322,22 @@ impl ProfileBoundQueryVector {
     }
 }
 
+#[derive(Clone, Copy)]
+enum QueryVectorInput<'a> {
+    Absent,
+    Unvalidated(&'a [f32]),
+    Bound(&'a [f32]),
+}
+
+impl<'a> QueryVectorInput<'a> {
+    fn values(self) -> Option<&'a [f32]> {
+        match self {
+            Self::Absent => None,
+            Self::Unvalidated(values) | Self::Bound(values) => Some(values),
+        }
+    }
+}
+
 pub fn write_fast_index(
     output: &Path,
     source: SourceBinding,
@@ -888,7 +904,27 @@ impl FastIndex {
         filters: &SearchFilters,
         top_n: usize,
     ) -> Result<Vec<SearchHit>> {
-        self.search_with_bound_vector(SearchMode::Dense, "", query, filters, top_n)
+        self.search_with_bound_vector(SearchMode::Dense, "", query, filters, top_n, None)
+    }
+
+    /// Search the dense index while omitting exact document IDs before the
+    /// top-N cut. This is used by stored-document similarity so the seed can
+    /// be excluded without changing occurrence-first relation/time filters.
+    pub fn search_dense_with_vector_excluding(
+        &self,
+        query: &ProfileBoundQueryVector,
+        filters: &SearchFilters,
+        excluded_document_ids: &BTreeSet<String>,
+        top_n: usize,
+    ) -> Result<Vec<SearchHit>> {
+        self.search_with_bound_vector(
+            SearchMode::Dense,
+            "",
+            query,
+            filters,
+            top_n,
+            Some(excluded_document_ids),
+        )
     }
 
     /// Search the fused dense and lexical index with a previously validated
@@ -900,7 +936,51 @@ impl FastIndex {
         filters: &SearchFilters,
         top_n: usize,
     ) -> Result<Vec<SearchHit>> {
-        self.search_with_bound_vector(SearchMode::Fused, query_text, query, filters, top_n)
+        self.search_with_bound_vector(SearchMode::Fused, query_text, query, filters, top_n, None)
+    }
+
+    /// Resolve one indexed document to its stored vector. Version 3 indexes
+    /// use their SQLite document table; version 2 falls back to the ordered
+    /// Parquet document rows. The raw vector is never exposed through the
+    /// command or provider protocols.
+    pub fn document_vector(&self, document_id: &str) -> Result<Option<ProfileBoundQueryVector>> {
+        if document_id.is_empty() || document_id.contains('\0') {
+            return Err(IndexError::Invalid("document id"));
+        }
+        let ordinal = match &self.lexical {
+            LexicalBackend::SqliteV3(index) => index.document_ordinal(document_id)?,
+            LexicalBackend::JsonV2 { .. } => {
+                let documents = self.documents()?;
+                documents
+                    .binary_search_by(|document| document.document_id.as_str().cmp(document_id))
+                    .ok()
+                    .map(|position| documents[position].vector_ordinal)
+            }
+        };
+        ordinal
+            .map(|ordinal| self.read_profile_bound_vector(ordinal))
+            .transpose()
+    }
+
+    /// Rank indexed documents by cosine similarity to one stored document.
+    /// A missing seed is distinct from a valid seed that has no eligible
+    /// neighbours.
+    pub fn similar(
+        &self,
+        document_id: &str,
+        filters: &SearchFilters,
+        top_n: usize,
+        exclude_seed: bool,
+    ) -> Result<Option<Vec<SearchHit>>> {
+        let Some(seed) = self.document_vector(document_id)? else {
+            return Ok(None);
+        };
+        let mut excluded = BTreeSet::new();
+        if exclude_seed {
+            excluded.insert(document_id.to_owned());
+        }
+        self.search_dense_with_vector_excluding(&seed, filters, &excluded, top_n)
+            .map(Some)
     }
 
     pub fn search(
@@ -911,7 +991,9 @@ impl FastIndex {
         filters: &SearchFilters,
         top_n: usize,
     ) -> Result<Vec<SearchHit>> {
-        self.search_internal(mode, query_text, query_vector, false, filters, top_n)
+        let query_vector =
+            query_vector.map_or(QueryVectorInput::Absent, QueryVectorInput::Unvalidated);
+        self.search_internal(mode, query_text, query_vector, filters, top_n, None)
     }
 
     fn search_with_bound_vector(
@@ -921,22 +1003,30 @@ impl FastIndex {
         query: &ProfileBoundQueryVector,
         filters: &SearchFilters,
         top_n: usize,
+        excluded_document_ids: Option<&BTreeSet<String>>,
     ) -> Result<Vec<SearchHit>> {
         if !matches!(mode, SearchMode::Dense | SearchMode::Fused) {
             return Err(IndexError::Invalid("bound query search mode"));
         }
         self.validate_query_binding(query)?;
-        self.search_internal(mode, query_text, Some(query.values()), true, filters, top_n)
+        self.search_internal(
+            mode,
+            query_text,
+            QueryVectorInput::Bound(query.values()),
+            filters,
+            top_n,
+            excluded_document_ids,
+        )
     }
 
     fn search_internal(
         &self,
         mode: SearchMode,
         query_text: &str,
-        query_vector: Option<&[f32]>,
-        query_vector_is_validated: bool,
+        query_vector: QueryVectorInput<'_>,
         filters: &SearchFilters,
         top_n: usize,
+        excluded_document_ids: Option<&BTreeSet<String>>,
     ) -> Result<Vec<SearchHit>> {
         if top_n == 0 || top_n > 100 {
             return Err(IndexError::Invalid("top_n"));
@@ -950,19 +1040,29 @@ impl FastIndex {
             return Err(IndexError::Invalid("search filters"));
         }
         let eligible = self.eligible(filters)?;
-        if matches!(mode, SearchMode::Dense | SearchMode::Fused) && !query_vector_is_validated {
-            validate_query_vector_values(
-                query_vector.ok_or(IndexError::Invalid("query vector"))?,
-                self.manifest.embedding_profile.dimensions as usize,
-                &self.manifest.embedding_profile.normalization,
-            )?;
+        if matches!(mode, SearchMode::Dense | SearchMode::Fused) {
+            let values = query_vector
+                .values()
+                .ok_or(IndexError::Invalid("query vector"))?;
+            if matches!(query_vector, QueryVectorInput::Unvalidated(_)) {
+                validate_query_vector_values(
+                    values,
+                    self.manifest.embedding_profile.dimensions as usize,
+                    &self.manifest.embedding_profile.normalization,
+                )?;
+            }
         }
         let dense = if matches!(mode, SearchMode::Dense | SearchMode::Fused) {
-            Some(self.dense_scores(
-                self.documents()?,
-                query_vector.ok_or(IndexError::Invalid("query vector"))?,
-                &eligible,
-            )?)
+            Some(
+                self.dense_scores(
+                    self.documents()?,
+                    query_vector
+                        .values()
+                        .ok_or(IndexError::Invalid("query vector"))?,
+                    &eligible,
+                    excluded_document_ids,
+                )?,
+            )
         } else {
             None
         };
@@ -1120,6 +1220,7 @@ impl FastIndex {
         documents: &[FastDocument],
         query: &[f32],
         eligible: &EligibleDocuments,
+        excluded_document_ids: Option<&BTreeSet<String>>,
     ) -> Result<Vec<(String, f64)>> {
         let dimensions = self.manifest.vectors.dimensions as usize;
         let row_bytes = dimensions
@@ -1132,6 +1233,7 @@ impl FastIndex {
             if eligible
                 .as_ref()
                 .is_some_and(|ids| !ids.contains(&document.document_id))
+                || excluded_document_ids.is_some_and(|ids| ids.contains(&document.document_id))
             {
                 continue;
             }
@@ -1165,6 +1267,31 @@ impl FastIndex {
         }
         sort_scores(&mut scores);
         Ok(scores)
+    }
+
+    fn read_profile_bound_vector(&self, ordinal: u64) -> Result<ProfileBoundQueryVector> {
+        if ordinal >= self.manifest.vectors.count {
+            return Err(IndexError::Corrupt("vector ordinal"));
+        }
+        let dimensions = self.manifest.vectors.dimensions as usize;
+        let row_bytes = dimensions
+            .checked_mul(4)
+            .ok_or(IndexError::Invalid("vector row bytes"))?;
+        let offset = u64::from(VECTOR_HEADER_BYTES)
+            .checked_add(
+                ordinal
+                    .checked_mul(row_bytes as u64)
+                    .ok_or(IndexError::Invalid("vector offset"))?,
+            )
+            .ok_or(IndexError::Invalid("vector offset"))?;
+        let mut bytes = vec![0_u8; row_bytes];
+        read_exact_at(&self.vectors_file, &mut bytes, offset)?;
+        let values = bytes
+            .chunks_exact(4)
+            .map(|value| f32::from_le_bytes(value.try_into().expect("four bytes")))
+            .collect::<Vec<_>>();
+        self.validate_query_vector(&values)
+            .map_err(|_| IndexError::Corrupt("stored document vector"))
     }
 }
 
@@ -1250,6 +1377,22 @@ impl LexicalIndex {
 }
 
 impl SqliteLexicalIndex {
+    fn document_ordinal(&self, document_id: &str) -> Result<Option<u64>> {
+        let connection = open_sqlite_lexical(&self.path)?;
+        let ordinal = connection
+            .query_row(
+                "SELECT document_ordinal FROM documents WHERE document_id = ?1",
+                [document_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        ordinal
+            .map(|value| {
+                u64::try_from(value).map_err(|_| IndexError::Corrupt("lexical document ordinal"))
+            })
+            .transpose()
+    }
+
     fn scores(&self, query: &str, eligible: &EligibleDocuments) -> Result<Vec<(String, f64)>> {
         let terms = tokenize(query).into_iter().collect::<BTreeSet<_>>();
         if terms.is_empty() {
@@ -2899,6 +3042,60 @@ mod tests {
             query.embedding_profile_sha256(),
             index.manifest.embedding_profile.sha256
         );
+    }
+
+    #[test]
+    fn stored_document_similarity_uses_the_bound_vector_and_excludes_only_the_seed() {
+        let root = tempdir().unwrap();
+        let v2_path = root.path().join("v2");
+        let v3_path = root.path().join("v3");
+        let (documents, occurrences, vectors) = fixture();
+        write_fast_index(
+            &v2_path,
+            SourceBinding {
+                snapshot_sha256: "a".repeat(64),
+                mapping_sha256: "b".repeat(64),
+            },
+            BuildScope::Sample,
+            &documents,
+            &occurrences,
+            &vectors,
+            profile(),
+        )
+        .unwrap();
+        write_scalable_fixture(&v3_path, &documents, &occurrences, &vectors);
+
+        for path in [&v2_path, &v3_path] {
+            let index = FastIndex::open(path).unwrap();
+            let vector = index.document_vector("a").unwrap().unwrap();
+            assert_eq!(vector.values(), [1.0, 0.0]);
+            assert!(index.document_vector("missing").unwrap().is_none());
+
+            let excluded = index
+                .similar("a", &SearchFilters::default(), 2, true)
+                .unwrap()
+                .unwrap();
+            assert_eq!(excluded.len(), 1);
+            assert_eq!(excluded[0].document_id, "b");
+
+            let included = index
+                .similar("a", &SearchFilters::default(), 2, false)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                included
+                    .iter()
+                    .map(|hit| hit.document_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["a", "b"]
+            );
+            assert!(
+                index
+                    .similar("missing", &SearchFilters::default(), 2, true)
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,12 @@
 # Implementation plan
 
-## Current priority: Rust experimental loop
+Historical plan. Its Python promotion milestones and M21/OpenBOTS source work
+are retained for audit and regression context, not as supported production
+steps. The active plan is the Rust M45 and RunPod workflow described in
+[`../README.md`](../README.md) and
+[`runpod-embedding.md`](runpod-embedding.md).
+
+## Historical priority: Rust experimental loop
 
 The immediate implementation plan is now the Rust-first fast path in
 [`rust-experimental-rag-spec.md`](rust-experimental-rag-spec.md). The Python

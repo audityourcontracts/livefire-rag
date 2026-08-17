@@ -1,5 +1,11 @@
 # Command retrieval and anomaly architecture
 
+Historical design record. This document describes the earlier multi-adapter
+command and anomaly design. It is not the active source or runtime boundary.
+Current production work reads only admitted normalized M45 Parquet with Rust;
+see [`../README.md`](../README.md) and
+[`runpod-embedding.md`](runpod-embedding.md).
+
 ## Components
 
 ```text

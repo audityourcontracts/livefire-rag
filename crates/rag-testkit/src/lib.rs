@@ -1,4 +1,6 @@
-//! Shared Rust conformance helpers will grow from the fixture vertical slice.
+//! Shared Rust conformance helpers and non-production regression tooling.
+
+pub mod legacy_regression;
 
 /// Returns the experimental format version exercised by the workspace tests.
 #[must_use]

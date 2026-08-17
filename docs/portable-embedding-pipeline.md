@@ -1,19 +1,21 @@
 # Portable embedding pipeline specification
 
-Status: local preparation, concurrency, embedding recovery, scalable assembly,
-and modular search implemented; cloud workers deferred
+Status: Rust preparation, local embedding, recovery, scalable assembly, and
+modular search implemented; M45 RunPod execution is the active cloud phase
 
 This document replaces the single-command build path as the preferred path for
 large indexes. The existing `rag build` command remains useful for small smoke
-tests. The commands prove the split pipeline on real M41 datasets and the fixed
-10,000-document benchmark. Bounded document runs and an external merge removed
-the former 600,000-document in-memory limit. Cloud workers are a deferred
-future design, not part of the current goal.
+tests. Earlier sections record the completed M41 local run and fixed
+10,000-document benchmark as historical measurements. Bounded document runs
+and an external merge removed the former 600,000-document in-memory limit. The
+active source is now the normalized `livefire-ocsf` M45 build; direct M21,
+M41, and OpenBOTS inputs are not supported by the active builder.
 
 The detailed execution order is in
 [`local-first-embedding-scale-plan.md`](local-first-embedding-scale-plan.md).
-That plan records the completed local LM Studio measurements and recovery tests,
-plus the current dataset-build evidence. Runpod-specific work remains deferred.
+That plan records the completed local LM Studio measurements and recovery tests.
+It is a historical phase record. Current cloud execution is specified in
+[`runpod-embedding.md`](runpod-embedding.md).
 
 ## 1. Outcome
 
@@ -33,7 +35,7 @@ rag prepare       CPU work; no model or network required
 prepared corpus   portable, immutable Parquet shards
     |
     v
-rag embed         LM Studio, Runpod, or another approved backend
+rag embed         local LM Studio, or sealed RunPod worker output
     |
     v
 embedding set     portable binary vector shards
@@ -58,14 +60,14 @@ dataset source
     -> CLI search
 ```
 
-The first implementation proves this path for one dataset and one local LM
-Studio model. Later builds repeat it for additional datasets rather than
-requiring one monolithic rebuild.
+The local implementation proved this path across the earlier M41 non-network
+scope. The active M45 build repeats the same model-independent preparation and
+assembly contracts with a separately identified cloud embedding profile.
 
 ## 2. Goals
 
 1. Project the source data once rather than once per embedding experiment.
-2. Prepare a full non-network corpus in bounded memory using Rust concurrency.
+2. Prepare every searchable relation in bounded memory using Rust concurrency.
 3. Use the same prepared documents with LM Studio, Runpod, or future workers.
 4. Let multiple workers process independent embedding shards safely.
 5. Resume after interruption without repeating completed shards.
@@ -80,7 +82,8 @@ requiring one monolithic rebuild.
 
 ## 3. Non-goals for the first version
 
-- Raw network-flow activity is not included in the first full corpus.
+- Preparing network-flow activity does not require committing to embed it in a
+  later backend run; each relation remains an independent build unit.
 - Individual system metrics are not embedded as ordinary text documents.
 - The first Runpod implementation does not automatically provision arbitrary
   cloud infrastructure.
@@ -91,27 +94,30 @@ requiring one monolithic rebuild.
 - Prepared semantic text is not assumed safe for public storage. Cloud storage
   remains private and access-controlled.
 
-## 4. First full-corpus scope
+## 4. Current full-corpus scope
 
-The first large build uses the accepted M41 OCSF snapshot and includes every
-searchable relation except `ocsf_network_activity`.
+The active preparation uses the accepted M45 OCSF snapshot and publishes every
+searchable relation as an independent dataset, including
+`ocsf_network_activity`. A later embedding run may select a smaller set without
+re-preparing the source.
 
 DNS, HTTP, API, authentication, process, file, email, detection, event-log,
 configuration, inventory, datastore, cloud, and identity-related relations
 remain included. Excluding raw network activity must not accidentally exclude
 these higher-level relations.
 
-Expected M41 accounting from the current projection:
+Expected M45 accounting from the unchanged normalized Parquet bytes, confirmed
+by the current Rust census:
 
 | Item | Count |
 |---|---:|
 | Source rows examined by the existing complete accounting | 13,905,577 |
-| Searchable non-network occurrences | 5,325,200 |
-| Distinct searchable non-network documents | 422,566 |
-| Raw network occurrences excluded | 1,042,076 |
-| Raw network documents excluded | 138,276 |
+| Searchable occurrences | 6,367,276 |
+| Distinct searchable documents | 560,842 |
+| Network occurrences in their own dataset | 1,042,076 |
+| Network documents in their own dataset | 138,276 |
 | Metric rows recorded as structured-only | 7,538,301 |
-| Searchable relation types included | 16 |
+| Searchable relation types prepared | 18 |
 
 The prepared manifest records both included and excluded relations. The final
 tool must never describe a miss as proof that an event is absent from excluded
@@ -155,9 +161,9 @@ rag query --index INDEX --mode fused --query QUERY
 Each command checks the files it can use. Planning and embedding check the
 prepared manifest and document files without opening occurrence files. The
 read-only `verify-prepared` command and assembly check every document and
-occurrence file. The implemented embedding backend is LM Studio.
-Remote OpenAI-compatible and Runpod workers are deferred adapters that would
-write the same vector-shard and receipt format.
+occurrence file. Local embedding uses LM Studio. Cloud embedding uses the Rust
+RunPod controller and `rag-runpod-worker`; both publish the same portable
+vector-shard and receipt chain under different exact embedding profiles.
 
 The checked-in first scope file is preferable to a loosely typed set of CLI
 flags. It declares the 16 included relations, raw network exclusion, and metric
@@ -242,6 +248,12 @@ prepared-corpus/
 ```
 
 There is no JSONL staging file and no vector data in this artifact.
+
+The dataset identity binds the source snapshot and mapping. M45 manifests also
+carry a sorted `source_admission` list containing the exact relation-contract
+and capability-sidecar identities. Older prepared manifests omit that optional
+field and retain their original bytes; an M45 manifest without both entries is
+not accepted as the current copy-ready corpus.
 
 ### 6.2 Document rows
 
@@ -616,62 +628,57 @@ bounded reorder buffer restores task order before one atomic vector-shard
 writer. The queue holds no more than twice the configured in-flight request
 count.
 
-### 10.2 Deferred generic OpenAI-compatible HTTPS design
+### 10.2 Generic OpenAI-compatible client boundary
 
-A future remote adapter may support authenticated HTTPS endpoints. It must not
-weaken the local provider's loopback-only policy.
+The Rust TEI client supports the bounded OpenAI-compatible wire format required
+inside the worker. It does not weaken the local provider's loopback-only
+policy or create a public inference endpoint.
 
 The adapter accepts credentials only through an environment variable or host
 secret provider. The endpoint origin, allowed path, certificate validation,
 timeouts, response limits, and model ID are explicit policy.
 
-This adapter is suitable for compatibility tests and query embedding. Sending
-the complete corpus and returning all vectors through ordinary JSON HTTP is not
-the preferred Runpod bulk path.
+Sending the complete corpus and returning all vectors through ordinary host-to-
+cloud JSON HTTP is not the RunPod bulk path.
 
-### 10.3 Deferred Runpod bulk-worker design
+### 10.3 Active RunPod bulk-worker design
 
-Runpod is outside the current goal. If a later cloud phase is approved, the
-preferred first implementation is a dedicated Runpod Pod:
+The current cloud implementation uses a dedicated RunPod Pod:
 
 1. Upload the prepared manifest and document shards to private object storage or
    a network volume.
-2. Start a container containing the pinned model, tokenizer, inference engine,
-   and shard worker.
+2. Start the digest-pinned custom executor image containing the Rust worker and
+   a separately pinned Text Embeddings Inference base.
 3. Process every unfinished shard near the GPU.
 4. Write binary result parts and receipts directly to persistent storage.
 5. Download the completed embedding set and stop the Pod.
 
-The first inference-engine candidate is Hugging Face Text Embeddings Inference
-with the official Qwen3-Embedding-8B weights. It supports Qwen3, dynamic token
-batching, and an OpenAI-compatible embeddings endpoint.
+The inference engine is Hugging Face Text Embeddings Inference with the pinned
+upstream Qwen3-Embedding-8B checkpoint. It listens only on loopback within the
+worker container.
 
-Runpod Serverless is a later executor for elastic repeated builds. Each queued
-job receives only corpus/profile digests, a shard ID, and storage locations. It
-returns only a receipt location. Ordinary Runpod request and response payloads
-are too small for corpus or vector transfer.
+Multiple workers write unique attempt-scoped shard paths. They never append
+concurrently to one shared output file. The host fetches deterministic
+completion markers and only the exact objects named by those markers.
 
-Multiple workers write unique content-addressed shard paths. They never append
-concurrently to one shared output file.
-
-For later Serverless execution, one idempotent job processes one task. A job
-receives only corpus/profile digests, a task ID, and object locations. A worker
-writes vectors and its receipt to storage; the job response contains only the
-receipt location. Retried jobs accept an existing result only when its digest
-matches.
+RunPod Serverless remains future work. In that design, one idempotent job would
+process one task. A job would receive only corpus/profile digests, a task ID,
+and object locations. A worker would write vectors and its receipt to storage;
+the job response would contain only the receipt location. Retried jobs could
+accept an existing result only when its digest matches.
 
 ### 10.4 Model compatibility
 
 Prepared documents are portable; embeddings are not automatically portable
 between model builds.
 
-The present local profile uses a Q4 GGUF model through LM Studio. A Runpod TEI
+The present local profile uses a Q4 GGUF model through LM Studio. A RunPod TEI
 deployment uses Safetensors with a runtime dtype that must be observed and
 recorded rather than assumed. These create separate embedding profiles and,
 initially, separate indexes. Queries must use the profile that matches the
 indexed documents.
 
-An exact GGUF worker on Runpod may later be declared compatible with local LM
+An exact GGUF worker on RunPod may later be declared compatible with local LM
 Studio only after a fixed comparison proves acceptable vector and ranked-result
 agreement. Matching the model name alone is insufficient.
 
@@ -833,8 +840,8 @@ ranking-overlap diagnostics only. People have not yet reviewed the pooled
 results and marked which documents are relevant, so no search-quality or
 reduced-dimension default claim is made.
 
-Runpod measurements are deferred and outside the current goal. A future cloud
-phase may reuse this exact 10,000-document input without changing its identity.
+No paid RunPod measurement has been made yet. The active cloud phase will reuse
+this exact 10,000-document input without changing its identity.
 
 ### Step E: one complete large dataset or relation
 
@@ -843,18 +850,20 @@ activity or event-log activity, without sampling. This tests hundreds of
 thousands of occurrences and catches assembly problems that a 10,000-document
 corpus cannot expose.
 
-All 16 non-network relation datasets are prepared, fully verified, and bound to
-exact-token plans containing 92,466,199 tokens in total. Real embedding has
-finished for the ten small relations plus API and HTTP activity: 23,636
-documents and 165,186 event references. The HTTP index contains 12,045
-documents and 25,114 event references and passed inspect plus lexical and fused
-search. Deterministic test-vector
-result sets and version-3 indexes cover the remaining four large datasets:
-398,930 documents and 5,160,014 event references. The test results occupy about
-6.1 GiB and their indexes about 12.5 GiB. The 7.1-GiB configuration index
-contains 4,448,673 references and assembled in 408.99 seconds. A four-index
-test-only catalogue validates and supports lexical search with the embedding
-endpoint unavailable, while normal consumers refuse those synthetic indexes.
+All 16 non-network relation datasets are prepared, fully verified, bound to
+exact-token plans containing 92,466,199 tokens, embedded by LM Studio, and
+assembled as real version-3 indexes. Together they contain 422,566 documents
+and 5,325,200 event references. Earlier deterministic test-vector builds of the
+four largest datasets remain useful scale and refusal tests, but the real model
+indexes now supersede them as the authoritative local result.
+
+The 16 embedding summaries close over 1,658 tasks and 105,647 HTTP requests
+with zero retries. Their monotonic task timers sum to 149,425 seconds (41.51
+hours), or 2.828 documents and 618.81 exact tokens per active second. The build
+used batches of four with at most two client requests in flight. This is a
+measurement of the completed resumable run, not evidence that LM Studio used
+two internal prediction slots; its model status did not expose an internal
+parallel setting.
 
 ### Step F: additional datasets and catalogue search
 
@@ -869,15 +878,23 @@ and prove that the CLI:
 - produces deterministic reciprocal-rank-fused ordering and tie handling; and
 - can add or remove one dataset by changing only the catalogue.
 
-Twelve independent real indexes have passed validation and fused search. Their
+Sixteen independent real indexes have passed validation and search. Their
 sealed catalogue completed a frozen 45-search run over 15 queries with 15 model
-calls. A separate transformer deduplicated the results into 690 label-hidden
-review candidates, checked 1,275 unique returned event pointers against typed
+calls. A separate transformer deduplicated the results into 709 label-hidden
+review candidates, checked 1,244 unique returned event pointers against typed
 Parquet, and sealed the snapshot identity and count in a private receipt beside
 the modes, ranks, scores, and system identities. This proves modular local
 construction and a reviewer handoff; it
 does not claim corpus-wide search quality because people have not marked
 relevance yet.
+
+Stored-document similarity is also implemented in Rust. `rag similar` reads a
+seed vector from one index, while `rag catalogue similar` reuses that exact
+profile-bound vector across every admitted dataset. Neither command contacts LM
+Studio. Runtime catalogue queries verify every final index and its sealed
+prepared/plan/result provenance without replaying all intermediate embedding
+parts; the separate `rag catalogue validate` command still performs the full
+offline chain check.
 
 An exact census across all 422,566 formatted document inputs found 418,930
 distinct values, with 3,636 duplicate rows beyond the first occurrence
@@ -934,20 +951,13 @@ estimates before the full build.
 
 ## 15. Delivery sequence and Git strategy
 
-The portable pipeline implementation is merged into `main`. The detailed
-local-first feature and commit sequence is maintained in
+The completed local-first work remains recorded in
 [`local-first-embedding-scale-plan.md`](local-first-embedding-scale-plan.md).
-
-Local implementation belongs on `feature/local-rag-scale`, based on the merged
-portable pipeline. It covers count reconciliation, benchmark selection, exact
-token measurement, LM Studio tuning, parallel preparation, scalable assembly,
-and multi-index CLI search.
-
-Merge that branch after the local implementation and evidence are reviewed.
-Runpod is outside the current goal. A later approved goal may create
-`feature/runpod-embedding-workers` from the merged local implementation; keep
-Runpod containers, storage adapters, credentials, and cloud reports off the
-local branch.
+The current M45 and RunPod implementation belongs on
+`feature/livefire-ocsf-runpod-rag`. Generated containers, model objects,
+prepared corpora, vectors, indexes, credentials, and raw cloud reports remain
+outside Git; source, schemas, deterministic fixtures, and sanitized evidence
+are reviewed together at the end of the goal.
 
 One integrator owns shared contracts and final commits. Parallel agents may own
 disjoint implementation or review areas but do not create overlapping contract

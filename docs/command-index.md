@@ -1,5 +1,10 @@
 # Command index and scoring policy
 
+Historical command/anomaly design. OpenBOTS-specific baselines and the old
+command tools are not compatibility targets for the active M45 evidence index.
+The current Rust command projection consumes only admitted normalized M45 data;
+see [`../README.md`](../README.md).
+
 ## Canonical projection
 
 Each command, script-block, or cloud-action record becomes a deterministic

@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/embedding-task-run-report.v2.schema.json",
+  "title": "Portable embedding task run report v2",
+  "description": "A content-free task report for a sealed embedding execution. Machine identity may differ between tasks; execution material and the certified accelerator class may not.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "plan_sha256", "source_snapshot_sha256",
+    "prepared_corpus_sha256", "embedding_profile_sha256", "tokenizer_sha256",
+    "task_id", "task_index", "ordinal_start", "ordinal_end", "document_count",
+    "token_count", "receipt_sha256", "outcome", "started_unix_ms",
+    "finished_unix_ms", "execution_identity", "git", "machine", "accelerator",
+    "backend", "transport_bytes", "resource_usage", "artifact_sizes", "execution"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.embedding-task-run-report/2"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "source_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "prepared_corpus_sha256": {"$ref": "#/$defs/sha256"},
+    "embedding_profile_sha256": {"$ref": "#/$defs/sha256"},
+    "tokenizer_sha256": {"$ref": "#/$defs/sha256"},
+    "task_id": {"$ref": "#/$defs/text"},
+    "task_index": {"$ref": "#/$defs/count"},
+    "ordinal_start": {"$ref": "#/$defs/count"},
+    "ordinal_end": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "document_count": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "token_count": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "outcome": {"enum": ["executed", "reused", "test_generated", "derived"]},
+    "started_unix_ms": {"$ref": "#/$defs/nullable_count"},
+    "finished_unix_ms": {"$ref": "#/$defs/nullable_count"},
+    "execution_identity": {"$ref": "#/$defs/execution_identity"},
+    "git": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/git"},
+    "machine": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/machine"},
+    "accelerator": {"$ref": "#/$defs/accelerator"},
+    "backend": {"$ref": "#/$defs/backend"},
+    "transport_bytes": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/transport_bytes"},
+    "resource_usage": {"$ref": "#/$defs/resource_usage"},
+    "artifact_sizes": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/task_artifact_sizes"},
+    "execution": {
+      "oneOf": [
+        {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/execution"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "text": {"type": "string", "minLength": 1},
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "nullable_count": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
+    "status": {"enum": ["observed", "partial", "caller_supplied", "not_measured", "unavailable"]},
+    "component": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"},
+        "version": {"$ref": "#/$defs/text"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "execution_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["backend_kind", "executor_image", "executor_image_build", "runtime", "worker_binary", "model_artifact", "embedding_profile", "returned_model", "accelerator"],
+      "properties": {
+        "backend_kind": {"$ref": "#/$defs/text"},
+        "executor_image": {"$ref": "#/$defs/component"},
+        "executor_image_build": {"$ref": "#/$defs/component"},
+        "runtime": {"$ref": "#/$defs/component"},
+        "worker_binary": {"$ref": "#/$defs/component"},
+        "model_artifact": {"$ref": "#/$defs/component"},
+        "embedding_profile": {"$ref": "#/$defs/component"},
+        "returned_model": {"$ref": "#/$defs/text"},
+        "accelerator": {"$ref": "#/$defs/accelerator_policy"}
+      }
+    },
+    "accelerator_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "model", "architecture", "compute_capability", "count"],
+      "properties": {
+        "provider": {"$ref": "#/$defs/text"},
+        "model": {"$ref": "#/$defs/text"},
+        "architecture": {"$ref": "#/$defs/text"},
+        "compute_capability": {"$ref": "#/$defs/text"},
+        "count": {"const": 1}
+      }
+    },
+    "accelerator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "provider", "machine_id", "model", "architecture", "compute_capability", "count"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "provider": {"type": ["string", "null"], "minLength": 1},
+        "machine_id": {"type": ["string", "null"], "minLength": 1},
+        "model": {"type": ["string", "null"], "minLength": 1},
+        "architecture": {"type": ["string", "null"], "minLength": 1},
+        "compute_capability": {"type": ["string", "null"], "minLength": 1},
+        "count": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "backend": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "kind", "version", "endpoint_kind", "batch_size", "requests_in_flight", "cold_load_micros"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "kind": {"$ref": "#/$defs/text"},
+        "version": {"type": ["string", "null"], "minLength": 1},
+        "endpoint_kind": {"$ref": "#/$defs/text"},
+        "batch_size": {"type": "integer", "minimum": 1},
+        "requests_in_flight": {"type": "integer", "minimum": 1},
+        "cold_load_micros": {"$ref": "#/$defs/nullable_count"}
+      }
+    },
+    "resource_usage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "worker_peak_rss_bytes", "backend_peak_rss_bytes"],
+      "properties": {
+        "status": {"$ref": "#/$defs/status"},
+        "worker_peak_rss_bytes": {"$ref": "#/$defs/nullable_count"},
+        "backend_peak_rss_bytes": {"$ref": "#/$defs/nullable_count"}
+      }
+    }
+  },
+  "$comment": "The runtime additionally proves plan/profile/tokenizer/receipt closure and requires one identical execution_identity across all v2 task reports. Host and machine ID may differ; the observed accelerator provider, model, architecture, compute capability, and single-device count must match the certified execution identity."
+}

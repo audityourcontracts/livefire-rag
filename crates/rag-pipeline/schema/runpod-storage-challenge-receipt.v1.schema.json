@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/runpod-storage-challenge-receipt.v1.schema.json",
+  "title": "RunPod mounted-storage challenge receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "component_sha256", "executor_image", "pod_id", "machine_id",
+    "network_volume_id", "run_prefix", "bootstrap", "challenge", "response",
+    "response_verified", "requested_terminate_after", "termination_binding",
+    "schedule_receipt_sha256", "launch_receipt_sha256", "returned_hourly_price_usd",
+    "maximum_hourly_price_usd", "maximum_runtime_seconds", "maximum_total_compute_usd",
+    "started_at_ms", "completed_at_ms", "elapsed_ms", "observed_compute_usd", "outcome",
+    "pod_termination"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.runpod-storage-challenge-receipt/1"},
+    "component_sha256": {"$ref": "#/$defs/digest"},
+    "executor_image": {"type": "string", "pattern": "^[^\\s]+@sha256:[0-9a-f]{64}$"},
+    "pod_id": {"$ref": "#/$defs/identifier"},
+    "machine_id": {"$ref": "#/$defs/identifier"},
+    "network_volume_id": {"$ref": "#/$defs/identifier"},
+    "run_prefix": {"$ref": "#/$defs/path"},
+    "bootstrap": {"$ref": "#/$defs/object"},
+    "challenge": {"$ref": "#/$defs/object"},
+    "response": {"$ref": "#/$defs/object"},
+    "response_verified": {"type": "boolean"},
+    "requested_terminate_after": {"type": "string", "format": "date-time"},
+    "termination_binding": {"const": "requested_unobservable"},
+    "schedule_receipt_sha256": {"$ref": "#/$defs/digest"},
+    "launch_receipt_sha256": {"$ref": "#/$defs/digest"},
+    "returned_hourly_price_usd": {"type": "number", "minimum": 0},
+    "maximum_hourly_price_usd": {"type": "number", "exclusiveMinimum": 0},
+    "maximum_runtime_seconds": {"type": "integer", "minimum": 300, "maximum": 604800},
+    "maximum_total_compute_usd": {"type": "number", "exclusiveMinimum": 0},
+    "started_at_ms": {"$ref": "#/$defs/safeInteger"},
+    "completed_at_ms": {"$ref": "#/$defs/safeInteger"},
+    "elapsed_ms": {"$ref": "#/$defs/safeInteger"},
+    "observed_compute_usd": {"type": "number", "minimum": 0},
+    "outcome": {
+      "enum": ["completed", "challenge_upload_failed", "runtime_limit", "cost_limit", "storage_poll_failed", "control_poll_failed", "pod_exited", "cleanup_failed", "response_binding_failed", "response_fetch_failed"]
+    },
+    "pod_termination": {"enum": ["succeeded", "failed"]}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 191, "pattern": "^[A-Za-z0-9._-]+$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*//)(?!.*[\\\\:])[^/]+(?:/[^/]+)*$"},
+    "safeInteger": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "object": {
+      "type": "object", "additionalProperties": false, "required": ["key", "bytes", "sha256"],
+      "properties": {
+        "key": {"$ref": "#/$defs/path"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

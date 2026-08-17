@@ -1,5 +1,10 @@
 # Standalone semantic provider POC
 
+Historical proof of concept. The Python commands and mixed M21/OpenBOTS pack
+below are retained only for regression tests and audit context. They are not a
+supported build, query, packaging, or provider path. Use the Rust M45 workflow
+in [`../README.md`](../README.md).
+
 This repository now contains a runnable, development-only semantic index and
 Livefire SDK tool provider. It is independent of the Livefire repository. The
 provider implements `handshake`, `open`, `call`, `health`, and `close` over JSON

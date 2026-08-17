@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "livefire-rag"
 version = "0.1.0"
-description = "Standalone immutable semantic command index and Livefire SDK provider"
+description = "Analysis and contract-validation helpers for the native Livefire RAG tools"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -23,14 +23,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-prototype = ["duckdb>=1.4,<2", "pytz>=2025.2,<2027"]
 analysis = ["duckdb>=1.4,<2"]
-test = []
-
-[project.scripts]
-livefire-rag = "livefire_rag.cli:main"
+test = ["duckdb>=1.4,<2"]
 
 [tool.hatch.build.targets.wheel]
+# `src/livefire_rag` is retained only for frozen Python tests and comparison
+# oracles. No Python console entry point is published; active build, query,
+# provider, packaging, and cloud work is implemented by the Rust binaries.
 packages = ["src/livefire_rag", "python/livefire_rag_analysis"]
 
 [tool.hatch.build.targets.wheel.force-include]
@@ -46,10 +45,15 @@ packages = ["src/livefire_rag", "python/livefire_rag_analysis"]
 "specs/catalogue-review-pool-manifest.v1.schema.json" = "livefire_rag/evidence_specs/catalogue-review-pool-manifest.v1.schema.json"
 "specs/embedding-task-run-report.v1.schema.json" = "livefire_rag/evidence_specs/embedding-task-run-report.v1.schema.json"
 "specs/embedding-run-summary.v1.schema.json" = "livefire_rag/evidence_specs/embedding-run-summary.v1.schema.json"
+"specs/embedding-task-run-report.v2.schema.json" = "livefire_rag/evidence_specs/embedding-task-run-report.v2.schema.json"
+"specs/embedding-run-summary.v2.schema.json" = "livefire_rag/evidence_specs/embedding-run-summary.v2.schema.json"
+"specs/tei-worker-report-context.v1.schema.json" = "livefire_rag/evidence_specs/tei-worker-report-context.v1.schema.json"
 "specs/query-benchmark.v1.schema.json" = "livefire_rag/evidence_specs/query-benchmark.v1.schema.json"
 "specs/index-overlap.v1.schema.json" = "livefire_rag/evidence_specs/index-overlap.v1.schema.json"
 "specs/embedding-policy.v1.schema.json" = "livefire_rag/evidence_specs/embedding-policy.v1.schema.json"
 "specs/embedding-policy.v2.schema.json" = "livefire_rag/evidence_specs/embedding-policy.v2.schema.json"
+"specs/embedding-policy.v3.schema.json" = "livefire_rag/evidence_specs/embedding-policy.v3.schema.json"
+"specs/tei-model-artifact-set.v1.schema.json" = "livefire_rag/evidence_specs/tei-model-artifact-set.v1.schema.json"
 "specs/evidence-common.v1.schema.json" = "livefire_rag/evidence_specs/evidence-common.v1.schema.json"
 "specs/evidence-coverage-report.v1.schema.json" = "livefire_rag/evidence_specs/evidence-coverage-report.v1.schema.json"
 "specs/evidence-derivation-coverage.v1.schema.json" = "livefire_rag/evidence_specs/evidence-derivation-coverage.v1.schema.json"
@@ -70,6 +74,8 @@ packages = ["src/livefire_rag", "python/livefire_rag_analysis"]
 "specs/evidence-search.output.v1.schema.json" = "livefire_rag/evidence_specs/evidence-search.output.v1.schema.json"
 "specs/fast-evidence-search.input.v1.schema.json" = "livefire_rag/evidence_specs/fast-evidence-search.input.v1.schema.json"
 "specs/fast-evidence-search.output.v1.schema.json" = "livefire_rag/evidence_specs/fast-evidence-search.output.v1.schema.json"
+"specs/fast-evidence-similar.input.v1.schema.json" = "livefire_rag/evidence_specs/fast-evidence-similar.input.v1.schema.json"
+"specs/fast-evidence-similar.output.v1.schema.json" = "livefire_rag/evidence_specs/fast-evidence-similar.output.v1.schema.json"
 "specs/ocsf-hydration-ref.v1.schema.json" = "livefire_rag/evidence_specs/ocsf-hydration-ref.v1.schema.json"
 "specs/fast-index-manifest.v2.schema.json" = "livefire_rag/evidence_specs/fast-index-manifest.v2.schema.json"
 "specs/fast-index-manifest.v3.schema.json" = "livefire_rag/evidence_specs/fast-index-manifest.v3.schema.json"
@@ -91,6 +97,16 @@ packages = ["src/livefire_rag", "python/livefire_rag_analysis"]
 "specs/embedding-result-set.v2.schema.json" = "livefire_rag/evidence_specs/embedding-result-set.v2.schema.json"
 "specs/embedding-result-set.v3.schema.json" = "livefire_rag/evidence_specs/embedding-result-set.v3.schema.json"
 "specs/projection-parity-report.v1.schema.json" = "livefire_rag/evidence_specs/projection-parity-report.v1.schema.json"
+"crates/rag-pipeline/schema/runpod-embedding-bundle.v1.schema.json" = "livefire_rag/evidence_specs/runpod-embedding-bundle.v1.schema.json"
+"crates/rag-pipeline/schema/runpod-worker-attempt.v1.schema.json" = "livefire_rag/evidence_specs/runpod-worker-attempt.v1.schema.json"
+"crates/rag-pipeline/schema/runpod-run-report.v1.schema.json" = "livefire_rag/evidence_specs/runpod-run-report.v1.schema.json"
+"crates/rag-pipeline/schema/runpod-tei-conformance-candidate.v1.schema.json" = "livefire_rag/evidence_specs/runpod-tei-conformance-candidate.v1.schema.json"
+"crates/rag-pipeline/schema/runpod-tei-conformance-result.v1.schema.json" = "livefire_rag/evidence_specs/runpod-tei-conformance-result.v1.schema.json"
+"crates/rag-pipeline/schema/runpod-executor-image-build-receipt.v1.schema.json" = "livefire_rag/evidence_specs/runpod-executor-image-build-receipt.v1.schema.json"
+"crates/rag-runpod-worker/schema/runpod-worker-observation.v1.schema.json" = "livefire_rag/evidence_specs/runpod-worker-observation.v1.schema.json"
+"crates/rag-pipeline/schema/query-vector-set.v1.schema.json" = "livefire_rag/evidence_specs/query-vector-set.v1.schema.json"
+"crates/rag-pipeline/schema/runpod-storage-challenge-response.v1.schema.json" = "livefire_rag/evidence_specs/runpod-storage-challenge-response.v1.schema.json"
+"crates/rag-pipeline/schema/runpod-storage-challenge-receipt.v1.schema.json" = "livefire_rag/evidence_specs/runpod-storage-challenge-receipt.v1.schema.json"
 "specs/fast-vector-binary-profile.v1.json" = "livefire_rag/evidence_specs/fast-vector-binary-profile.v1.json"
 "specs/fast-lexical-profile.v1.json" = "livefire_rag/evidence_specs/fast-lexical-profile.v1.json"
 "specs/fast-lexical-profile.v2.json" = "livefire_rag/evidence_specs/fast-lexical-profile.v2.json"
@@ -104,6 +120,8 @@ packages = ["src/livefire_rag", "python/livefire_rag_analysis"]
 include = [
   "/src",
   "/python/livefire_rag_analysis",
+  "/crates/rag-pipeline/schema",
+  "/crates/rag-runpod-worker/schema",
   "/fixtures/semantic-index",
   "/LICENSE",
   "/specs",

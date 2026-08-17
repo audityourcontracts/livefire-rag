@@ -38,11 +38,18 @@ pub const DERIVED_VECTOR_EXECUTOR_ID: &str = "livefire.rag.embedding-executor.pr
 pub const PREFIX_L2_DERIVATION_POLICY: &str = "prefix_then_l2_normalize_v1";
 pub const BENCHMARK_SELECTION_SCHEMA: &str = "livefire.rag.benchmark-selection/1";
 pub const DATASET_CATALOGUE_SCHEMA: &str = "livefire.rag.dataset-catalogue/1";
+pub const RUNPOD_EMBEDDING_BUNDLE_SCHEMA: &str = "livefire.rag.runpod-embedding-bundle/1";
+pub const RUNPOD_WORKER_ATTEMPT_SCHEMA: &str = "livefire.rag.runpod-worker-attempt/1";
+pub const RUNPOD_RUN_REPORT_SCHEMA: &str = "livefire.rag.runpod-run-report/1";
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 mod benchmark_selection;
+mod cloud;
 mod dataset_catalogue;
+mod query_vector_set;
+mod runpod_conformance;
+mod runpod_storage_challenge;
 mod token_plan;
 
 pub use benchmark_selection::{
@@ -52,9 +59,37 @@ pub use benchmark_selection::{
     STANDARD_BENCHMARK_SIZES, bind_benchmark_prepared_corpus, build_benchmark_selection_manifest,
     select_benchmark_documents,
 };
+pub use cloud::{
+    CloudComponentArtifact, CloudObjectRef, CloudPreparedDocumentArtifact,
+    RunpodAcceleratorIdentity, RunpodBundleArtifacts, RunpodEmbeddingBundle,
+    RunpodExecutionIdentity, RunpodExpectedQueryVectorOutput, RunpodExpectedTaskOutput,
+    RunpodMachineIdentity, RunpodQueryVectorSetOutput, RunpodRunReport, RunpodSelectedAttempt,
+    RunpodTaskOutput, RunpodWorkerAssignment, RunpodWorkerAttemptMarker, WorkerAttemptOutcome,
+    build_runpod_embedding_bundle, build_runpod_run_report,
+};
 pub use dataset_catalogue::{
     CatalogueArtifactRef, CatalogueDatasetEntry, CatalogueMode, DatasetCatalogue,
     RelationOverlapAllowance, validate_dataset_pipeline_binding,
+};
+pub use query_vector_set::{
+    PackedQueryVectors, QUERY_VECTOR_SET_MANIFEST, QUERY_VECTOR_SET_PLAN, QUERY_VECTOR_SET_SCHEMA,
+    QUERY_VECTOR_SET_VECTORS, QueryVectorArtifact, QueryVectorExecutionBinding,
+    QueryVectorPlanQuery, QueryVectorRow, QueryVectorSetInput, QueryVectorSetManifest,
+    SealedQueryVectorSet, query_vector_plan_queries, write_query_vector_set,
+};
+pub use runpod_conformance::{
+    EMBEDDING_POLICY_V3_CONFORMANCE_MODE, EmbeddingPolicyV3ConformanceFields,
+    RUNPOD_EXECUTOR_IMAGE_BUILD_RECEIPT_SCHEMA, RUNPOD_TEI_CONFORMANCE_CANDIDATE_SCHEMA,
+    RUNPOD_TEI_CONFORMANCE_RESULT_SCHEMA, RunpodExecutorImageBuildReceipt,
+    RunpodTeiAcceleratorPolicy, RunpodTeiArtifactObject, RunpodTeiBoundArtifact,
+    RunpodTeiBoundBuildReceipt, RunpodTeiConformanceCandidate, RunpodTeiConformanceFixture,
+    RunpodTeiConformanceOutcome, RunpodTeiConformanceResult, RunpodTeiExecutionIdentity,
+    RunpodTeiImageIdentity, RunpodTeiLoadPolicy, RunpodTeiMachineIdentity,
+    RunpodTeiNormalizedOutput, RunpodTeiTokenizerIdentity, model_artifact_set_digest,
+    seal_embedding_policy_v3_conformance,
+};
+pub use runpod_storage_challenge::{
+    RUNPOD_STORAGE_CHALLENGE_RESPONSE_SCHEMA, RunpodStorageChallengeResponse,
 };
 pub use token_plan::{
     DOCUMENT_TOKEN_COUNTS_PATH, DocumentTokenCountsObject, EmbeddingInputSliceV2, EmbeddingPlanV2,
@@ -203,6 +238,11 @@ pub struct DatasetIdentity {
     pub version: String,
     pub source_snapshot: ComponentRef,
     pub mapping: ComponentRef,
+    /// Additional source-admission identities required to interpret this
+    /// snapshot. Older prepared corpora omit the field and retain identical
+    /// serialized bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_admission: Vec<ComponentRef>,
     pub included_relations: Vec<String>,
     pub excluded_relations: Vec<String>,
     pub structured_only_relations: Vec<String>,
@@ -214,6 +254,18 @@ impl DatasetIdentity {
         require_text(&self.version)?;
         self.source_snapshot.validate()?;
         self.mapping.validate()?;
+        for component in &self.source_admission {
+            component.validate()?;
+        }
+        if !self
+            .source_admission
+            .windows(2)
+            .all(|pair| pair[0].id < pair[1].id)
+        {
+            return Err(PipelineError::Invalid(
+                "source admission components must be sorted and unique by id",
+            ));
+        }
         let mut all = BTreeSet::new();
         for relations in [
             &self.included_relations,
@@ -1765,6 +1817,7 @@ mod tests {
             version: "1".into(),
             source_snapshot: component("snapshot", 'a'),
             mapping: component("mapping", 'b'),
+            source_admission: vec![],
             included_relations: vec!["events".into()],
             excluded_relations: vec!["network".into()],
             structured_only_relations: vec!["metrics".into()],
@@ -1927,6 +1980,31 @@ mod tests {
             component_digest(&value).unwrap(),
             canonical_digest(&material).unwrap()
         );
+    }
+
+    #[test]
+    fn dataset_source_admission_is_optional_but_sorted_and_unique() {
+        let legacy = dataset();
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        assert!(
+            !String::from_utf8(bytes)
+                .unwrap()
+                .contains("source_admission")
+        );
+
+        let mut current = dataset();
+        current.source_admission = vec![
+            component("relation-contract", 'c'),
+            component("snapshot-capabilities", 'd'),
+        ];
+        current.validate().unwrap();
+        current.source_admission.reverse();
+        assert!(matches!(
+            current.validate(),
+            Err(PipelineError::Invalid(
+                "source admission components must be sorted and unique by id"
+            ))
+        ));
     }
 
     #[test]

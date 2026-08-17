@@ -20,26 +20,34 @@ use rag_embedding::{
     validate_vector,
 };
 use rag_index::{FastIndex, IndexError, SearchFilters, SearchHit, SearchMode};
+use rag_pipeline::{ComponentRef, SealedQueryVectorSet};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const PROTOCOL: &str = "livefire.tool/1";
 pub const PROVIDER_ID: &str = "com.ayc.livefire-rag.fast-evidence-provider";
 pub const TOOL_ID: &str = "com.ayc.livefire-rag.fast-evidence.search";
+pub const SIMILAR_TOOL_ID: &str = "com.ayc.livefire-rag.fast-evidence.similar";
 pub const FORMAT_ID: &str = "com.ayc.livefire-rag.fast-index-format";
+/// Existing search-tool and v2 index-format version. Kept as an alias so
+/// current callers retain the exact search identity.
 pub const VERSION: &str = "0.2.0";
+pub const PROVIDER_VERSION: &str = "0.3.0";
+pub const SIMILAR_TOOL_VERSION: &str = "0.1.0";
 pub const FORMAT_VERSION_V3: &str = "0.3.0";
+pub const QUERY_VECTOR_SET_COMPONENT_ID: &str = "com.ayc.livefire-rag.query-vector-set";
+pub const QUERY_VECTOR_SET_COMPONENT_VERSION: &str = "1";
 
 #[must_use]
 pub fn provider_ref() -> Value {
     packaged_provider_ref().unwrap_or_else(|| {
         component(
             PROVIDER_ID,
-            VERSION,
+            PROVIDER_VERSION,
             &canonical_sha256(&json!({
                 "schema_version":"livefire.rag.fast-provider-development-identity/1",
                 "provider_id":PROVIDER_ID,
-                "provider_version":VERSION,
+                "provider_version":PROVIDER_VERSION,
                 "scope":"unpackaged_test_only"
             })),
         )
@@ -62,12 +70,27 @@ fn packaged_provider_ref() -> Option<Value> {
             && object["sha256"] == sha256(&executable_bytes)
             && object["bytes"].as_u64() == Some(executable_bytes.len() as u64)
     });
-    valid.then(|| component(PROVIDER_ID, VERSION, &canonical_sha256(&lock)))
+    valid.then(|| component(PROVIDER_ID, PROVIDER_VERSION, &canonical_sha256(&lock)))
 }
 
 #[must_use]
 pub fn tool_ref() -> Value {
-    tool_descriptor()["tool"].clone()
+    search_tool_ref()
+}
+
+#[must_use]
+pub fn search_tool_ref() -> Value {
+    search_tool_descriptor()["tool"].clone()
+}
+
+#[must_use]
+pub fn similar_tool_ref() -> Value {
+    similar_tool_descriptor()["tool"].clone()
+}
+
+#[must_use]
+pub fn tool_refs() -> Vec<Value> {
+    vec![search_tool_ref(), similar_tool_ref()]
 }
 
 #[must_use]
@@ -100,15 +123,39 @@ fn schema_ref(schema: &str) -> Value {
 
 #[must_use]
 pub fn input_schema_ref() -> Value {
+    search_input_schema_ref()
+}
+
+#[must_use]
+pub fn search_input_schema_ref() -> Value {
     schema_ref(include_str!(
         "../../../specs/fast-evidence-search.input.v1.schema.json"
     ))
 }
 
 #[must_use]
+pub fn similar_input_schema_ref() -> Value {
+    schema_ref(include_str!(
+        "../../../specs/fast-evidence-similar.input.v1.schema.json"
+    ))
+}
+
+#[must_use]
 pub fn output_schema_ref() -> Value {
+    search_output_schema_ref()
+}
+
+#[must_use]
+pub fn search_output_schema_ref() -> Value {
     schema_ref(include_str!(
         "../../../specs/fast-evidence-search.output.v1.schema.json"
+    ))
+}
+
+#[must_use]
+pub fn similar_output_schema_ref() -> Value {
+    schema_ref(include_str!(
+        "../../../specs/fast-evidence-similar.output.v1.schema.json"
     ))
 }
 
@@ -210,7 +257,35 @@ pub fn retrieval_policy_ref() -> Value {
 }
 
 #[must_use]
+pub fn similarity_policy() -> Value {
+    json!({
+        "schema_version":"livefire.rag.fast-similarity-policy/1",
+        "seed_lookup":"exact_document_id",
+        "seed_vector":"stored_index_vector",
+        "distance":"cosine",
+        "default_exclude_seed":true,
+        "tie_break":"score_desc_document_id_asc",
+        "max_candidates":100,
+        "result_semantics":"candidate_pointer_not_evidence"
+    })
+}
+
+#[must_use]
+pub fn similarity_policy_ref() -> Value {
+    component(
+        "com.ayc.livefire-rag.fast-similarity-policy",
+        "1",
+        &canonical_sha256(&similarity_policy()),
+    )
+}
+
+#[must_use]
 pub fn tool_descriptor() -> Value {
+    search_tool_descriptor()
+}
+
+#[must_use]
+pub fn search_tool_descriptor() -> Value {
     let mut value = json!({
         "schema_version":"livefire.tool-descriptor/1",
         "tool":{"id":TOOL_ID,"version":VERSION,"sha256":""},
@@ -218,6 +293,26 @@ pub fn tool_descriptor() -> Value {
         "description":"Rank generic OCSF evidence candidates and return hydration-only references; every candidate requires authoritative OCSF hydration and verification.",
         "input_schema":input_schema_ref(),
         "output_schema":output_schema_ref(),
+        "result_semantics":"candidate_pointer",
+        "evidence_policy":"pointer_only",
+        "required_indexes":[{"format_id":FORMAT_ID,"accepted_versions":[VERSION,FORMAT_VERSION_V3]}],
+        "limits":{"request_bytes":65536,"result_bytes":1048576,"wall_time_ms":30000,"max_candidates":100},
+        "determinism":"ranked_deterministic"
+    });
+    let digest = canonical_sha256_omitting(&value, "/tool/sha256");
+    value["tool"]["sha256"] = Value::String(digest);
+    value
+}
+
+#[must_use]
+pub fn similar_tool_descriptor() -> Value {
+    let mut value = json!({
+        "schema_version":"livefire.tool-descriptor/1",
+        "tool":{"id":SIMILAR_TOOL_ID,"version":SIMILAR_TOOL_VERSION,"sha256":""},
+        "name":"evidence.similar",
+        "description":"Rank generic OCSF evidence candidates by similarity to one indexed document and return hydration-only references. No model call is made.",
+        "input_schema":similar_input_schema_ref(),
+        "output_schema":similar_output_schema_ref(),
         "result_semantics":"candidate_pointer",
         "evidence_policy":"pointer_only",
         "required_indexes":[{"format_id":FORMAT_ID,"accepted_versions":[VERSION,FORMAT_VERSION_V3]}],
@@ -360,6 +455,52 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantedTool {
+    Search,
+    Similar,
+}
+
+impl GrantedTool {
+    fn from_ref(value: &Value) -> Option<Self> {
+        if value == &search_tool_ref() {
+            Some(Self::Search)
+        } else if value == &similar_tool_ref() {
+            Some(Self::Similar)
+        } else {
+            None
+        }
+    }
+
+    fn reference(self) -> Value {
+        match self {
+            Self::Search => search_tool_ref(),
+            Self::Similar => similar_tool_ref(),
+        }
+    }
+
+    fn input_schema(self) -> Value {
+        match self {
+            Self::Search => search_input_schema_ref(),
+            Self::Similar => similar_input_schema_ref(),
+        }
+    }
+
+    fn output_schema(self) -> Value {
+        match self {
+            Self::Search => search_output_schema_ref(),
+            Self::Similar => similar_output_schema_ref(),
+        }
+    }
+
+    fn retrieval_policy(self) -> Value {
+        match self {
+            Self::Search => retrieval_policy_ref(),
+            Self::Similar => similarity_policy_ref(),
+        }
+    }
+}
+
 struct Session {
     index: FastIndex,
     index_ref: Value,
@@ -367,10 +508,12 @@ struct Session {
     mapping_pack: Value,
     binding_lock_sha256: String,
     embedding_endpoint: Option<String>,
+    query_vector_set: Option<SealedQueryVectorSet>,
     request_bytes: usize,
     result_bytes: usize,
     wall_time_ms: u64,
     max_candidates: usize,
+    granted_tool: GrantedTool,
 }
 
 fn verify_sdk_index_wrapper(index_path: &str, index_ref: &Value) -> Result<Value, ProviderError> {
@@ -563,7 +706,7 @@ impl Provider {
             "response_kind":"handshake",
             "provider":self.provider_ref,
             "protocol":PROTOCOL,
-            "tools":[tool_ref()],
+            "tools":tool_refs(),
             "accepted_index_formats":supported_format_refs()
         }))
     }
@@ -581,14 +724,22 @@ impl Provider {
             "mounts",
         ];
         let params = exact_object(params, &fields, &fields, "params")?;
-        if params.get("provider") != Some(&self.provider_ref)
-            || params.get("tools") != Some(&Value::Array(vec![tool_ref()]))
-        {
+        if params.get("provider") != Some(&self.provider_ref) {
             return Err(ProviderError::new(
                 "invalid_binding",
                 "provider or tool identity is incompatible",
             ));
         }
+        let granted_tools = array(params, "tools", "params")?;
+        if granted_tools.len() != 1 {
+            return Err(ProviderError::new(
+                "invalid_binding",
+                "open requires exactly one granted tool",
+            ));
+        }
+        let granted_tool = GrantedTool::from_ref(&granted_tools[0]).ok_or_else(|| {
+            ProviderError::new("invalid_binding", "granted tool identity is incompatible")
+        })?;
         let indexes = array(params, "indexes", "params")?;
         if indexes.len() != 1 {
             return Err(ProviderError::new(
@@ -609,7 +760,18 @@ impl Provider {
         let binding_lock_sha256 = string(params, "binding_lock_sha256", "params")?;
         validate_sha256(binding_lock_sha256, "binding_lock_sha256")?;
 
-        let mounts = mounts_by_name(array(params, "mounts", "params")?)?;
+        let embedding_endpoint =
+            loopback_endpoint(params.get("query_time_contract").expect("required"))?;
+        let uses_query_vector_set =
+            matches!(granted_tool, GrantedTool::Search) && embedding_endpoint.is_none();
+        if matches!(granted_tool, GrantedTool::Similar) && embedding_endpoint.is_some() {
+            return Err(ProviderError::new(
+                "invalid_binding",
+                "tool and query-time network contract are incompatible",
+            ));
+        }
+
+        let mounts = mounts_by_name(array(params, "mounts", "params")?, uses_query_vector_set)?;
         let index_mount = required_mount(&mounts, "evidence-index", "index")?;
         if index_mount.get("component") != Some(&index_ref) {
             return Err(ProviderError::new(
@@ -620,6 +782,11 @@ impl Provider {
         let lock_mount = required_mount(&mounts, "tool-binding-lock", "policy")?;
         let receipt_mount = required_mount(&mounts, "index-admission-receipt", "policy")?;
         let embedding_mount = required_mount(&mounts, "embedding-profile", "model")?;
+        let query_vector_mount = if uses_query_vector_set {
+            Some(required_mount(&mounts, "query-vector-set", "model")?)
+        } else {
+            None
+        };
 
         let lock = read_json_mount(
             string(lock_mount, "process_path", "binding mount")?,
@@ -656,13 +823,13 @@ impl Provider {
             .iter()
             .any(|field| !lock_object.contains_key(*field))
             || lock["schema_version"] != "livefire.tool-binding-lock/1"
-            || lock["descriptor"] != tool_ref()
+            || lock["descriptor"] != granted_tool.reference()
             || lock["provider"] != self.provider_ref
-            || lock["input_schema"] != input_schema_ref()
-            || lock["output_schema"] != output_schema_ref()
+            || lock["input_schema"] != granted_tool.input_schema()
+            || lock["output_schema"] != granted_tool.output_schema()
             || lock["index"] != index_ref
             || manifest_schema_for_format(&lock["index_format"]).is_none()
-            || lock["retrieval_policy"] != retrieval_policy_ref()
+            || lock["retrieval_policy"] != granted_tool.retrieval_policy()
             || lock["protocol"] != PROTOCOL
             || lock["source_snapshots"] != params["source_snapshots"]
             || lock["query_time_contract"] != params["query_time_contract"]
@@ -719,12 +886,32 @@ impl Provider {
 
         let index_path = string(index_mount, "process_path", "index mount")?;
         let sdk_index = verify_sdk_index_wrapper(index_path, &index_ref)?;
+        let mut expected_index_query_contract = params["query_time_contract"].clone();
+        let required_components = match (granted_tool, query_vector_mount) {
+            (GrantedTool::Search, Some(mount)) => vec![
+                embedding_mount["component"].clone(),
+                mount["component"].clone(),
+            ],
+            (GrantedTool::Search, None) => vec![embedding_mount["component"].clone()],
+            (GrantedTool::Similar, None) => Vec::new(),
+            (GrantedTool::Similar, Some(_)) => unreachable!("similar cannot bind query vectors"),
+        };
+        expected_index_query_contract
+            .as_object_mut()
+            .expect("validated query-time contract")
+            .insert(
+                "required_local_components".to_owned(),
+                Value::Array(required_components),
+            );
         if sdk_index["format"] != lock["index_format"]
             || sdk_index.pointer("/source_bindings/0/source_snapshot") != Some(&source_snapshots[0])
+            || sdk_index.pointer("/policies/retrieval") != Some(&lock["retrieval_policy"])
+            || sdk_index.pointer("/policies/embedding") != embedding_mount.get("component")
+            || sdk_index.get("query_time_contract") != Some(&expected_index_query_contract)
         {
             return Err(ProviderError::new(
                 "invalid_binding",
-                "SDK index format or source binding is incompatible",
+                "SDK index format, source, or query-time binding is incompatible",
             ));
         }
         let physical_manifest = read_json_mount(index_path, "index.json")?;
@@ -786,6 +973,20 @@ impl Provider {
                 "embedding profile mount differs from the indexed profile",
             ));
         }
+        let query_vector_set = if let Some(mount) = query_vector_mount {
+            let component = mount.get("component").expect("validated mount component");
+            let root = Path::new(string(mount, "process_path", "query vector mount")?);
+            Some(open_bound_query_vector_set(
+                root,
+                component,
+                embedding_mount
+                    .get("component")
+                    .expect("validated embedding component"),
+                &index.manifest.embedding_profile,
+            )?)
+        } else {
+            None
+        };
         let limits = exact_object(
             params.get("limits").expect("required"),
             &[
@@ -817,8 +1018,14 @@ impl Provider {
                 "limits.max_candidates exceeds the fast-index bound",
             ));
         }
-        let embedding_endpoint =
-            loopback_endpoint(params.get("query_time_contract").expect("required"))?;
+        if matches!(granted_tool, GrantedTool::Search)
+            != (embedding_endpoint.is_some() ^ query_vector_set.is_some())
+        {
+            return Err(ProviderError::new(
+                "invalid_binding",
+                "search requires exactly one bound query-vector source",
+            ));
+        }
 
         self.next_session += 1;
         let session_id = format!("fast-evidence-{}", self.next_session);
@@ -831,10 +1038,12 @@ impl Provider {
                 mapping_pack,
                 binding_lock_sha256: binding_lock_sha256.to_owned(),
                 embedding_endpoint,
+                query_vector_set,
                 request_bytes,
                 result_bytes,
                 wall_time_ms,
                 max_candidates,
+                granted_tool,
             },
         );
         Ok(json!({
@@ -877,11 +1086,74 @@ impl Provider {
                 "call deadline has expired",
             ));
         }
-        if params.get("tool") != Some(&tool_ref()) {
+        if params.get("tool") != Some(&session.granted_tool.reference()) {
             return Err(ProviderError::new(
                 "policy_denied",
                 "tool is not granted to this session",
             ));
+        }
+        if matches!(session.granted_tool, GrantedTool::Similar) {
+            let arguments = exact_object(
+                params.get("arguments").expect("required"),
+                &[
+                    "schema_version",
+                    "document_id",
+                    "top_n",
+                    "exclude_seed",
+                    "filters",
+                ],
+                &["schema_version", "document_id", "top_n"],
+                "arguments",
+            )?;
+            if string(arguments, "schema_version", "arguments")?
+                != "livefire.rag.fast-similar.input/1"
+            {
+                return Err(ProviderError::new(
+                    "invalid_request",
+                    "unsupported similarity input schema",
+                ));
+            }
+            let document_id = string(arguments, "document_id", "arguments")?;
+            if document_id.is_empty() || document_id.len() > 512 {
+                return Err(ProviderError::new(
+                    "invalid_request",
+                    "document_id length is invalid",
+                ));
+            }
+            let top_n = positive_usize(arguments, "top_n", "arguments")?;
+            if top_n > session.max_candidates || top_n > 100 {
+                return Err(ProviderError::new(
+                    "resource_exhausted",
+                    "top_n exceeds the bound max_candidates",
+                ));
+            }
+            let exclude_seed = match arguments.get("exclude_seed") {
+                None => true,
+                Some(Value::Bool(value)) => *value,
+                Some(_) => {
+                    return Err(ProviderError::new(
+                        "invalid_request",
+                        "exclude_seed must be boolean",
+                    ));
+                }
+            };
+            let filters = parse_filters(arguments.get("filters"))?;
+            let hits = session
+                .index
+                .similar(document_id, &filters, top_n, exclude_seed)
+                .map_err(map_index_error)?
+                .ok_or_else(|| {
+                    ProviderError::new("not_found", "seed document is not in the bound index")
+                })?;
+            let output = similar_output(session, document_id, exclude_seed, top_n, hits);
+            enforce_call_output(
+                session,
+                &output,
+                started,
+                effective_wall_ms,
+                request_deadline_ms,
+            )?;
+            return Ok(json!({"response_kind":"call","output":output}));
         }
         let arguments = exact_object(
             params.get("arguments").expect("required"),
@@ -902,7 +1174,8 @@ impl Provider {
                 "query length is invalid",
             ));
         }
-        let mode = match string(arguments, "mode", "arguments")? {
+        let mode_text = string(arguments, "mode", "arguments")?;
+        let mode = match mode_text {
             "dense" => SearchMode::Dense,
             "lexical" => SearchMode::Lexical,
             "fused" => SearchMode::Fused,
@@ -922,70 +1195,56 @@ impl Provider {
         }
         let filters = parse_filters(arguments.get("filters"))?;
         let vector = if matches!(mode, SearchMode::Dense | SearchMode::Fused) {
-            let endpoint = session.embedding_endpoint.as_deref().ok_or_else(|| {
-                ProviderError::new(
-                    "unavailable",
-                    "dense retrieval requires a bound embedding endpoint",
-                )
-            })?;
-            let timeout = Duration::from_millis(effective_wall_ms);
-            let embedder = LmStudioEmbedder::with_timeout(
-                endpoint,
-                &session.index.manifest.embedding_profile.model,
-                timeout,
-            )
-            .map_err(|_| ProviderError::new("invalid_binding", "embedding client is invalid"))?;
             let composed = try_compose_query(&session.index.manifest.embedding_profile, query)
                 .map_err(|_| {
                     ProviderError::new("invalid_binding", "query composition contract is invalid")
                 })?;
-            Some(
-                embed_bound_query(
-                    &embedder,
-                    &session.index.manifest.embedding_profile,
-                    composed,
+            if let Some(sealed) = session.query_vector_set.as_ref() {
+                let relations = request_relation_surface(arguments.get("filters"))?;
+                Some(sealed_query_vector(
+                    sealed, query, &composed, mode_text, top_n, &relations, &filters,
+                )?)
+            } else {
+                let endpoint = session.embedding_endpoint.as_deref().ok_or_else(|| {
+                    ProviderError::new(
+                        "unavailable",
+                        "dense retrieval requires a bound query-vector source",
+                    )
+                })?;
+                let timeout = Duration::from_millis(effective_wall_ms);
+                let embedder = LmStudioEmbedder::with_timeout(
+                    endpoint,
+                    &session.index.manifest.embedding_profile.model,
                     timeout,
                 )
-                .await?,
-            )
+                .map_err(|_| {
+                    ProviderError::new("invalid_binding", "embedding client is invalid")
+                })?;
+                Some(
+                    embed_bound_query(
+                        &embedder,
+                        &session.index.manifest.embedding_profile,
+                        composed,
+                        timeout,
+                    )
+                    .await?,
+                )
+            }
         } else {
             None
         };
         let hits = session
             .index
             .search(mode, query, vector.as_deref(), &filters, top_n)
-            .map_err(|error| match error {
-                IndexError::Corrupt(_)
-                | IndexError::Io(_)
-                | IndexError::Parquet(_)
-                | IndexError::Arrow(_)
-                | IndexError::Sqlite(_)
-                | IndexError::Json(_) => {
-                    ProviderError::new("corrupt_artifact", "bound index artifact is invalid")
-                }
-                IndexError::Invalid(_) => {
-                    ProviderError::new("invalid_request", "search request is invalid")
-                }
-            })?;
+            .map_err(map_index_error)?;
         let output = search_output(session, query, top_n, hits);
-        if started.elapsed() >= Duration::from_millis(effective_wall_ms)
-            || now_millis() >= request_deadline_ms
-        {
-            return Err(ProviderError::new(
-                "deadline_exceeded",
-                "call exceeded its wall-time limit",
-            ));
-        }
-        if serde_json::to_vec(&output)
-            .expect("output serializes")
-            .len()
-            > session.result_bytes
-        {
-            return Err(ProviderError::new(
-                "resource_exhausted",
-                "tool output exceeds limits.result_bytes",
-            ));
-        }
+        enforce_call_output(
+            session,
+            &output,
+            started,
+            effective_wall_ms,
+            request_deadline_ms,
+        )?;
         Ok(json!({"response_kind":"call","output":output}))
     }
 
@@ -1021,6 +1280,100 @@ impl Provider {
                 "handshake is required before session methods",
             ))
         }
+    }
+}
+
+fn open_bound_query_vector_set(
+    root: &Path,
+    component: &Value,
+    embedding_component: &Value,
+    profile: &EmbeddingProfile,
+) -> Result<SealedQueryVectorSet, ProviderError> {
+    if component.get("id").and_then(Value::as_str) != Some(QUERY_VECTOR_SET_COMPONENT_ID)
+        || component.get("version").and_then(Value::as_str)
+            != Some(QUERY_VECTOR_SET_COMPONENT_VERSION)
+    {
+        return Err(ProviderError::new(
+            "invalid_binding",
+            "query-vector-set component identity is incompatible",
+        ));
+    }
+    let expected_profile: ComponentRef = serde_json::from_value(embedding_component.clone())
+        .map_err(|_| {
+            ProviderError::new("invalid_binding", "embedding component is incompatible")
+        })?;
+    let sealed = SealedQueryVectorSet::open(
+        root,
+        &expected_profile,
+        &profile.model,
+        profile.dimensions,
+        &profile.normalization,
+        None,
+    )
+    .map_err(|_| {
+        ProviderError::new(
+            "invalid_binding",
+            "sealed query-vector set is invalid or incompatible",
+        )
+    })?;
+    if component.get("sha256").and_then(Value::as_str)
+        != Some(sealed.manifest.component_sha256.as_str())
+    {
+        return Err(ProviderError::new(
+            "invalid_binding",
+            "query-vector-set mount identity differs from its bytes",
+        ));
+    }
+    Ok(sealed)
+}
+
+fn sealed_query_vector(
+    sealed: &SealedQueryVectorSet,
+    query: &str,
+    composed: &str,
+    mode: &str,
+    top_n: usize,
+    relations: &[String],
+    filters: &SearchFilters,
+) -> Result<Vec<f32>, ProviderError> {
+    if filters.time_start_ms.is_some() || filters.time_end_ms.is_some() {
+        return Err(ProviderError::new(
+            "invalid_request",
+            "sealed query-vector requests do not admit time filters",
+        ));
+    }
+    sealed
+        .vector_for_unique_request(query, composed, mode, top_n, relations)
+        .map(ToOwned::to_owned)
+        .map_err(|_| {
+            ProviderError::new(
+                "invalid_request",
+                "search request is not uniquely admitted by the sealed query-vector set",
+            )
+        })
+}
+
+fn request_relation_surface(filters: Option<&Value>) -> Result<Vec<String>, ProviderError> {
+    let Some(filters) = filters else {
+        return Ok(Vec::new());
+    };
+    let object = filters
+        .as_object()
+        .ok_or_else(|| ProviderError::new("invalid_request", "filters must be an object"))?;
+    match object.get("relations") {
+        None => Ok(Vec::new()),
+        Some(Value::Array(rows)) => rows
+            .iter()
+            .map(|row| {
+                row.as_str().map(str::to_owned).ok_or_else(|| {
+                    ProviderError::new("invalid_request", "filters.relations must be strings")
+                })
+            })
+            .collect(),
+        Some(_) => Err(ProviderError::new(
+            "invalid_request",
+            "filters.relations must be an array",
+        )),
     }
 }
 
@@ -1065,6 +1418,78 @@ async fn embed_bound_query<E: IdentifiedEmbedder>(
         |_| ProviderError::retryable("unavailable", "query embedding violated its profile"),
     )?;
     Ok(vector)
+}
+
+fn map_index_error(error: IndexError) -> ProviderError {
+    match error {
+        IndexError::Corrupt(_)
+        | IndexError::Io(_)
+        | IndexError::Parquet(_)
+        | IndexError::Arrow(_)
+        | IndexError::Sqlite(_)
+        | IndexError::Json(_) => {
+            ProviderError::new("corrupt_artifact", "bound index artifact is invalid")
+        }
+        IndexError::Invalid(_) => {
+            ProviderError::new("invalid_request", "search request is invalid")
+        }
+    }
+}
+
+fn enforce_call_output(
+    session: &Session,
+    output: &Value,
+    started: Instant,
+    effective_wall_ms: u64,
+    request_deadline_ms: u64,
+) -> Result<(), ProviderError> {
+    if started.elapsed() >= Duration::from_millis(effective_wall_ms)
+        || now_millis() >= request_deadline_ms
+    {
+        return Err(ProviderError::new(
+            "deadline_exceeded",
+            "call exceeded its wall-time limit",
+        ));
+    }
+    if serde_json::to_vec(output).expect("output serializes").len() > session.result_bytes {
+        return Err(ProviderError::new(
+            "resource_exhausted",
+            "tool output exceeds limits.result_bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn similar_output(
+    session: &Session,
+    document_id: &str,
+    exclude_seed: bool,
+    top_n: usize,
+    hits: Vec<SearchHit>,
+) -> Value {
+    let mut output = search_output(session, "stored-document-vector", top_n, hits);
+    let object = output.as_object_mut().expect("search output is an object");
+    object.insert(
+        "schema_version".to_owned(),
+        Value::String("livefire.rag.fast-similar.output/1".to_owned()),
+    );
+    object.insert(
+        "tool".to_owned(),
+        Value::String("evidence.similar".to_owned()),
+    );
+    object.remove("query");
+    object.insert(
+        "seed_document_id".to_owned(),
+        Value::String(document_id.to_owned()),
+    );
+    object.insert("seed_excluded".to_owned(), Value::Bool(exclude_seed));
+    if let Some(miss) = object.get_mut("miss").and_then(Value::as_object_mut) {
+        miss.insert(
+            "message".to_owned(),
+            Value::String("No eligible indexed neighbour matched the seed document.".to_owned()),
+        );
+    }
+    output
 }
 
 fn search_output(session: &Session, query: &str, top_n: usize, hits: Vec<SearchHit>) -> Value {
@@ -1197,11 +1622,15 @@ fn parse_filters(value: Option<&Value>) -> Result<SearchFilters, ProviderError> 
     })
 }
 
-fn mounts_by_name(rows: &[Value]) -> Result<BTreeMap<&str, &Map<String, Value>>, ProviderError> {
-    if rows.len() != 4 {
+fn mounts_by_name(
+    rows: &[Value],
+    query_vector_set: bool,
+) -> Result<BTreeMap<&str, &Map<String, Value>>, ProviderError> {
+    let expected_count = if query_vector_set { 5 } else { 4 };
+    if rows.len() != expected_count {
         return Err(ProviderError::new(
             "invalid_binding",
-            "open requires exactly four immutable mounts",
+            "open requires the exact immutable mount set",
         ));
     }
     let mut mounts = BTreeMap::new();
@@ -1230,12 +1659,16 @@ fn mounts_by_name(rows: &[Value]) -> Result<BTreeMap<&str, &Map<String, Value>>,
             ));
         }
     }
-    let expected = [
+    let mut expected = vec![
         "embedding-profile",
         "evidence-index",
         "index-admission-receipt",
         "tool-binding-lock",
     ];
+    if query_vector_set {
+        expected.push("query-vector-set");
+        expected.sort_unstable();
+    }
     if mounts.keys().copied().collect::<Vec<_>>() != expected {
         return Err(ProviderError::new(
             "invalid_binding",
@@ -1561,6 +1994,92 @@ mod tests {
         BuildScope, FastDocument, FastOccurrence, OrderedVector, SourceBinding,
         write_scalable_fast_index_from_streams,
     };
+    use rag_pipeline::{
+        Digest as PipelineDigest, QueryVectorExecutionBinding, QueryVectorSetInput,
+        RunpodAcceleratorIdentity, RunpodExecutionIdentity, canonical_digest,
+        write_query_vector_set,
+    };
+
+    fn pipeline_component(id: &str, byte: char) -> ComponentRef {
+        ComponentRef {
+            id: id.into(),
+            version: "1".into(),
+            sha256: PipelineDigest::new(byte.to_string().repeat(64)).unwrap(),
+        }
+    }
+
+    fn query_vector_binding(profile: ComponentRef, model: &str) -> QueryVectorExecutionBinding {
+        let build = pipeline_component("fixture.executor-build", 'b');
+        let execution = RunpodExecutionIdentity {
+            executor_image: pipeline_component("fixture.executor", 'c'),
+            executor_image_build: build.clone(),
+            runtime: pipeline_component("fixture.runtime", 'd'),
+            worker_binary: pipeline_component("fixture.worker", 'e'),
+            model_artifact: pipeline_component("fixture.model", 'f'),
+            embedding_profile: profile.clone(),
+            accelerator: RunpodAcceleratorIdentity {
+                provider: "runpod".into(),
+                model: "A100".into(),
+                architecture: "ampere".into(),
+                compute_capability: "8.0".into(),
+                count: 1,
+            },
+            returned_model: model.into(),
+        };
+        QueryVectorExecutionBinding {
+            embedding_profile: profile,
+            embedding_policy: pipeline_component("fixture.policy", '9'),
+            execution_identity_sha256: canonical_digest(&execution).unwrap(),
+            execution,
+            executor_image_build_receipt: build,
+        }
+    }
+
+    fn write_provider_query_vector_set(root: &Path) -> (Value, Value, EmbeddingProfile) {
+        let profile = EmbeddingProfile {
+            id: "fixture.embedding".into(),
+            version: "1".into(),
+            sha256: "a".repeat(64),
+            model: "fixture-model".into(),
+            dimensions: 2,
+            normalization: "l2".into(),
+            vector_derivation: None,
+            query_instruction: None,
+            query_composition: None,
+        };
+        let profile_component = pipeline_component("fixture.embedding", 'a');
+        let plan = root.join("plan.jsonl");
+        fs::write(
+            &plan,
+            b"{\"query_id\":\"q1\",\"query\":\"known\",\"mode\":\"dense\",\"top_n\":5,\"relations\":[]}\n",
+        )
+        .unwrap();
+        let set_root = root.join("set");
+        let vector = [1.0_f32, 0.0];
+        let manifest = write_query_vector_set(
+            &set_root,
+            &plan,
+            query_vector_binding(profile_component.clone(), &profile.model),
+            2,
+            "l2",
+            &[QueryVectorSetInput {
+                query_id: "q1",
+                raw_query: "known",
+                composed_query: "known",
+                vector: &vector,
+            }],
+        )
+        .unwrap();
+        (
+            component(
+                QUERY_VECTOR_SET_COMPONENT_ID,
+                QUERY_VECTOR_SET_COMPONENT_VERSION,
+                manifest.component_sha256.as_str(),
+            ),
+            component("fixture.embedding", "1", &profile.sha256),
+            profile,
+        )
+    }
 
     struct WrongModelEmbedder;
 
@@ -1607,8 +2126,92 @@ mod tests {
     }
 
     #[test]
+    fn provider_reopens_and_binds_the_complete_query_vector_set() {
+        let root = tempfile::tempdir().unwrap();
+        let (set_component, profile_component, profile) =
+            write_provider_query_vector_set(root.path());
+        let sealed = open_bound_query_vector_set(
+            &root.path().join("set"),
+            &set_component,
+            &profile_component,
+            &profile,
+        )
+        .unwrap();
+        let vector = sealed_query_vector(
+            &sealed,
+            "known",
+            "known",
+            "dense",
+            5,
+            &[],
+            &SearchFilters::default(),
+        )
+        .unwrap();
+        assert_eq!(vector, vec![1.0, 0.0]);
+
+        let unknown = sealed_query_vector(
+            &sealed,
+            "unknown",
+            "unknown",
+            "dense",
+            5,
+            &[],
+            &SearchFilters::default(),
+        )
+        .unwrap_err();
+        assert_eq!(unknown.code, "invalid_request");
+
+        let time_filtered = sealed_query_vector(
+            &sealed,
+            "known",
+            "known",
+            "dense",
+            5,
+            &[],
+            &SearchFilters {
+                time_start_ms: Some(1),
+                ..SearchFilters::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(time_filtered.code, "invalid_request");
+    }
+
+    #[test]
+    fn provider_refuses_wrong_profile_and_tampered_query_vectors() {
+        let root = tempfile::tempdir().unwrap();
+        let (set_component, profile_component, profile) =
+            write_provider_query_vector_set(root.path());
+        let mut wrong_profile = profile.clone();
+        wrong_profile.model = "different-model".into();
+        let wrong = open_bound_query_vector_set(
+            &root.path().join("set"),
+            &set_component,
+            &profile_component,
+            &wrong_profile,
+        )
+        .unwrap_err();
+        assert_eq!(wrong.code, "invalid_binding");
+
+        fs::write(
+            root.path().join("set/vectors.f32le"),
+            [0.0_f32.to_le_bytes(), 1.0_f32.to_le_bytes()].concat(),
+        )
+        .unwrap();
+        let tampered = open_bound_query_vector_set(
+            &root.path().join("set"),
+            &set_component,
+            &profile_component,
+            &profile,
+        )
+        .unwrap_err();
+        assert_eq!(tampered.code, "invalid_binding");
+    }
+
+    #[test]
     fn provider_advertises_both_exact_index_formats() {
         let response = Provider::new().handshake(&json!({})).unwrap();
+        assert_eq!(response["tools"], Value::Array(tool_refs()));
         assert_eq!(
             response["accepted_index_formats"],
             Value::Array(vec![format_ref(), format_ref_v3()])
@@ -1656,8 +2259,8 @@ mod tests {
         assert_eq!(v3.pointer("/physical_profile/version"), Some(&json!("2")));
     }
 
-    #[test]
-    fn provider_opens_a_synthetic_v3_index_without_a_model_server() {
+    #[tokio::test]
+    async fn provider_runs_stored_similarity_without_a_model_server() {
         let root = tempfile::tempdir().unwrap();
         let index_root = root.path().join("index");
         let profile_path = root.path().join("embedding-profile.json");
@@ -1680,31 +2283,62 @@ mod tests {
                 mapping_sha256: mapping_sha256.clone(),
             },
             BuildScope::Sample,
-            [Ok(FastDocument {
-                document_id: "doc-1".into(),
-                document_sha256: "c".repeat(64),
-                document_kind: "activity".into(),
-                semantic_text: "PowerShell logging bypass".into(),
-                facets_json: "{}".into(),
-                relations_json: "[\"events\"]".into(),
-                occurrence_count: 1,
-                vector_ordinal: 0,
-            })],
-            [Ok(FastOccurrence {
-                occurrence_id: "occ-1".into(),
-                document_id: "doc-1".into(),
-                event_time_ms: Some(1),
-                relation: "events".into(),
-                exact_attributes_json: "{}".into(),
-                snapshot_sha256: snapshot_sha256.clone(),
-                mapping_sha256: mapping_sha256.clone(),
-                event_id: "event-1".into(),
-                support_ref: "events/0".into(),
-            })],
-            [Ok(OrderedVector {
-                vector_ordinal: 0,
-                values: vec![1.0, 0.0],
-            })],
+            vec![
+                Ok(FastDocument {
+                    document_id: "doc-1".into(),
+                    document_sha256: "c".repeat(64),
+                    document_kind: "activity".into(),
+                    semantic_text: "PowerShell logging bypass".into(),
+                    facets_json: "{}".into(),
+                    relations_json: "[\"events\"]".into(),
+                    occurrence_count: 1,
+                    vector_ordinal: 0,
+                }),
+                Ok(FastDocument {
+                    document_id: "doc-2".into(),
+                    document_sha256: "d".repeat(64),
+                    document_kind: "activity".into(),
+                    semantic_text: "PowerShell process launch".into(),
+                    facets_json: "{}".into(),
+                    relations_json: "[\"events\"]".into(),
+                    occurrence_count: 1,
+                    vector_ordinal: 1,
+                }),
+            ],
+            vec![
+                Ok(FastOccurrence {
+                    occurrence_id: "occ-1".into(),
+                    document_id: "doc-1".into(),
+                    event_time_ms: Some(1),
+                    relation: "events".into(),
+                    exact_attributes_json: "{}".into(),
+                    snapshot_sha256: snapshot_sha256.clone(),
+                    mapping_sha256: mapping_sha256.clone(),
+                    event_id: "event-1".into(),
+                    support_ref: "events/0".into(),
+                }),
+                Ok(FastOccurrence {
+                    occurrence_id: "occ-2".into(),
+                    document_id: "doc-2".into(),
+                    event_time_ms: Some(2),
+                    relation: "events".into(),
+                    exact_attributes_json: "{}".into(),
+                    snapshot_sha256: snapshot_sha256.clone(),
+                    mapping_sha256: mapping_sha256.clone(),
+                    event_id: "event-2".into(),
+                    support_ref: "events/1".into(),
+                }),
+            ],
+            vec![
+                Ok(OrderedVector {
+                    vector_ordinal: 0,
+                    values: vec![1.0, 0.0],
+                }),
+                Ok(OrderedVector {
+                    vector_ordinal: 1,
+                    values: vec![0.8, 0.6],
+                }),
+            ],
             EmbeddingProfile {
                 id: "fixture.embedding".into(),
                 version: "1".into(),
@@ -1749,10 +2383,19 @@ mod tests {
             "source_bindings":[{"source_snapshot":source_ref}],
             "policies":{
                 "physical_index":{"sha256":manifest.component_sha256},
-                "mapping_pack":mapping_ref
+                "mapping_pack":mapping_ref,
+                "retrieval":similarity_policy_ref(),
+                "embedding":component("fixture.embedding", "1", &profile_sha256)
             },
             "objects":objects,
-            "source_pointer_table":pointer
+            "source_pointer_table":pointer,
+            "query_time_contract":{
+                "mode":"offline_closed",
+                "network":[],
+                "secret_handles":[],
+                "vendor_services":[],
+                "required_local_components":[]
+            }
         });
         fs::write(
             index_root.join("sdk-index-manifest.json"),
@@ -1805,16 +2448,16 @@ mod tests {
         let provider_component = provider.provider_ref.clone();
         let lock = json!({
             "schema_version":"livefire.tool-binding-lock/1",
-            "descriptor":tool_ref(),
+            "descriptor":similar_tool_ref(),
             "provider":provider_component,
             "executable":{"sha256":sha256(&executable_bytes),"bytes":executable_bytes.len()},
-            "input_schema":input_schema_ref(),
-            "output_schema":output_schema_ref(),
+            "input_schema":similar_input_schema_ref(),
+            "output_schema":similar_output_schema_ref(),
             "index":index_ref,
             "index_format":format_ref_v3(),
             "index_admission_receipt":receipt_ref,
             "source_snapshots":[source_ref],
-            "retrieval_policy":retrieval_policy_ref(),
+            "retrieval_policy":similarity_policy_ref(),
             "query_time_contract":query_contract,
             "protocol":PROTOCOL,
             "limits":limits
@@ -1834,7 +2477,7 @@ mod tests {
         let opened = provider
             .open(&json!({
                 "provider":provider_component,
-                "tools":[tool_ref()],
+                "tools":[similar_tool_ref()],
                 "indexes":[index_ref],
                 "source_snapshots":[source_ref],
                 "binding_lock_sha256":lock_sha256,
@@ -1844,5 +2487,66 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(opened["response_kind"], "open");
+        let session_id = opened["session_id"].as_str().unwrap();
+        let called = provider
+            .call(
+                &json!({
+                    "session_id":session_id,
+                    "tool":similar_tool_ref(),
+                    "arguments":{
+                        "schema_version":"livefire.rag.fast-similar.input/1",
+                        "document_id":"doc-1",
+                        "top_n":10
+                    }
+                }),
+                9_999_999_999_999,
+                1_024,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            called.pointer("/output/tool"),
+            Some(&json!("evidence.similar"))
+        );
+        assert_eq!(
+            called.pointer("/output/candidates/0/document_id"),
+            Some(&json!("doc-2"))
+        );
+        assert_eq!(called.pointer("/output/seed_excluded"), Some(&json!(true)));
+        let wrong_tool = provider
+            .call(
+                &json!({
+                    "session_id":session_id,
+                    "tool":search_tool_ref(),
+                    "arguments":{
+                        "schema_version":"livefire.rag.fast-search.input/1",
+                        "query":"PowerShell",
+                        "mode":"lexical",
+                        "top_n":10
+                    }
+                }),
+                9_999_999_999_999,
+                1_024,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(wrong_tool.code, "policy_denied");
+        let missing = provider
+            .call(
+                &json!({
+                    "session_id":session_id,
+                    "tool":similar_tool_ref(),
+                    "arguments":{
+                        "schema_version":"livefire.rag.fast-similar.input/1",
+                        "document_id":"missing",
+                        "top_n":10
+                    }
+                }),
+                9_999_999_999_999,
+                1_024,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(missing.code, "not_found");
     }
 }

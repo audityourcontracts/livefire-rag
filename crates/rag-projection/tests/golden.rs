@@ -1,7 +1,7 @@
 use pretty_assertions::assert_eq;
 use rag_projection::{
     ComponentRef, ProjectionContext, ProjectionInput, TerminalDisposition, project,
-    project_document_summary, project_event_time,
+    project_document_summary, project_event_time, project_m45_command,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -326,6 +326,7 @@ fn camel_case_time_and_identifier_values_do_not_split_semantic_groups() {
 fn every_current_typed_relation_has_a_scenario_blind_terminal_classification() {
     let context = context();
     let activity = [
+        "ocsf_account_change",
         "ocsf_api_activity",
         "ocsf_application_lifecycle",
         "ocsf_authentication",
@@ -385,6 +386,11 @@ fn every_current_typed_relation_has_a_scenario_blind_terminal_classification() {
 fn every_searchable_relation_preserves_schema_shaped_behavior_and_outcome() {
     let context = context();
     let cases = [
+        (
+            "ocsf_account_change",
+            serde_json::json!({"operation":"CreateUser","account":"new-user","status":"Denied"}),
+            ["createuser", "denied"],
+        ),
         (
             "ocsf_api_activity",
             serde_json::json!({"api":{"operation":"CreateResource"},"status":"Denied"}),
@@ -499,4 +505,78 @@ fn every_searchable_relation_preserves_schema_shaped_behavior_and_outcome() {
             "{relation}"
         );
     }
+}
+
+#[test]
+fn m45_command_projection_recovers_surviving_command_shapes_and_redacts_text() {
+    let context = context();
+    let cases = [
+        (
+            "ocsf_process_activity",
+            serde_json::json!({
+                "ocsf":{"time":1534771306000_u64,"unmapped":{
+                    "/Event/EventData/Data/@Name":["Image","CommandLine","User"],
+                    "/Event/EventData/Data/#text":["cmd.exe","cmd /c whoami password=hunter2","SYSTEM"]
+                }}
+            }),
+            ["sysmon_command_line", "whoami"],
+        ),
+        (
+            "ocsf_process_activity",
+            serde_json::json!({"ocsf":{"unmapped":{"$token/2":"fixture","$token/0":"grep","$token/1":"-i"}}}),
+            ["bash_history_tokens", "grep -i fixture"],
+        ),
+        (
+            "ocsf_process_activity",
+            serde_json::json!({"ocsf":{"process":{"cmd_line":"powershell -enc VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIABvAGsA"}}}),
+            ["typed_process_command", "write-output ok"],
+        ),
+        (
+            "ocsf_api_activity",
+            serde_json::json!({
+                "operation":"PutBucketAcl","service":"s3.amazonaws.com","resource":"research-exports",
+                "ocsf":{"unmapped":{"requestParameters":{"acl":"public-read"}}}
+            }),
+            ["normalized_api_operation", "putbucketacl"],
+        ),
+    ];
+    for (ordinal, (relation, event, expected)) in cases.into_iter().enumerate() {
+        let output = project_m45_command(ProjectionInput {
+            relation_name: relation,
+            event_id: &format!("evt_{ordinal}"),
+            typed_event_json: &serde_json::to_string(&event).unwrap(),
+            support_ref: &format!("support:{ordinal}"),
+            context: &context,
+        })
+        .unwrap()
+        .expect("command evidence");
+        let text = output.document.unwrap().semantic_text.to_lowercase();
+        for term in expected {
+            assert!(text.contains(term), "{relation} lost {term}: {text}");
+        }
+        assert!(!text.contains("hunter2"));
+        assert_eq!(output.occurrence.event_id, format!("evt_{ordinal}"));
+        assert_eq!(output.occurrence.support_ref, format!("support:{ordinal}"));
+        assert_eq!(
+            output.occurrence.disposition_reason,
+            "projected_by_m45_command_policy"
+        );
+    }
+}
+
+#[test]
+fn m45_command_projection_does_not_invent_missing_script_bodies() {
+    let context = context();
+    let unavailable = serde_json::json!({"event_id":"4104","ocsf":{"unmapped":{}}});
+    assert!(
+        project_m45_command(ProjectionInput {
+            relation_name: "ocsf_event_log_activity",
+            event_id: "evt_4104",
+            typed_event_json: &serde_json::to_string(&unavailable).unwrap(),
+            support_ref: "support:4104",
+            context: &context,
+        })
+        .unwrap()
+        .is_none()
+    );
 }

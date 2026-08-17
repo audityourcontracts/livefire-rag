@@ -18,6 +18,9 @@ use rag_index::{
     SourceBinding, document_order_sha256, write_fast_index_streaming,
 };
 use rag_ocsf::{LocalSnapshotReader, SnapshotReader};
+use rag_pipeline::{
+    ComponentRef as PipelineComponentRef, Digest as PipelineDigest, SealedQueryVectorSet,
+};
 use rag_projection::{
     ComponentRef, EventTimeAvailability, ProjectedDocument, ProjectionContext, ProjectionInput,
     project, project_document_summary, project_event_time,
@@ -28,6 +31,9 @@ use sha2::{Digest, Sha256};
 mod catalogue;
 mod portable;
 mod report;
+mod runpod_cli;
+mod runpod_control;
+mod runpod_s3;
 
 use report::{
     GitState, LmStudioContext, LocalRunContext, MachineContext, ObservationStatus,
@@ -43,6 +49,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build, stage, run, and verify sealed embedding work on RunPod.
+    Runpod {
+        #[command(subcommand)]
+        command: runpod_cli::RunpodCommand,
+    },
     /// Build, validate, or search a catalogue of completed dataset indexes.
     Catalogue {
         #[command(subcommand)]
@@ -94,6 +105,19 @@ enum Command {
         document_shard_rows: usize,
         /// Maximum number of admitted Parquet row groups projected at once.
         /// The default uses no more than eight available CPU threads.
+        #[arg(long, default_value_t = portable::default_prepare_workers())]
+        workers: usize,
+    },
+    /// Prepare the command, script, and API-operation corpus from the admitted
+    /// M45 normalized snapshot.
+    PrepareCommands {
+        #[arg(long)]
+        snapshot: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 2_048)]
+        document_shard_rows: usize,
+        /// Maximum number of admitted Parquet row groups projected at once.
         #[arg(long, default_value_t = portable::default_prepare_workers())]
         workers: usize,
     },
@@ -150,6 +174,23 @@ enum Command {
         #[arg(long)]
         maximum_task_documents: u32,
     },
+    /// Local/internal: freeze TEI tasks from an exact embedding-policy/3 contract.
+    PlanEmbeddingsTei {
+        #[arg(long)]
+        prepared: PathBuf,
+        #[arg(long)]
+        embedding_policy: PathBuf,
+        #[arg(long)]
+        tokenizer_json: PathBuf,
+        #[arg(long)]
+        tokenizer_ref: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        maximum_task_tokens: u64,
+        #[arg(long)]
+        maximum_task_documents: u32,
+    },
     /// Execute unfinished embedding tasks against local LM Studio.
     Embed {
         #[arg(long)]
@@ -168,6 +209,29 @@ enum Command {
         requests_in_flight: usize,
         /// Execute only this start-inclusive, end-exclusive task range, for
         /// example `0..8`. Omit it to execute every task.
+        #[arg(long)]
+        task_range: Option<String>,
+    },
+    /// Local/internal: execute TEI through loopback with sealed worker context JSON.
+    EmbedTei {
+        #[arg(long)]
+        prepared: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        embedding_policy: PathBuf,
+        #[arg(long)]
+        conformance_fixture: PathBuf,
+        #[arg(long)]
+        execution_context: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        embedding_endpoint: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 16)]
+        batch_size: usize,
+        #[arg(long, default_value_t = 1)]
+        requests_in_flight: usize,
         #[arg(long)]
         task_range: Option<String>,
     },
@@ -272,10 +336,43 @@ enum Command {
         mode: Mode,
         #[arg(long, default_value_t = 20)]
         top_n: usize,
-        #[arg(long, default_value = "http://127.0.0.1:1234")]
-        embedding_endpoint: String,
+        /// Loopback embedding server used for an arbitrary dense or fused
+        /// query. Mutually exclusive with --query-vector-set.
+        #[arg(long, conflicts_with = "query_vector_set")]
+        embedding_endpoint: Option<String>,
+        /// Sealed vectors for a frozen query plan. Dense and fused searches
+        /// also require --query-id and never accept a vector in the request.
+        #[arg(long, conflicts_with = "embedding_endpoint", requires = "query_id")]
+        query_vector_set: Option<PathBuf>,
+        /// Exact frozen query ID used to select a sealed vector.
+        #[arg(long, requires = "query_vector_set")]
+        query_id: Option<String>,
         #[arg(long)]
         relation: Vec<String>,
+        #[arg(long)]
+        time_start_ms: Option<u64>,
+        #[arg(long)]
+        time_end_ms: Option<u64>,
+    },
+    /// Find documents whose stored vectors are closest to one indexed
+    /// document. This does not contact LM Studio.
+    Similar {
+        #[arg(long)]
+        index: PathBuf,
+        #[arg(long)]
+        document_id: String,
+        #[arg(long, default_value_t = 20)]
+        top_n: usize,
+        #[arg(long)]
+        relation: Vec<String>,
+        #[arg(long)]
+        time_start_ms: Option<u64>,
+        #[arg(long)]
+        time_end_ms: Option<u64>,
+        /// Include the seed document in the ranked results. It is excluded by
+        /// default.
+        #[arg(long)]
+        include_seed: bool,
     },
     /// Measure query embedding separately from index-only dense, fused, and
     /// lexical search. The report never includes the query text.
@@ -381,12 +478,43 @@ enum CatalogueCommand {
         embedding_endpoint: String,
         #[arg(long)]
         relation: Vec<String>,
+        #[arg(long)]
+        time_start_ms: Option<u64>,
+        #[arg(long)]
+        time_end_ms: Option<u64>,
         /// Maximum number of indexes searched at once.
         #[arg(long, default_value_t = portable::default_prepare_workers())]
         workers: usize,
         /// Test-only catalogues require this explicit acknowledgement.
         #[arg(long)]
         allow_test_only: bool,
+    },
+    /// Find documents across all datasets that are closest to one stored
+    /// catalogue document. This does not contact LM Studio.
+    Similar {
+        #[arg(long)]
+        catalogue: PathBuf,
+        /// Exact dataset ID that owns the seed document.
+        #[arg(long)]
+        dataset_id: String,
+        #[arg(long)]
+        document_id: String,
+        #[arg(long, default_value_t = 20)]
+        top_n: usize,
+        #[arg(long)]
+        relation: Vec<String>,
+        #[arg(long)]
+        time_start_ms: Option<u64>,
+        #[arg(long)]
+        time_end_ms: Option<u64>,
+        #[arg(long, default_value_t = portable::default_prepare_workers())]
+        workers: usize,
+        #[arg(long)]
+        allow_test_only: bool,
+        /// Include the exact seed dataset/document pair. It is excluded by
+        /// default; the same document ID in another dataset remains eligible.
+        #[arg(long)]
+        include_seed: bool,
     },
     /// Execute a frozen JSONL query plan and atomically publish a complete run
     /// directory after every request succeeds.
@@ -399,8 +527,12 @@ enum CatalogueCommand {
         /// manifest.json. Existing paths are refused.
         #[arg(long)]
         out: PathBuf,
-        #[arg(long, default_value = "http://127.0.0.1:1234")]
-        embedding_endpoint: String,
+        /// Loopback embedding server used to embed arbitrary queries.
+        #[arg(long, conflicts_with = "query_vector_set")]
+        embedding_endpoint: Option<String>,
+        /// Sealed vectors bound to this exact --requests JSONL file.
+        #[arg(long, conflicts_with = "embedding_endpoint")]
+        query_vector_set: Option<PathBuf>,
         /// Maximum number of indexes searched at once for each request.
         #[arg(long, default_value_t = portable::default_prepare_workers())]
         workers: usize,
@@ -788,6 +920,8 @@ fn sample_priority(snapshot_sha256: &str, document_id: &str) -> String {
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error(transparent)]
+    Runpod(#[from] runpod_cli::RunpodCliError),
+    #[error(transparent)]
     Ocsf(#[from] rag_ocsf::OcsfError),
     #[error(transparent)]
     Projection(#[from] rag_projection::ProjectionError),
@@ -821,6 +955,10 @@ enum Error {
     InvalidBatchQuery,
     #[error("query embedding response does not match the index embedding profile")]
     InvalidQueryEmbeddingResponse,
+    #[error("seed document is not present in the selected index: {0}")]
+    SeedDocumentNotFound(String),
+    #[error("seed dataset is not present in the selected catalogue: {0}")]
+    SeedDatasetNotFound(String),
     #[error("query benchmark options, model response, or repeated results are invalid")]
     InvalidQueryBenchmark,
     #[error("embedding task ID is not present in the selected plan")]
@@ -839,6 +977,7 @@ async fn main() {
 }
 async fn run() -> Result<()> {
     match Cli::parse().command {
+        Command::Runpod { command } => Ok(runpod_cli::run(command).await?),
         Command::Catalogue { command } => match command {
             CatalogueCommand::Build {
                 dataset,
@@ -859,6 +998,8 @@ async fn run() -> Result<()> {
                 top_n,
                 embedding_endpoint,
                 relation,
+                time_start_ms,
+                time_end_ms,
                 workers,
                 allow_test_only,
             } => {
@@ -869,16 +1010,42 @@ async fn run() -> Result<()> {
                     top_n,
                     endpoint: &embedding_endpoint,
                     relations: relation,
+                    time_start_ms,
+                    time_end_ms,
                     workers,
                     allow_test_only,
                 })
                 .await
             }
+            CatalogueCommand::Similar {
+                catalogue,
+                dataset_id,
+                document_id,
+                top_n,
+                relation,
+                time_start_ms,
+                time_end_ms,
+                workers,
+                allow_test_only,
+                include_seed,
+            } => catalogue::similar_catalogue(catalogue::CatalogueSimilarOptions {
+                catalogue: &catalogue,
+                dataset_id: &dataset_id,
+                document_id: &document_id,
+                top_n,
+                relations: relation,
+                time_start_ms,
+                time_end_ms,
+                workers,
+                allow_test_only,
+                exclude_seed: !include_seed,
+            }),
             CatalogueCommand::BatchSearch {
                 catalogue,
                 requests,
                 out,
                 embedding_endpoint,
+                query_vector_set,
                 workers,
                 allow_test_only,
             } => {
@@ -886,7 +1053,8 @@ async fn run() -> Result<()> {
                     catalogue: &catalogue,
                     requests: &requests,
                     out: &out,
-                    endpoint: &embedding_endpoint,
+                    endpoint: embedding_endpoint.as_deref(),
+                    query_vector_set: query_vector_set.as_deref(),
                     workers,
                     allow_test_only,
                 })
@@ -930,6 +1098,17 @@ async fn run() -> Result<()> {
             document_shard_rows,
             workers,
         }),
+        Command::PrepareCommands {
+            snapshot,
+            out,
+            document_shard_rows,
+            workers,
+        } => portable::prepare_commands(portable::PrepareCommandsOptions {
+            snapshot,
+            out,
+            document_shard_rows,
+            workers,
+        }),
         Command::PrepareBenchmark {
             snapshot,
             dataset_id,
@@ -967,6 +1146,23 @@ async fn run() -> Result<()> {
             maximum_task_tokens,
             maximum_task_documents,
         }),
+        Command::PlanEmbeddingsTei {
+            prepared,
+            embedding_policy,
+            tokenizer_json,
+            tokenizer_ref,
+            out,
+            maximum_task_tokens,
+            maximum_task_documents,
+        } => portable::plan_embeddings_tei(portable::TeiPlanOptions {
+            prepared,
+            embedding_policy,
+            tokenizer_json,
+            tokenizer_ref,
+            out,
+            maximum_task_tokens,
+            maximum_task_documents,
+        }),
         Command::Embed {
             prepared,
             plan,
@@ -987,6 +1183,35 @@ async fn run() -> Result<()> {
                 requests_in_flight,
                 task_range,
             })
+            .await
+        }
+        Command::EmbedTei {
+            prepared,
+            plan,
+            embedding_policy,
+            conformance_fixture,
+            execution_context,
+            embedding_endpoint,
+            out,
+            batch_size,
+            requests_in_flight,
+            task_range,
+        } => {
+            let worker = serde_json::from_slice(&fs::read(execution_context)?)?;
+            portable::embed_tei(
+                portable::TeiEmbedOptions {
+                    prepared,
+                    plan,
+                    embedding_policy,
+                    conformance_fixture,
+                    out,
+                    batch_size,
+                    requests_in_flight,
+                    task_range,
+                    worker,
+                },
+                &embedding_endpoint,
+            )
             .await
         }
         Command::TestEmbed {
@@ -1080,18 +1305,46 @@ async fn run() -> Result<()> {
             mode,
             top_n,
             embedding_endpoint,
+            query_vector_set,
+            query_id,
             relation,
+            time_start_ms,
+            time_end_ms,
         } => {
-            query(
-                &index,
-                &query_text,
+            let filters = SearchFilters {
+                relations: relation.into_iter().collect(),
+                time_start_ms,
+                time_end_ms,
+            };
+            query(QueryOptions {
+                index: &index,
+                text: &query_text,
                 mode,
                 top_n,
-                &embedding_endpoint,
-                relation,
-            )
+                endpoint: embedding_endpoint.as_deref(),
+                query_vector_set: query_vector_set.as_deref(),
+                query_id: query_id.as_deref(),
+                filters,
+            })
             .await
         }
+        Command::Similar {
+            index,
+            document_id,
+            top_n,
+            relation,
+            time_start_ms,
+            time_end_ms,
+            include_seed,
+        } => similar(
+            &index,
+            &document_id,
+            top_n,
+            relation,
+            time_start_ms,
+            time_end_ms,
+            !include_seed,
+        ),
         Command::BenchmarkQuery {
             index,
             query,
@@ -1503,17 +1756,100 @@ fn parse_event_time_ms(
     }
 }
 
-async fn query(
-    index_path: &Path,
-    text: &str,
+struct QueryOptions<'a> {
+    index: &'a Path,
+    text: &'a str,
     mode: Mode,
     top_n: usize,
-    endpoint: &str,
-    relations: Vec<String>,
-) -> Result<()> {
-    let index = FastIndex::open(index_path)?;
-    let embedder = LmStudioEmbedder::new(endpoint, &index.manifest.embedding_profile.model);
-    let hits = search_index(&index, &embedder, text, mode, top_n, relations).await?;
+    endpoint: Option<&'a str>,
+    query_vector_set: Option<&'a Path>,
+    query_id: Option<&'a str>,
+    filters: SearchFilters,
+}
+
+async fn query(options: QueryOptions<'_>) -> Result<()> {
+    let index = FastIndex::open(options.index)?;
+    let search_mode: SearchMode = options.mode.into();
+    let semantic = matches!(search_mode, SearchMode::Dense | SearchMode::Fused);
+    if semantic != (options.endpoint.is_some() ^ options.query_vector_set.is_some())
+        || options.query_vector_set.is_some() != options.query_id.is_some()
+        || (options.query_vector_set.is_some()
+            && (options.filters.time_start_ms.is_some() || options.filters.time_end_ms.is_some()))
+    {
+        return Err(Error::AccountingClosure(
+            "dense and fused query needs exactly one endpoint or sealed query-vector set; lexical query needs neither",
+        ));
+    }
+    let hits = if let Some(root) = options.query_vector_set {
+        let profile = &index.manifest.embedding_profile;
+        let profile_component = PipelineComponentRef {
+            id: profile.id.clone(),
+            version: profile.version.clone(),
+            sha256: PipelineDigest::new(profile.sha256.clone())?,
+        };
+        let sealed = SealedQueryVectorSet::open(
+            root,
+            &profile_component,
+            &profile.model,
+            profile.dimensions,
+            &profile.normalization,
+            None,
+        )?;
+        let composed = try_compose_query(profile, options.text)?;
+        let mode = match search_mode {
+            SearchMode::Dense => "dense",
+            SearchMode::Fused => "fused",
+            SearchMode::Lexical => unreachable!("sealed vectors are semantic only"),
+        };
+        let relations = options
+            .filters
+            .relations
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let vector = sealed.vector_for_request(
+            options
+                .query_id
+                .ok_or(Error::AccountingClosure("sealed query ID is absent"))?,
+            options.text,
+            &composed,
+            mode,
+            options.top_n,
+            &relations,
+        )?;
+        let bound = index.validate_query_vector(vector)?;
+        match search_mode {
+            SearchMode::Dense => {
+                index.search_dense_with_vector(&bound, &options.filters, options.top_n)?
+            }
+            SearchMode::Fused => index.search_fused_with_vector(
+                options.text,
+                &bound,
+                &options.filters,
+                options.top_n,
+            )?,
+            SearchMode::Lexical => unreachable!("sealed vectors are semantic only"),
+        }
+    } else if let Some(endpoint) = options.endpoint {
+        let embedder = LmStudioEmbedder::new(endpoint, &index.manifest.embedding_profile.model);
+        search_index(
+            &index,
+            &embedder,
+            options.text,
+            options.mode,
+            options.top_n,
+            options.filters,
+        )
+        .await?
+    } else {
+        index.search(
+            SearchMode::Lexical,
+            options.text,
+            None,
+            &options.filters,
+            options.top_n,
+        )?
+    };
     #[derive(Serialize)]
     struct Output<'a> {
         schema_version: &'static str,
@@ -1524,8 +1860,45 @@ async fn query(
         "{}",
         serde_json::to_string_pretty(&Output {
             schema_version: "livefire.rag.fast-search-result/1",
-            query: text,
+            query: options.text,
             hits: &hits
+        })?
+    );
+    Ok(())
+}
+
+fn similar(
+    index_path: &Path,
+    document_id: &str,
+    top_n: usize,
+    relations: Vec<String>,
+    time_start_ms: Option<u64>,
+    time_end_ms: Option<u64>,
+    exclude_seed: bool,
+) -> Result<()> {
+    let index = FastIndex::open(index_path)?;
+    let filters = SearchFilters {
+        relations: relations.into_iter().collect(),
+        time_start_ms,
+        time_end_ms,
+    };
+    let hits = index
+        .similar(document_id, &filters, top_n, exclude_seed)?
+        .ok_or_else(|| Error::SeedDocumentNotFound(document_id.to_owned()))?;
+    #[derive(Serialize)]
+    struct Output<'a> {
+        schema_version: &'static str,
+        seed_document_id: &'a str,
+        seed_excluded: bool,
+        hits: &'a [rag_index::SearchHit],
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&Output {
+            schema_version: "livefire.rag.fast-similar-result/1",
+            seed_document_id: document_id,
+            seed_excluded: exclude_seed,
+            hits: &hits,
         })?
     );
     Ok(())
@@ -2078,7 +2451,7 @@ async fn search_index<E: rag_embedding::IdentifiedEmbedder>(
     text: &str,
     mode: Mode,
     top_n: usize,
-    relations: Vec<String>,
+    filters: SearchFilters,
 ) -> Result<Vec<rag_index::SearchHit>> {
     let search_mode: SearchMode = mode.into();
     let query_vector = if matches!(search_mode, SearchMode::Dense | SearchMode::Fused) {
@@ -2105,10 +2478,6 @@ async fn search_index<E: rag_embedding::IdentifiedEmbedder>(
     } else {
         None
     };
-    let filters = SearchFilters {
-        relations: relations.into_iter().collect(),
-        ..Default::default()
-    };
     Ok(index.search(search_mode, text, query_vector.as_deref(), &filters, top_n)?)
 }
 
@@ -2119,13 +2488,17 @@ async fn batch_query(index_path: &Path, requests_path: &Path, endpoint: &str) ->
     let stdout = std::io::stdout();
     let mut writer = BufWriter::new(stdout.lock());
     for request in requests {
+        let filters = SearchFilters {
+            relations: request.relations.into_iter().collect(),
+            ..Default::default()
+        };
         let hits = search_index(
             &index,
             &embedder,
             &request.query,
             request.mode,
             request.top_n,
-            request.relations,
+            filters,
         )
         .await?;
         serde_json::to_writer(
@@ -2545,6 +2918,58 @@ mod tests {
                 ..
             }
         ));
+        assert!(
+            Cli::try_parse_from([
+                "rag",
+                "query",
+                "--index",
+                "index",
+                "--query",
+                "encoded process",
+                "--embedding-endpoint",
+                "http://127.0.0.1:1234",
+                "--query-vector-set",
+                "sealed",
+                "--query-id",
+                "q-1",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "rag",
+                "query",
+                "--index",
+                "index",
+                "--query",
+                "encoded process",
+                "--query-vector-set",
+                "sealed",
+            ])
+            .is_err()
+        );
+        assert!(matches!(
+            Cli::try_parse_from([
+                "rag",
+                "query",
+                "--index",
+                "index",
+                "--query",
+                "encoded process",
+                "--query-vector-set",
+                "sealed",
+                "--query-id",
+                "q-1",
+            ])
+            .expect("sealed single-index query")
+            .command,
+            Command::Query {
+                query_vector_set: Some(_),
+                query_id: Some(_),
+                embedding_endpoint: None,
+                ..
+            }
+        ));
 
         let mut sampled_args = base.to_vec();
         sampled_args.push("--representative-sample");
@@ -2705,6 +3130,24 @@ mod tests {
                 ..
             }
         ));
+        assert!(
+            Cli::try_parse_from([
+                "rag",
+                "catalogue",
+                "batch-search",
+                "--catalogue",
+                "catalogue.json",
+                "--requests",
+                "queries.jsonl",
+                "--out",
+                "run-2",
+                "--embedding-endpoint",
+                "http://127.0.0.1:1234",
+                "--query-vector-set",
+                "sealed",
+            ])
+            .is_err()
+        );
         assert!(matches!(
             Cli::try_parse_from([
                 "rag",
@@ -2727,6 +3170,65 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn tei_cli_requires_policy_fixture_and_sealed_execution_context() {
+        let planned = Cli::try_parse_from([
+            "rag",
+            "plan-embeddings-tei",
+            "--prepared",
+            "prepared",
+            "--embedding-policy",
+            "policy.json",
+            "--tokenizer-json",
+            "tokenizer.json",
+            "--tokenizer-ref",
+            "tokenizer.ref.json",
+            "--maximum-task-tokens",
+            "262144",
+            "--maximum-task-documents",
+            "2048",
+            "--out",
+            "plan",
+        ])
+        .expect("TEI plan CLI");
+        assert!(matches!(planned.command, Command::PlanEmbeddingsTei { .. }));
+        let embedded = Cli::try_parse_from([
+            "rag",
+            "embed-tei",
+            "--prepared",
+            "prepared",
+            "--plan",
+            "plan",
+            "--embedding-policy",
+            "policy.json",
+            "--conformance-fixture",
+            "fixture.json",
+            "--execution-context",
+            "execution.json",
+            "--out",
+            "embeddings",
+        ])
+        .expect("TEI worker CLI");
+        assert!(matches!(embedded.command, Command::EmbedTei { .. }));
+        assert!(
+            Cli::try_parse_from([
+                "rag",
+                "embed-tei",
+                "--prepared",
+                "prepared",
+                "--plan",
+                "plan",
+                "--embedding-policy",
+                "policy.json",
+                "--conformance-fixture",
+                "fixture.json",
+                "--out",
+                "embeddings",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -2847,6 +3349,38 @@ mod tests {
     }
 
     #[test]
+    fn m45_command_preparation_cli_has_one_snapshot_and_rejects_extra_sources() {
+        let parsed = Cli::try_parse_from([
+            "rag",
+            "prepare-commands",
+            "--snapshot",
+            "m45",
+            "--out",
+            "prepared-commands",
+            "--workers",
+            "4",
+        ])
+        .expect("M45 command preparation CLI");
+        assert!(matches!(
+            parsed.command,
+            Command::PrepareCommands { workers: 4, .. }
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "rag",
+                "prepare-commands",
+                "--snapshot",
+                "m45",
+                "--out",
+                "prepared-commands",
+                "--raw-events",
+                "raw.parquet",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn catalogue_cli_groups_complete_dataset_artifact_chains() {
         let parsed = Cli::try_parse_from([
             "rag",
@@ -2881,13 +3415,69 @@ mod tests {
             "catalogue.json",
             "--query",
             "encoded process",
+            "--time-start-ms",
+            "100",
+            "--time-end-ms",
+            "200",
         ])
         .expect("catalogue search CLI");
         assert!(matches!(
             parsed.command,
             Command::Catalogue {
-                command: CatalogueCommand::Search { workers, .. }
+                command: CatalogueCommand::Search {
+                    workers,
+                    time_start_ms: Some(100),
+                    time_end_ms: Some(200),
+                    ..
+                }
             } if (1..=8).contains(&workers)
+        ));
+
+        assert!(matches!(
+            Cli::try_parse_from([
+                "rag",
+                "query",
+                "--index",
+                "index",
+                "--query",
+                "encoded process",
+                "--time-start-ms",
+                "100",
+                "--time-end-ms",
+                "200"
+            ])
+            .expect("single-index query time filters")
+            .command,
+            Command::Query {
+                time_start_ms: Some(100),
+                time_end_ms: Some(200),
+                ..
+            }
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "rag",
+            "catalogue",
+            "similar",
+            "--catalogue",
+            "catalogue.json",
+            "--dataset-id",
+            "dataset-a",
+            "--document-id",
+            "sha256:seed",
+            "--workers",
+            "3",
+        ])
+        .expect("catalogue similarity CLI");
+        assert!(matches!(
+            parsed.command,
+            Command::Catalogue {
+                command: CatalogueCommand::Similar {
+                    workers: 3,
+                    include_seed: false,
+                    ..
+                }
+            }
         ));
 
         let parsed = Cli::try_parse_from([
@@ -2913,6 +3503,24 @@ mod tests {
                     allow_test_only: true,
                     ..
                 }
+            }
+        ));
+
+        assert!(matches!(
+            Cli::try_parse_from([
+                "rag",
+                "similar",
+                "--index",
+                "index",
+                "--document-id",
+                "sha256:seed",
+                "--include-seed"
+            ])
+            .expect("single-index similarity CLI")
+            .command,
+            Command::Similar {
+                include_seed: true,
+                ..
             }
         ));
     }
@@ -3042,7 +3650,7 @@ mod tests {
                 "alpha activity",
                 Mode::Dense,
                 2,
-                vec![]
+                SearchFilters::default(),
             )
             .await,
             Err(Error::InvalidQueryEmbeddingResponse)
@@ -3061,7 +3669,7 @@ mod tests {
                 "alpha activity",
                 Mode::Fused,
                 2,
-                vec![]
+                SearchFilters::default(),
             )
             .await,
             Err(Error::InvalidQueryEmbeddingResponse)
@@ -3074,12 +3682,97 @@ mod tests {
             "alpha activity",
             Mode::Lexical,
             2,
-            vec![],
+            SearchFilters::default(),
         )
         .await
         .unwrap();
         assert!(!hits.is_empty());
         assert_eq!(wrong_model.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn direct_query_uses_an_exact_sealed_vector_without_an_endpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let _index = benchmark_fixture_index(root.path());
+        let query_plan = root.path().join("queries.jsonl");
+        fs::write(
+            &query_plan,
+            "{\"query_id\":\"q-alpha\",\"query\":\"alpha activity\",\"mode\":\"dense\",\"top_n\":2,\"relations\":[]}\n",
+        )
+        .unwrap();
+        let component = |id: &str, character: char| rag_pipeline::ComponentRef {
+            id: id.into(),
+            version: "1".into(),
+            sha256: rag_pipeline::Digest::new(character.to_string().repeat(64)).unwrap(),
+        };
+        let profile = component("fake-profile", 'e');
+        let build = component("executor-build", 'f');
+        let execution = rag_pipeline::RunpodExecutionIdentity {
+            executor_image: component("executor-image", '1'),
+            executor_image_build: build.clone(),
+            runtime: component("runtime", '2'),
+            worker_binary: component("worker", '3'),
+            model_artifact: component("model", '4'),
+            embedding_profile: profile.clone(),
+            accelerator: rag_pipeline::RunpodAcceleratorIdentity {
+                provider: "runpod".into(),
+                model: "A100".into(),
+                architecture: "ampere".into(),
+                compute_capability: "8.0".into(),
+                count: 1,
+            },
+            returned_model: "fake-query-model".into(),
+        };
+        let vector_root = root.path().join("sealed");
+        let vector = [1.0_f32, 0.0];
+        rag_pipeline::write_query_vector_set(
+            &vector_root,
+            &query_plan,
+            rag_pipeline::QueryVectorExecutionBinding {
+                embedding_profile: profile,
+                embedding_policy: component("policy", '5'),
+                execution_identity_sha256: rag_pipeline::canonical_digest(&execution).unwrap(),
+                execution,
+                executor_image_build_receipt: build,
+            },
+            2,
+            "l2",
+            &[rag_pipeline::QueryVectorSetInput {
+                query_id: "q-alpha",
+                raw_query: "alpha activity",
+                composed_query: "alpha activity",
+                vector: &vector,
+            }],
+        )
+        .unwrap();
+        let index_root = root.path().join("index");
+        query(QueryOptions {
+            index: &index_root,
+            text: "alpha activity",
+            mode: Mode::Dense,
+            top_n: 2,
+            endpoint: None,
+            query_vector_set: Some(&vector_root),
+            query_id: Some("q-alpha"),
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            query(QueryOptions {
+                index: &index_root,
+                text: "changed",
+                mode: Mode::Dense,
+                top_n: 2,
+                endpoint: None,
+                query_vector_set: Some(&vector_root),
+                query_id: Some("q-alpha"),
+                filters: SearchFilters::default(),
+            })
+            .await
+            .is_err()
+        );
     }
 
     #[test]

@@ -300,6 +300,7 @@ mod tests {
             version: "1".into(),
             source_snapshot: component("snapshot"),
             mapping: component("mapping"),
+            source_admission: vec![],
             included_relations: vec![relation.into()],
             excluded_relations: vec![],
             structured_only_relations: vec![],

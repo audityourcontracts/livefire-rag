@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/tei-worker-report-context.v1.schema.json",
+  "title": "TEI worker report context v1",
+  "description": "The sealed execution identity and observed worker provenance required by the local/internal TEI executor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "execution_identity", "git", "machine", "accelerator", "backend", "resource_usage"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.tei-worker-report-context/1"},
+    "execution_identity": {"$ref": "embedding-task-run-report.v2.schema.json#/$defs/execution_identity"},
+    "git": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/git"},
+    "machine": {"$ref": "embedding-task-run-report.v1.schema.json#/$defs/machine"},
+    "accelerator": {"$ref": "embedding-task-run-report.v2.schema.json#/$defs/accelerator"},
+    "backend": {"$ref": "embedding-task-run-report.v2.schema.json#/$defs/backend"},
+    "resource_usage": {"$ref": "embedding-task-run-report.v2.schema.json#/$defs/resource_usage"}
+  }
+}

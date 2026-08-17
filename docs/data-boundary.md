@@ -1,44 +1,42 @@
 # Data and trust boundary
 
-## Source adapters
+## Admitted source
 
-Vendor adapters run only while creating a source snapshot. They may receive an
-explicit credential handle and network allow-list for the selected source. They
-must not write credentials, bearer tokens, session IDs, or mutable API URLs into
-records, manifests, diagnostics, or source pointers.
+The active RAG builder accepts only a completed `livefire-ocsf` normalized
+snapshot and its immutable build receipt. The current source is M45. Direct
+OpenBOTS data, the historical M21/M41 outputs, Splunk exports, Panther exports,
+and live vendor APIs are outside this boundary.
 
-An adapter writes a canonical command snapshot to staging and exits. The host
-then validates object digests, schema conformance, pointer completeness, row
-counts, time coverage, and path safety before sealing it. A remote source may
-change after export; reproducibility begins at the sealed snapshot, not by
-assuming a future vendor export will produce the same bytes.
+`livefire-ocsf` is responsible for admitting upstream data and writing the
+normalized Parquet objects. `rag` verifies the receipt, object digests, schema,
+row counts, pointer fields, and safe paths before projecting any row.
+Reproducibility begins at that admitted normalized snapshot. The RAG repository
+does not retain an adapter fallback that reads upstream source bytes.
 
 ## Index builder
 
-The builder receives sealed source snapshots read-only and a new write-only
-staging directory. It may not access vendor APIs, vendor credentials, evaluator
-fixtures, Livefire traces/findings, ambient home directories, or unrelated
-snapshots.
+The Rust builder receives the admitted M45 snapshot read-only and a new output
+directory. It may not access vendor APIs, vendor credentials, evaluator
+fixtures, Livefire traces/findings, ambient home directories, unrelated
+snapshots, or historical OpenBOTS compatibility paths.
 
 PowerShell decoding and parsing are static. The builder may decode bounded
 representations and invoke a parser, but it must never execute a command, script,
 macro, decompressed payload, shell expansion, or PowerShell expression.
 
-The combined v1 builder permits model access through:
+Local development embedding permits model access through:
 
 - a pre-admitted local model artifact; or
 - an explicitly allowed loopback LM Studio instance serving that artifact.
 
-The v1 combined builder does not permit a remote embedding endpoint. A later
-portable offline-build pipeline may use explicitly authorized remote embedding
-workers only after it has produced a sealed prepared corpus. That exception is
-limited to the build stage: it does not grant the runtime provider general
-network access. Upload only the prepared document shards required by the
-worker; source occurrence rows remain local unless a separate policy permits
-them. Remote storage and workers must use private access, encryption in transit
-and at rest, bounded retention, deletion on completion, tenant isolation, and
-credentials supplied through the host secret mechanism rather than manifests
-or logs.
+The RunPod build path may use explicitly authorized remote embedding workers
+only after Rust has produced and verified a sealed prepared corpus. That
+exception is limited to embedding and does not grant the runtime provider
+general network access. The cloud bundle contains only prepared document
+shards and exact execution artifacts. Source occurrence rows remain local.
+Remote storage and workers use private access, encryption in transit and at
+rest, bounded retention, tenant isolation, and credentials supplied through
+environment-backed host secret handling rather than manifests or logs.
 
 Build output, prepared semantic text, and intermediate embeddings inherit the
 source telemetry's tenant, confidentiality, encryption, retention, revocation,
@@ -46,17 +44,19 @@ and deletion policy.
 
 ## Runtime provider
 
-The provider receives one admitted index read-only. It has:
+The Rust provider receives one admitted index read-only. It has:
 
-- no Splunk or Panther credentials;
+- no source-system credentials;
 - no vendor-network access;
 - no source-snapshot mount by default;
 - no arbitrary filesystem access;
-- optional loopback access only to the exact bound query embedder;
+- optional loopback access only to the exact bound query embedder, or a sealed
+  cloud-profile query-vector set for a frozen request plan;
 - bounded request/result sizes, candidates, memory, and wall time.
 
-It returns immutable source pointers. Authoritative hydration is performed by a
-separately admitted OCSF/Splunk/Panther evidence tool.
+It returns immutable OCSF event references. The released OCSF query service
+must resolve and confirm those references before their fields are used as
+facts.
 
 ## Derived-data handling
 

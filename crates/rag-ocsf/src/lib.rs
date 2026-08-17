@@ -10,9 +10,12 @@ use std::{
     fs::File,
     io::Read,
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
-use arrow_array::RecordBatch;
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
+};
 use arrow_schema::{DataType, Schema};
 use parquet::{
     arrow::{
@@ -27,7 +30,9 @@ use sha2::{Digest, Sha256 as Sha256Hasher};
 use thiserror::Error;
 
 const RECEIPT_FILE: &str = "build-receipt.json";
-const REQUIRED_EVENT_COLUMNS: [&str; 3] = ["event_id", "typed_event_json", "support_ref"];
+const REQUIRED_EVENT_COLUMNS_V1: [&str; 3] = ["event_id", "typed_event_json", "support_ref"];
+const REQUIRED_EVENT_COLUMNS_V2: [&str; 3] = ["event_id", "empty_object_paths", "support_ref"];
+const LOGICAL_EVENT_COLUMNS: [&str; 3] = ["event_id", "typed_event_json", "support_ref"];
 const REQUIRED_CORE_RELATIONS: [&str; 7] = [
     "events",
     "event_facets",
@@ -36,6 +41,37 @@ const REQUIRED_CORE_RELATIONS: [&str; 7] = [
     "participants",
     "event_observables",
     "relationships",
+];
+const SCHEMA_V3_GRAPH_RELATIONS: [&str; 8] = [
+    "events",
+    "event_facets",
+    "entities",
+    "observables",
+    "participants",
+    "event_observables",
+    "relationships",
+    "subject_aliases",
+];
+const SCHEMA_V3_TYPED_RELATIONS: [&str; 19] = [
+    "ocsf_account_change",
+    "ocsf_api_activity",
+    "ocsf_application_lifecycle",
+    "ocsf_authentication",
+    "ocsf_cloud_resources_inventory_info",
+    "ocsf_datastore_activity",
+    "ocsf_detection_finding",
+    "ocsf_dns_activity",
+    "ocsf_email_activity",
+    "ocsf_entity_management",
+    "ocsf_event_log_activity",
+    "ocsf_ext_livefire_configuration_snapshot",
+    "ocsf_ext_livefire_system_metric",
+    "ocsf_file_activity",
+    "ocsf_http_activity",
+    "ocsf_inventory_info",
+    "ocsf_network_activity",
+    "ocsf_process_activity",
+    "ocsf_user_inventory",
 ];
 
 /// The identities and discovered relation objects bound by one snapshot.
@@ -51,7 +87,11 @@ pub struct OcsfSnapshot {
     pub mapping_sha256: Sha256,
     pub ocsf_schema_sha256: Sha256,
     pub extension_pack_sha256: Sha256,
+    pub relation_contract_id: String,
+    pub relation_contract_version: String,
     pub relation_contract_sha256: Sha256,
+    /// Exact M45 query-capability sidecar, when the snapshot manifest requires it.
+    pub snapshot_capabilities_sha256: Option<Sha256>,
     pub normalized_events: u64,
     pub relations: Vec<OcsfRelation>,
 }
@@ -100,6 +140,13 @@ struct CachedParquetObject {
     path: PathBuf,
     metadata: ArrowReaderMetadata,
     row_groups: Vec<OcsfRowGroup>,
+    typed_encoding: Option<TypedEncoding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypedEncoding {
+    JsonV1,
+    ColumnsV2,
 }
 
 /// A content-admitted Parquet object whose digest and footer were validated
@@ -159,7 +206,10 @@ impl AdmittedParquetObject {
     }
 
     fn scan_all_columns(&self) -> Result<RecordBatchStream, OcsfError> {
-        self.open_reader(None, None)
+        match self.object.typed_encoding {
+            Some(_) => self.open_reader(None, Some(&LOGICAL_EVENT_COLUMNS)),
+            None => self.open_reader(None, None),
+        }
     }
 
     fn open_reader(
@@ -167,6 +217,21 @@ impl AdmittedParquetObject {
         row_groups: Option<Vec<usize>>,
         required_columns: Option<&[&str]>,
     ) -> Result<RecordBatchStream, OcsfError> {
+        let typed_columns = self.object.typed_encoding == Some(TypedEncoding::ColumnsV2);
+        if typed_columns {
+            let required_columns = required_columns.ok_or(OcsfError::InvalidProjection(
+                "typed relations require logical columns",
+            ))?;
+            for column in required_columns {
+                if !LOGICAL_EVENT_COLUMNS.contains(column) {
+                    return Err(OcsfError::ProjectionColumn {
+                        relation: self.relation.name.clone(),
+                        column: (*column).to_owned(),
+                    });
+                }
+            }
+        }
+
         let mut builder = ParquetRecordBatchReaderBuilder::new_with_metadata(
             File::open(&self.object.path)?,
             self.object.metadata.clone(),
@@ -183,7 +248,17 @@ impl AdmittedParquetObject {
             }
             let schema = self.object.metadata.schema();
             let mut roots = BTreeSet::new();
-            for column in required_columns {
+            let physical_columns: Vec<&str> =
+                if typed_columns && required_columns.contains(&"typed_event_json") {
+                    schema
+                        .fields()
+                        .iter()
+                        .map(|field| field.name().as_str())
+                        .collect()
+                } else {
+                    required_columns.to_vec()
+                };
+            for column in physical_columns {
                 let ordinal = schema
                     .index_of(column)
                     .map_err(|_| OcsfError::ProjectionColumn {
@@ -198,7 +273,18 @@ impl AdmittedParquetObject {
             ));
         }
         let reader = builder.build()?;
-        Ok(Box::new(reader.map(|batch| batch.map_err(OcsfError::from))))
+        if typed_columns {
+            let requested = required_columns
+                .expect("typed-column projections were checked")
+                .iter()
+                .map(|column| (*column).to_owned())
+                .collect::<Vec<_>>();
+            Ok(Box::new(reader.map(move |batch| {
+                logical_typed_batch(&batch?, &requested)
+            })))
+        } else {
+            Ok(Box::new(reader.map(|batch| batch.map_err(OcsfError::from))))
+        }
     }
 }
 
@@ -217,7 +303,7 @@ pub trait SnapshotReader {
     fn scan(&self, relation: &OcsfRelation) -> Result<RecordBatchStream, OcsfError>;
 }
 
-/// Adapter for the current schema-version-1 `livefire-ocsf` local snapshot.
+/// Adapter for released `livefire-ocsf` local snapshots through manifest version 3.
 #[derive(Debug)]
 pub struct LocalSnapshotReader {
     identity: OcsfSnapshot,
@@ -256,12 +342,17 @@ impl LocalSnapshotReader {
             closure,
             completeness_receipt,
             output_logical_sha256,
+            snapshot_capabilities,
             ..
         } = receipt;
-        if receipt_schema_version != 1 {
+        if !matches!(receipt_schema_version, 1 | 2) {
             return Err(OcsfError::UnsupportedSchema(receipt_schema_version));
         }
-        if manifest.schema_version != 1 {
+        let manifest_schema_version = manifest.schema_version;
+        if !matches!(
+            (receipt_schema_version, manifest_schema_version),
+            (1, 1) | (2, 2 | 3)
+        ) {
             return Err(OcsfError::UnsupportedSchema(manifest.schema_version));
         }
 
@@ -272,6 +363,14 @@ impl LocalSnapshotReader {
         let extension_pack_sha256 = Sha256::new(manifest.extension_pack_sha256)?;
         let relation_contract_sha256 = Sha256::new(manifest.relation_contract_sha256)?;
         let output_logical_sha256 = Sha256::new(output_logical_sha256)?;
+        let snapshot_capabilities_sha256 = validate_snapshot_capabilities(
+            &root,
+            manifest_schema_version,
+            &snapshot_sha256,
+            runnable_snapshot.source_rows,
+            runnable_snapshot.normalized_events,
+            snapshot_capabilities,
+        )?;
         validate_component(&runnable_snapshot.component)?;
         validate_component(&runnable_snapshot.mapping_pack)?;
         validate_component(&runnable_snapshot.relation_contract)?;
@@ -326,17 +425,26 @@ impl LocalSnapshotReader {
             if !seen_paths.insert(relative_path.clone()) {
                 return Err(OcsfError::InvalidReceipt("relation paths must be unique"));
             }
-            let kind = classify_relation(&object.relation, &relative_path)?;
+            let kind =
+                classify_relation(manifest_schema_version, &object.relation, &relative_path)?;
             let object_path = resolve_beneath(&root, &relative_path)?;
             let file = File::open(&object_path)?;
             let metadata = ArrowReaderMetadata::load(&file, Default::default())?;
             validate_row_count(&object.relation, object.rows, metadata.metadata())?;
-            if kind == RelationKind::TypedSemantic {
-                validate_typed_schema(&object.relation, metadata.schema().as_ref())?;
+            let typed_encoding = if kind == RelationKind::TypedSemantic {
+                let encoding = if manifest_schema_version == 1 {
+                    TypedEncoding::JsonV1
+                } else {
+                    TypedEncoding::ColumnsV2
+                };
+                validate_typed_schema(&object.relation, metadata.schema().as_ref(), encoding)?;
                 typed_rows = typed_rows
                     .checked_add(object.rows)
                     .ok_or(OcsfError::InvalidReceipt("typed row count overflow"))?;
-            }
+                Some(encoding)
+            } else {
+                None
+            };
             let row_groups =
                 validate_row_groups(&object.relation, object.rows, metadata.metadata())?;
             if object.relation == "events" {
@@ -348,6 +456,7 @@ impl LocalSnapshotReader {
                     path: object_path,
                     metadata,
                     row_groups,
+                    typed_encoding,
                 },
             );
             relations.push(OcsfRelation {
@@ -363,6 +472,19 @@ impl LocalSnapshotReader {
         for required in REQUIRED_CORE_RELATIONS {
             if !seen_names.contains(required) {
                 return Err(OcsfError::MissingRelation(required));
+            }
+        }
+        if manifest_schema_version == 3 && !seen_names.contains("subject_aliases") {
+            return Err(OcsfError::MissingRelation("subject_aliases"));
+        }
+        if manifest_schema_version == 3 && !seen_names.contains("field_provenance") {
+            return Err(OcsfError::MissingRelation("field_provenance"));
+        }
+        if manifest_schema_version == 3 {
+            for required in SCHEMA_V3_TYPED_RELATIONS {
+                if !seen_names.contains(required) {
+                    return Err(OcsfError::MissingRelation(required));
+                }
             }
         }
         let normalized_events = normalized_events.expect("required events relation was checked");
@@ -386,7 +508,10 @@ impl LocalSnapshotReader {
                 mapping_sha256,
                 ocsf_schema_sha256,
                 extension_pack_sha256,
+                relation_contract_id: runnable_snapshot.relation_contract.id,
+                relation_contract_version: runnable_snapshot.relation_contract.version,
                 relation_contract_sha256,
+                snapshot_capabilities_sha256,
                 normalized_events,
                 relations,
             },
@@ -461,6 +586,51 @@ fn verify_object_digest(path: &Path, expected: &Sha256) -> Result<(), OcsfError>
     Ok(())
 }
 
+fn validate_snapshot_capabilities(
+    root: &Path,
+    manifest_schema_version: u8,
+    snapshot_sha256: &Sha256,
+    source_rows: u64,
+    normalized_events: u64,
+    reference: Option<SnapshotCapabilitiesObjectView>,
+) -> Result<Option<Sha256>, OcsfError> {
+    match (manifest_schema_version, reference) {
+        (1 | 2, None) => Ok(None),
+        (1 | 2, Some(_)) => Err(OcsfError::InvalidReceipt(
+            "legacy snapshot unexpectedly declares capabilities",
+        )),
+        (3, Some(reference)) => {
+            if reference.path != "capabilities/snapshot-capabilities.v1.json" {
+                return Err(OcsfError::InvalidReceipt(
+                    "snapshot capability path is not canonical",
+                ));
+            }
+            let digest = Sha256::new(reference.sha256)?;
+            let relative = safe_relative_path(&reference.path)?;
+            let path = resolve_beneath(root, &relative)?;
+            verify_object_digest(&path, &digest)?;
+            let capability: SnapshotCapabilitiesView =
+                serde_json::from_slice(&std::fs::read(path)?)?;
+            if capability.schema_version != 1
+                || Sha256::new(capability.snapshot_logical_sha256)? != *snapshot_sha256
+                || capability.mapping_completeness.state != "complete"
+                || capability.mapping_completeness.source_rows != source_rows
+                || capability.mapping_completeness.normalized_events != normalized_events
+                || !capability.mapping_completeness.has_zero_gaps()
+            {
+                return Err(OcsfError::InvalidReceipt(
+                    "snapshot capability identity closure",
+                ));
+            }
+            Ok(Some(digest))
+        }
+        (3, None) => Err(OcsfError::InvalidReceipt(
+            "manifest version 3 requires snapshot capabilities",
+        )),
+        (version, _) => Err(OcsfError::UnsupportedSchema(version)),
+    }
+}
+
 fn safe_relative_path(value: &str) -> Result<PathBuf, OcsfError> {
     if value.is_empty() {
         return Err(OcsfError::UnsafePath(value.to_owned()));
@@ -492,12 +662,27 @@ fn resolve_beneath(root: &Path, relative: &Path) -> Result<PathBuf, OcsfError> {
     Ok(canonical)
 }
 
-fn classify_relation(name: &str, path: &Path) -> Result<RelationKind, OcsfError> {
-    let expected = if name == "field_provenance" {
-        PathBuf::from("authority").join(format!("{name}.parquet"))
-    } else {
-        PathBuf::from("semantic").join(format!("{name}.parquet"))
+fn classify_relation(
+    schema_version: u8,
+    name: &str,
+    path: &Path,
+) -> Result<RelationKind, OcsfError> {
+    let directory = match (schema_version, name) {
+        (1, "field_provenance") => "authority",
+        (1, _) => "semantic",
+        (2 | 3, "field_provenance") => "provenance",
+        (2, name) if name.starts_with("ocsf_") => "normalized",
+        (3, name) if SCHEMA_V3_TYPED_RELATIONS.contains(&name) => "normalized",
+        (2, _) => "graph",
+        (3, name) if SCHEMA_V3_GRAPH_RELATIONS.contains(&name) => "graph",
+        (3, _) => {
+            return Err(OcsfError::InvalidReceipt(
+                "manifest version 3 declares an unknown relation",
+            ));
+        }
+        _ => return Err(OcsfError::UnsupportedSchema(schema_version)),
     };
+    let expected = PathBuf::from(directory).join(format!("{name}.parquet"));
     if path != expected {
         return Err(OcsfError::UnexpectedRelationPath {
             relation: name.to_owned(),
@@ -580,19 +765,315 @@ fn validate_row_groups(
     Ok(groups)
 }
 
-fn validate_typed_schema(relation: &str, schema: &arrow_schema::Schema) -> Result<(), OcsfError> {
-    for name in REQUIRED_EVENT_COLUMNS {
+fn validate_typed_schema(
+    relation: &str,
+    schema: &arrow_schema::Schema,
+    encoding: TypedEncoding,
+) -> Result<(), OcsfError> {
+    let required = match encoding {
+        TypedEncoding::JsonV1 => &REQUIRED_EVENT_COLUMNS_V1,
+        TypedEncoding::ColumnsV2 => &REQUIRED_EVENT_COLUMNS_V2,
+    };
+    for name in required {
         let field = schema
             .field_with_name(name)
             .map_err(|_| OcsfError::RequiredColumn {
                 relation: relation.to_owned(),
                 column: name,
             })?;
-        if field.data_type() != &DataType::Utf8 || field.is_nullable() {
+        let nullable = encoding == TypedEncoding::ColumnsV2 && *name == "empty_object_paths";
+        if field.data_type() != &DataType::Utf8 || field.is_nullable() != nullable {
             return Err(OcsfError::RequiredColumn {
                 relation: relation.to_owned(),
                 column: name,
             });
+        }
+    }
+    if encoding == TypedEncoding::ColumnsV2
+        && (schema.field_with_name("typed_event_json").is_ok()
+            || !schema
+                .fields()
+                .iter()
+                .any(|field| field.name().starts_with("event.")))
+    {
+        return Err(OcsfError::InvalidParquet {
+            relation: relation.to_owned(),
+            reason: "schema-version-2 typed relation layout",
+        });
+    }
+    Ok(())
+}
+
+/// Turn one schema-version-2 flattened typed batch back into the three-column
+/// logical row shape used by the existing RAG projection code. This keeps the
+/// snapshot format change inside the adapter instead of teaching every caller
+/// about physical Arrow columns.
+fn logical_typed_batch(
+    batch: &RecordBatch,
+    requested: &[String],
+) -> Result<RecordBatch, OcsfError> {
+    let mut event_json = None;
+    if requested.iter().any(|name| name == "typed_event_json") {
+        let empty_objects = batch
+            .column_by_name("empty_object_paths")
+            .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+            .ok_or(OcsfError::InvalidParquet {
+                relation: "typed relation".to_owned(),
+                reason: "missing empty-object paths",
+            })?;
+        let mut rows = Vec::with_capacity(batch.num_rows());
+        for row in 0..batch.num_rows() {
+            let mut root = serde_json::Map::new();
+            for (field, array) in batch.schema().fields().iter().zip(batch.columns()) {
+                let Some(path) = field.name().strip_prefix("event.") else {
+                    continue;
+                };
+                if let Some(value) =
+                    typed_column_value(field.name(), field.data_type(), array, row)?
+                {
+                    insert_json_path(&mut root, path, value)?;
+                }
+            }
+            if !empty_objects.is_null(row) {
+                let paths: Vec<String> = serde_json::from_str(empty_objects.value(row))?;
+                for path in paths {
+                    insert_json_path(
+                        &mut root,
+                        &path,
+                        serde_json::Value::Object(Default::default()),
+                    )?;
+                }
+            }
+            rows.push(serde_json::to_string(&serde_json::Value::Object(root))?);
+        }
+        event_json = Some(Arc::new(StringArray::from(rows)) as ArrayRef);
+    }
+
+    let mut fields = Vec::with_capacity(requested.len());
+    let mut arrays = Vec::with_capacity(requested.len());
+    for name in LOGICAL_EVENT_COLUMNS {
+        if !requested.iter().any(|requested| requested == name) {
+            continue;
+        }
+        fields.push(arrow_schema::Field::new(name, DataType::Utf8, false));
+        let array = if name == "typed_event_json" {
+            event_json
+                .as_ref()
+                .expect("typed JSON was requested")
+                .clone()
+        } else {
+            batch
+                .column_by_name(name)
+                .ok_or_else(|| OcsfError::ProjectionColumn {
+                    relation: "typed relation".to_owned(),
+                    column: name.to_owned(),
+                })?
+                .clone()
+        };
+        arrays.push(array);
+    }
+    Ok(RecordBatch::try_new(
+        std::sync::Arc::new(Schema::new(fields)),
+        arrays,
+    )?)
+}
+
+fn typed_column_value(
+    path: &str,
+    data_type: &DataType,
+    array: &ArrayRef,
+    row: usize,
+) -> Result<Option<serde_json::Value>, OcsfError> {
+    if array.is_null(row) {
+        return Ok(None);
+    }
+    let invalid = || OcsfError::InvalidParquet {
+        relation: "typed relation".to_owned(),
+        reason: "unsupported schema-version-2 typed column",
+    };
+    let value = match data_type {
+        DataType::Utf8 => {
+            let array = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(invalid)?;
+            let text = array.value(row);
+            if residual_json_column(path) {
+                serde_json::from_str(text).map_err(|source| OcsfError::TypedJson {
+                    path: path.to_owned(),
+                    row,
+                    bytes: text.len(),
+                    source,
+                })?
+            } else {
+                serde_json::Value::String(text.to_owned())
+            }
+        }
+        DataType::Int64 => serde_json::Value::from(
+            array
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(invalid)?
+                .value(row),
+        ),
+        DataType::Float64 => serde_json::Value::Number(
+            serde_json::Number::from_f64(
+                array
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .ok_or_else(invalid)?
+                    .value(row),
+            )
+            .ok_or_else(invalid)?,
+        ),
+        DataType::Boolean => serde_json::Value::Bool(
+            array
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or_else(invalid)?
+                .value(row),
+        ),
+        DataType::List(item) => {
+            let list = array
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(invalid)?;
+            let values = list.value(row);
+            let mut items = Vec::with_capacity(values.len());
+            for index in 0..values.len() {
+                if values.is_null(index) {
+                    return Err(invalid());
+                }
+                items.push(
+                    typed_column_value(path, item.data_type(), &values, index)?
+                        .ok_or_else(invalid)?,
+                );
+            }
+            serde_json::Value::Array(items)
+        }
+        _ => return Err(invalid()),
+    };
+    Ok(Some(value))
+}
+
+/// Schema v2 stores genuinely open objects and object arrays as canonical JSON
+/// strings. These are the residual fields used by the normalization envelope;
+/// `unmapped` is especially important because it retains source command data.
+fn residual_json_column(path: &str) -> bool {
+    if matches!(
+        path,
+        "event.authorization_grants"
+            | "event.header"
+            | "event.semantics"
+            | "event.state_transitions"
+            | "event.workload_endpoints"
+    ) {
+        return true;
+    }
+    if !path.starts_with("event.ocsf.")
+        && !path.starts_with("event.databucket.")
+        && !path.starts_with("event.resource_details.")
+        && !path.starts_with("event.process.")
+        && !path.starts_with("event.src_endpoint.")
+        && !path.starts_with("event.dst_endpoint.")
+    {
+        return false;
+    }
+    matches!(
+        path.rsplit('.').next(),
+        Some(
+            "agent_list"
+                | "ancestry"
+                | "anomaly_analyses"
+                | "answers"
+                | "attacks"
+                | "auth_factors"
+                | "authorizations"
+                | "cis_controls"
+                | "containers"
+                | "data"
+                | "data_classifications"
+                | "discovery_details"
+                | "edges"
+                | "endpoint_connections"
+                | "enrichments"
+                | "environment_variables"
+                | "evidences"
+                | "extension_list"
+                | "extensions"
+                | "files"
+                | "fingerprints"
+                | "gpu_info_list"
+                | "groups"
+                | "hashes"
+                | "http_cookies"
+                | "http_headers"
+                | "ja4_fingerprint_list"
+                | "kb_article_list"
+                | "kill_chain"
+                | "loggers"
+                | "malware"
+                | "manager"
+                | "metrics"
+                | "network_interfaces"
+                | "nodes"
+                | "observables"
+                | "osint"
+                | "packet_list"
+                | "parameters"
+                | "parent_process"
+                | "policies"
+                | "programmatic_credentials"
+                | "proxy_endpoint"
+                | "related_analytics"
+                | "related_events"
+                | "resources"
+                | "sans"
+                | "scim_group_schema"
+                | "scim_user_schema"
+                | "signatures"
+                | "software_components"
+                | "tags"
+                | "tickets"
+                | "tls_extension_list"
+                | "traits"
+                | "transformation_info_list"
+                | "unmapped"
+                | "urls"
+                | "vulnerabilities"
+                | "xattributes"
+        )
+    )
+}
+
+fn insert_json_path(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    path: &str,
+    value: serde_json::Value,
+) -> Result<(), OcsfError> {
+    let mut current = root;
+    let mut parts = path.split('.').peekable();
+    while let Some(part) = parts.next() {
+        if parts.peek().is_none() {
+            if current.insert(part.to_owned(), value.clone()).is_some() {
+                return Err(OcsfError::InvalidParquet {
+                    relation: "typed relation".to_owned(),
+                    reason: "duplicate decoded typed path",
+                });
+            }
+        } else {
+            current = match current
+                .entry(part.to_owned())
+                .or_insert_with(|| serde_json::Value::Object(Default::default()))
+            {
+                serde_json::Value::Object(map) => map,
+                _ => {
+                    return Err(OcsfError::InvalidParquet {
+                        relation: "typed relation".to_owned(),
+                        reason: "conflicting decoded typed path",
+                    });
+                }
+            };
         }
     }
     Ok(())
@@ -606,6 +1087,55 @@ struct BuildReceiptView {
     closure: ClosureView,
     completeness_receipt: CompletenessReceiptView,
     output_logical_sha256: String,
+    #[serde(default)]
+    snapshot_capabilities: Option<SnapshotCapabilitiesObjectView>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotCapabilitiesObjectView {
+    path: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotCapabilitiesView {
+    schema_version: u8,
+    snapshot_logical_sha256: String,
+    mapping_completeness: MappingCompletenessView,
+}
+
+#[derive(Debug, Deserialize)]
+struct MappingCompletenessView {
+    state: String,
+    source_rows: u64,
+    normalized_events: u64,
+    unassigned_source_signatures: u64,
+    unsupported_source_signatures: u64,
+    intentionally_ignored_source_signatures: u64,
+    valid_rows_without_normalized_output: u64,
+    raw_fallback_rows: u64,
+    normalized_events_without_source_provenance: u64,
+    native_fields_without_disposition: u64,
+    fields_without_typed_projection_or_metadata_justification: u64,
+    mapped_fields_without_round_trip_provenance: u64,
+    observed_semantic_variants_without_test: u64,
+    field_disposition_audit_failures: u64,
+}
+
+impl MappingCompletenessView {
+    fn has_zero_gaps(&self) -> bool {
+        self.unassigned_source_signatures == 0
+            && self.unsupported_source_signatures == 0
+            && self.intentionally_ignored_source_signatures == 0
+            && self.valid_rows_without_normalized_output == 0
+            && self.raw_fallback_rows == 0
+            && self.normalized_events_without_source_provenance == 0
+            && self.native_fields_without_disposition == 0
+            && self.fields_without_typed_projection_or_metadata_justification == 0
+            && self.mapped_fields_without_round_trip_provenance == 0
+            && self.observed_semantic_variants_without_test == 0
+            && self.field_disposition_audit_failures == 0
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -690,6 +1220,15 @@ pub enum OcsfError {
     Io(#[from] std::io::Error),
     #[error("invalid build receipt JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error(
+        "invalid residual JSON in typed column {path:?} at batch row {row} ({bytes} bytes): {source}"
+    )]
+    TypedJson {
+        path: String,
+        row: usize,
+        bytes: usize,
+        source: serde_json::Error,
+    },
     #[error("invalid snapshot digest: {0}")]
     Digest(#[from] rag_contracts::ContractError),
     #[error("unsupported snapshot schema version {0}")]

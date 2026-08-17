@@ -1,5 +1,10 @@
 # Rust experimental RAG specification
 
+Historical vertical-slice specification. Its migration decisions remain useful
+context, but M41 fixtures and Python parity work are not the active source path.
+Current work uses normalized M45 data and the Rust/RunPod workflow in
+[`runpod-embedding.md`](runpod-embedding.md).
+
 For the next full-size index, the performance plan has moved to
 [`portable-embedding-pipeline.md`](portable-embedding-pipeline.md). That design
 keeps this document's query and tool boundary while splitting preparation,

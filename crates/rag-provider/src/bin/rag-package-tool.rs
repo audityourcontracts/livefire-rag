@@ -5,17 +5,19 @@ use std::{
 
 use clap::Parser;
 use rag_provider::{
-    FORMAT_ID, PROTOCOL, PROVIDER_ID, VERSION, hydration_ref_schema_ref, index_format_descriptor,
-    index_format_descriptor_v3, input_schema_ref, output_schema_ref, physical_profile,
-    physical_profile_ref, physical_profile_ref_v3, physical_profile_v3, retrieval_policy,
-    retrieval_policy_ref, tool_descriptor, validator_profile, validator_ref,
+    FORMAT_ID, PROTOCOL, PROVIDER_ID, PROVIDER_VERSION, hydration_ref_schema_ref,
+    index_format_descriptor, index_format_descriptor_v3, physical_profile, physical_profile_ref,
+    physical_profile_ref_v3, physical_profile_v3, retrieval_policy, retrieval_policy_ref,
+    search_input_schema_ref, search_output_schema_ref, search_tool_descriptor,
+    similar_input_schema_ref, similar_output_schema_ref, similar_tool_descriptor,
+    similarity_policy, similarity_policy_ref, validator_profile, validator_ref,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 #[derive(Parser)]
 #[command(
-    about = "Package the Rust evidence.search provider as a content-closed Livefire SDK bundle"
+    about = "Package the Rust evidence.search and evidence.similar provider as a content-closed Livefire SDK bundle"
 )]
 struct Arguments {
     #[arg(long)]
@@ -53,14 +55,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     inventory.push(item(
         component(
             "com.ayc.livefire-rag.fast-evidence-provider.executable",
-            VERSION,
+            PROVIDER_VERSION,
             executable["sha256"].as_str().unwrap(),
         ),
         "tool_provider",
         executable.clone(),
         target,
     ));
-    let tool = tool_descriptor();
+    let tool = search_tool_descriptor();
     let descriptor_artifact = write_json_artifact(
         &arguments.out,
         "descriptors/fast-evidence-search.json",
@@ -71,6 +73,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tool["tool"].clone(),
         "tool_descriptor",
         descriptor_artifact.clone(),
+        target,
+    ));
+    let similar_tool = similar_tool_descriptor();
+    let similar_descriptor_artifact = write_json_artifact(
+        &arguments.out,
+        "descriptors/fast-evidence-similar.json",
+        &similar_tool,
+        "application/json",
+    )?;
+    inventory.push(item(
+        similar_tool["tool"].clone(),
+        "tool_descriptor",
+        similar_descriptor_artifact.clone(),
         target,
     ));
     let format = index_format_descriptor();
@@ -104,6 +119,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for name in [
         "fast-evidence-search.input.v1.schema.json",
         "fast-evidence-search.output.v1.schema.json",
+        "fast-evidence-similar.input.v1.schema.json",
+        "fast-evidence-similar.output.v1.schema.json",
         "ocsf-hydration-ref.v1.schema.json",
         "fast-index-manifest.v2.schema.json",
         "fast-index-manifest.v3.schema.json",
@@ -146,6 +163,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "com.ayc.livefire-rag.fast-retrieval-policy",
             retrieval_policy(),
             retrieval_policy_ref(),
+        ),
+        (
+            "similarity-policy.json",
+            "com.ayc.livefire-rag.fast-similarity-policy",
+            similarity_policy(),
+            similarity_policy_ref(),
         ),
     ] {
         let artifact = write_json_artifact(
@@ -201,7 +224,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     provider_objects.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
     let provider_lock =
         json!({"schema_version":"livefire.object-lock/1","objects":provider_objects});
-    let provider_ref = component(PROVIDER_ID, VERSION, &canonical_sha256(&provider_lock));
+    let provider_ref = component(
+        PROVIDER_ID,
+        PROVIDER_VERSION,
+        &canonical_sha256(&provider_lock),
+    );
     let provider_lock_artifact = write_json_artifact(
         &arguments.out,
         "provider.objects.lock.json",
@@ -221,15 +248,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let mut manifest = json!({
         "schema_version":"livefire.plugin/1",
-        "plugin":{"id":"com.ayc.livefire-rag.fast-evidence","version":VERSION,"sha256":""},
+        "plugin":{"id":"com.ayc.livefire-rag.fast-evidence","version":PROVIDER_VERSION,"sha256":""},
         "sdk_compatibility":{"tool_protocol":PROTOCOL,"schema_set_sha256":schema_lock["schema_set_sha256"]},
         "artifacts":inventory,
         "entrypoints":{"provider":{"component":provider_ref,"executable":executable}},
         "tools":[{
             "descriptor":tool["tool"],"descriptor_artifact":descriptor_artifact,
             "name":tool["name"],"description":tool["description"],
-            "input_schema":input_schema_ref(),"output_schema":output_schema_ref(),
+            "input_schema":search_input_schema_ref(),"output_schema":search_output_schema_ref(),
             "effects":["index.read","embedding.loopback","ocsf.hydration_handoff"],
+            "required_indexes":[FORMAT_ID]
+        },{
+            "descriptor":similar_tool["tool"],"descriptor_artifact":similar_descriptor_artifact,
+            "name":similar_tool["name"],"description":similar_tool["description"],
+            "input_schema":similar_input_schema_ref(),"output_schema":similar_output_schema_ref(),
+            "effects":["index.read","ocsf.hydration_handoff"],
             "required_indexes":[FORMAT_ID]
         }],
         "permissions":{"tool_provider":{"network":["loopback:lmstudio"],"secret_handles":[],"source_mount":"none","index_mount":"read_only","staging_mount":"none","scratch_bytes":268435456}}
@@ -240,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"bundle":arguments.out,"plugin":manifest["plugin"],"provider":provider_ref,"tool":tool["tool"],"index_formats":[format["format"],format_v3["format"]],"hydration_ref":hydration_ref_schema_ref(),"admission":"bundle_only_not_index_admission"})
+            &json!({"bundle":arguments.out,"plugin":manifest["plugin"],"provider":provider_ref,"tools":[tool["tool"],similar_tool["tool"]],"index_formats":[format["format"],format_v3["format"]],"hydration_ref":hydration_ref_schema_ref(),"admission":"bundle_only_not_index_admission"})
         )?
     );
     Ok(())

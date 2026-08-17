@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/runpod-tei-conformance-result.v1.schema.json",
+  "title": "Sealed RunPod TEI conformance measurement result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "component_sha256", "candidate_sha256", "run_id", "machine",
+    "execution", "outcome", "returned_model", "normalized_output", "model_load_ms",
+    "request_ms", "failure_code"
+  ],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.runpod-tei-conformance-result/1"},
+    "component_sha256": {"$ref": "#/$defs/digest"},
+    "candidate_sha256": {"$ref": "#/$defs/digest"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "machine": {"$ref": "#/$defs/machine"},
+    "execution": {"$ref": "#/$defs/execution"},
+    "outcome": {"enum": ["completed", "failed"]},
+    "returned_model": {"type": ["string", "null"], "minLength": 1, "maxLength": 1024},
+    "normalized_output": {"anyOf": [{"$ref": "#/$defs/normalizedOutput"}, {"type": "null"}]},
+    "model_load_ms": {"$ref": "#/$defs/safeInteger"},
+    "request_ms": {"$ref": "#/$defs/safeInteger"},
+    "failure_code": {"type": ["string", "null"], "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"outcome": {"const": "completed"}}, "required": ["outcome"]},
+      "then": {
+        "properties": {
+          "returned_model": {"type": "string", "minLength": 1},
+          "normalized_output": {"$ref": "#/$defs/normalizedOutput"},
+          "failure_code": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"outcome": {"const": "failed"}}, "required": ["outcome"]},
+      "then": {
+        "properties": {
+          "returned_model": {"type": "null"},
+          "normalized_output": {"type": "null"},
+          "failure_code": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plainText": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!.*://)[^\\u0000-\\u001f\\u007f]+$"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"},
+    "safeInteger": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "positiveSafeInteger": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*//)(?!.*[\\\\:])[^/]+(?:/[^/]+)*$"},
+    "component": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {"id": {"$ref": "#/$defs/plainText"}, "version": {"$ref": "#/$defs/plainText"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "media_type", "bytes", "sha256"],
+      "properties": {"path": {"$ref": "#/$defs/path"}, "media_type": {"$ref": "#/$defs/plainText"}, "bytes": {"$ref": "#/$defs/positiveSafeInteger"}, "sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "accelerator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "gpu_model_id", "compute_capability", "architecture_image_class", "gpu_count"],
+      "properties": {
+        "provider": {"const": "runpod"}, "gpu_model_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "compute_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "architecture_image_class": {"$ref": "#/$defs/identifier"}, "gpu_count": {"const": 1}
+      }
+    },
+    "machine": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pod_id", "machine_id", "gpu_device_id", "accelerator"],
+      "properties": {
+        "pod_id": {"$ref": "#/$defs/identifier"}, "machine_id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._-]+$"},
+        "gpu_device_id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._-]+$"},
+        "accelerator": {"$ref": "#/$defs/accelerator"}
+      }
+    },
+    "execution": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "model_artifact_set", "tokenizer", "tei_image", "executor_image", "executor_image_build", "runtime", "inference_engine",
+        "load_policy", "worker_binary", "served_model", "dimensions", "pooling",
+        "forced_runtime_dtype", "api_vector_dtype", "normalization", "maximum_tokens",
+        "maximum_client_batch_size", "maximum_batch_tokens", "maximum_concurrent_requests",
+        "request_timeout_ms", "maximum_response_bytes"
+      ],
+      "properties": {
+        "model_artifact_set": {"$ref": "#/$defs/component"}, "tokenizer": {"$ref": "#/$defs/component"},
+        "tei_image": {"$ref": "#/$defs/component"}, "runtime": {"$ref": "#/$defs/component"},
+        "executor_image": {"$ref": "#/$defs/component"},
+        "executor_image_build": {"$ref": "#/$defs/component"},
+        "inference_engine": {"$ref": "#/$defs/component"}, "load_policy": {"$ref": "#/$defs/component"},
+        "worker_binary": {"$ref": "#/$defs/component"}, "served_model": {"$ref": "#/$defs/plainText"},
+        "dimensions": {"type": "integer", "minimum": 1, "maximum": 4294967295}, "pooling": {"const": "last_token"},
+        "forced_runtime_dtype": {"enum": ["float16", "float32"]}, "api_vector_dtype": {"const": "float32"},
+        "normalization": {"const": "l2"}, "maximum_tokens": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "maximum_client_batch_size": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maximum_batch_tokens": {"type": "integer", "minimum": 40960, "maximum": 262144},
+        "maximum_concurrent_requests": {"type": "integer", "minimum": 1, "maximum": 256},
+        "request_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
+        "maximum_response_bytes": {"type": "integer", "minimum": 1024, "maximum": 268435456}
+      }
+    },
+    "normalizedOutput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["object", "format", "vector_count", "dimensions", "dtype", "normalized_output_sha256"],
+      "properties": {
+        "object": {"$ref": "#/$defs/artifact"}, "format": {"const": "rfc8785_f32_vectors_lf_v1"},
+        "vector_count": {"type": "integer", "minimum": 1, "maximum": 32},
+        "dimensions": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "dtype": {"const": "float32"}, "normalized_output_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  },
+  "$comment": "Runtime validation binds this result to the candidate self digest, exact execution identity and accelerator class. A completed result requires the served model and exact canonical normalized-f32 output object; a failed result requires only a bounded failure code. Result self-digest validation omits component_sha256. No endpoint URL, storage URL, environment variable, credential, or token is admitted."
+}

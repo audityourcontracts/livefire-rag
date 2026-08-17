@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/runpod-storage-challenge-response.v1.schema.json",
+  "title": "RunPod mounted-storage challenge response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "executor_image", "challenge", "uid", "gid", "publication"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.runpod-storage-challenge-response/1"},
+    "executor_image": {"type": "string", "pattern": "^[^\\s]+@sha256:[0-9a-f]{64}$"},
+    "challenge": {"$ref": "#/$defs/object"},
+    "uid": {"const": 1000},
+    "gid": {"const": 1000},
+    "publication": {"const": "hard_link_no_overwrite"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))(?!.*//)(?!.*[\\\\:])[^/]+(?:/[^/]+)*$"},
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "bytes", "sha256"],
+      "properties": {
+        "key": {"$ref": "#/$defs/path"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

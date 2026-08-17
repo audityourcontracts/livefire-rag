@@ -772,7 +772,7 @@ def _connect() -> Any:
         import duckdb
     except ImportError as error:  # pragma: no cover - optional runtime dependency
         raise EvidenceDerivationError(
-            "DuckDB is required for evidence derivation; install livefire-rag[prototype]"
+            "DuckDB is required for this historical test oracle; install livefire-rag[test]"
         ) from error
     return duckdb.connect()
 

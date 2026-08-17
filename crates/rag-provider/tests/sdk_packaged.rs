@@ -71,6 +71,7 @@ fn native_bundle_closes_license_and_profiles_without_fake_sbom_entries() {
             "profiles/physical-profile.json",
             "profiles/physical-profile.v3.json",
             "profiles/retrieval-policy.json",
+            "profiles/similarity-policy.json",
             "profiles/validator-profile.json",
         ]
     );
@@ -109,6 +110,20 @@ fn packaged_contract_exposes_only_hydration_references() {
             .pointer("/$defs/evidence_ref/$ref")
             .and_then(Value::as_str)
             .is_some_and(|value| value.ends_with("ocsf-hydration-ref.v1.schema.json"))
+    );
+    let similar: Value = serde_json::from_slice(
+        &fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../specs/fast-evidence-similar.output.v1.schema.json"),
+        )
+        .expect("similar output schema"),
+    )
+    .expect("similar output schema JSON");
+    assert_eq!(
+        similar.pointer("/$defs/candidate/properties/evidence/items/$ref"),
+        Some(&Value::String(
+            "https://livefire.dev/rag/ocsf-hydration-ref.v1.schema.json".into()
+        ))
     );
     let hydration: Value = serde_json::from_slice(
         &fs::read(

@@ -1,0 +1,6 @@
+{
+  "schema_version": "livefire.rag.tei-conformance-fixture/1",
+  "inputs": [
+    "Instruct: Retrieve relevant normalized OCSF security evidence. Match behavior, actor, action, target, context, outcome, state, and detection semantics without treating similarity as proof.\nQuery: find encoded powershell execution"
+  ]
+}

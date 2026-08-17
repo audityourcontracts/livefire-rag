@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/tei-model-artifact-set.v1.schema.json",
+  "title": "Pinned upstream Qwen3 Embedding 8B model artifact set",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository", "revision", "objects"],
+  "properties": {
+    "schema_version": {"const": "livefire.rag.tei-model-artifact-set/1"},
+    "repository": {"const": "Qwen/Qwen3-Embedding-8B"},
+    "revision": {"const": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af"},
+    "objects": {
+      "type": "array",
+      "minItems": 17,
+      "maxItems": 17,
+      "prefixItems": [
+        {"$ref": "#/$defs/object_gitattributes"},
+        {"$ref": "#/$defs/object_pooling_config"},
+        {"$ref": "#/$defs/object_license"},
+        {"$ref": "#/$defs/object_readme"},
+        {"$ref": "#/$defs/object_config"},
+        {"$ref": "#/$defs/object_sentence_config"},
+        {"$ref": "#/$defs/object_generation_config"},
+        {"$ref": "#/$defs/object_merges"},
+        {"$ref": "#/$defs/object_shard_1"},
+        {"$ref": "#/$defs/object_shard_2"},
+        {"$ref": "#/$defs/object_shard_3"},
+        {"$ref": "#/$defs/object_shard_4"},
+        {"$ref": "#/$defs/object_safetensors_index"},
+        {"$ref": "#/$defs/object_modules"},
+        {"$ref": "#/$defs/object_tokenizer"},
+        {"$ref": "#/$defs/object_tokenizer_config"},
+        {"$ref": "#/$defs/object_vocab"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?:(?!\\.\\.?(?:/|$))[^/\\\\:\\u0000]+/)*(?!\\.\\.?$)[^/\\\\:\\u0000]+$"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "media_type", "bytes", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "media_type": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "object_gitattributes": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": ".gitattributes"}}}]},
+    "object_pooling_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "1_Pooling/config.json"}}}]},
+    "object_license": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "LICENSE"}}}]},
+    "object_readme": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "README.md"}}}]},
+    "object_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "config.json"}}}]},
+    "object_sentence_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "config_sentence_transformers.json"}}}]},
+    "object_generation_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "generation_config.json"}}}]},
+    "object_merges": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "merges.txt"}}}]},
+    "object_shard_1": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model-00001-of-00004.safetensors"}}}]},
+    "object_shard_2": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model-00002-of-00004.safetensors"}}}]},
+    "object_shard_3": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model-00003-of-00004.safetensors"}}}]},
+    "object_shard_4": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model-00004-of-00004.safetensors"}}}]},
+    "object_safetensors_index": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "model.safetensors.index.json"}}}]},
+    "object_modules": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "modules.json"}}}]},
+    "object_tokenizer": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "tokenizer.json"}}}]},
+    "object_tokenizer_config": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "tokenizer_config.json"}}}]},
+    "object_vocab": {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"path": {"const": "vocab.json"}}}]}
+  },
+  "$comment": "The RFC 8785 SHA-256 of the tracked manifest is 99beb578f3ca8c20eb204484178bf08fea6f0d7f016ab49ca33a8590e1af2dcb and its object bytes sum to 15150575778. Rust validation checks both values."
+}

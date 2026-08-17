@@ -1,4 +1,4 @@
-"""Fixture and explicit prototype-corpus promotion builders."""
+"""Historical fixture and prototype promotion builders for tests only."""
 
 from __future__ import annotations
 

@@ -36,13 +36,27 @@
   "oneOf": [
     {
       "properties": {
-        "model": {"properties": {"status": {"const": "used"}, "calls": {"minimum": 1}, "returned_model": {"type": "string", "minLength": 1}}},
+        "model": {"properties": {"status": {"const": "used"}, "calls": {"minimum": 1}, "returned_model": {"type": "string", "minLength": 1}, "query_vector_set_sha256": false}},
         "query_vectors": {"minItems": 1}
       }
     },
     {
       "properties": {
-        "model": {"properties": {"status": {"const": "not_used_all_lexical"}, "calls": {"const": 0}, "returned_model": {"type": "null"}}},
+        "model": {
+          "required": ["query_vector_set_sha256"],
+          "properties": {
+            "status": {"const": "sealed_query_vector_set"},
+            "calls": {"const": 0},
+            "returned_model": {"type": "string", "minLength": 1},
+            "query_vector_set_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "query_vectors": {"minItems": 1}
+      }
+    },
+    {
+      "properties": {
+        "model": {"properties": {"status": {"const": "not_used_all_lexical"}, "calls": {"const": 0}, "returned_model": {"type": "null"}, "query_vector_set_sha256": false}},
         "query_vectors": {"maxItems": 0}
       }
     }
@@ -66,10 +80,11 @@
       "type": "object", "additionalProperties": false,
       "required": ["status", "configured_model", "returned_model", "calls"],
       "properties": {
-        "status": {"enum": ["used", "not_used_all_lexical"]},
+        "status": {"enum": ["used", "sealed_query_vector_set", "not_used_all_lexical"]},
         "configured_model": {"type": "string", "minLength": 1},
         "returned_model": {"type": ["string", "null"]},
-        "calls": {"type": "integer", "minimum": 0, "maximum": 10000}
+        "calls": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "query_vector_set_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "query_vector": {
@@ -95,5 +110,5 @@
       }
     }
   },
-  "$comment": "The bound requests.jsonl and results.jsonl files must terminate every row, including each final row, with an LF byte (0A). Runtime validation recomputes the RFC 8785 component digest with component_sha256 omitted; verifies exact file SHA/bytes/rows and request/result order closure; checks sorted aggregate sets; requires calls to equal unique composed semantic queries; and requires returned_model to match configured_model whenever the model was used."
+  "$comment": "The bound requests.jsonl and results.jsonl files must terminate every row, including each final row, with an LF byte (0A). Runtime validation recomputes the RFC 8785 component digest with component_sha256 omitted; verifies exact file SHA/bytes/rows and request/result order closure; checks sorted aggregate sets; requires endpoint calls to equal unique composed semantic queries or zero calls with an exact sealed query-vector-set digest; and requires returned_model to match configured_model whenever semantic vectors were used."
 }

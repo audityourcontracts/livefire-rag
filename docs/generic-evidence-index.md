@@ -1,5 +1,10 @@
 # Generic evidence index v1
 
+Historical Python contract and implementation record. Its source-accounting
+principles remain useful, but its projection, promotion, and provider commands
+are not the active M45 workflow. Current production execution is Rust; see
+[`../README.md`](../README.md).
+
 ## Purpose and boundary
 
 The generic evidence index is a faithful, immutable retrieval projection of
