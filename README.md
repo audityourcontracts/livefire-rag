@@ -54,10 +54,10 @@ graph, provenance, and subject-alias relations remain exact lookup or hydration
 data rather than embedding input.
 
 The M45 relation datasets are prepared and verified locally under
-`indexes/livefire-ocsf-m45-v1/prepared`. This is model-independent work: it does
-not mean that embeddings or final indexes are complete. Generated
-corpora, model weights, reports, credentials, and built indexes are ignored and
-are not committed to Git.
+`indexes/livefire-ocsf-m45-v1/prepared`. The complete 18-relation corpus has
+also been embedded once with the measured RunPod profile and assembled into a
+local SQLite-v3 index. Generated corpora, model weights, reports, credentials,
+embeddings, and built indexes are ignored and are not committed to Git.
 
 See [the M45 prepared dataset report](docs/m45-prepared-dataset-report.md) for
 the source qualification, corpus counts, prepared artifact inventory, and the
@@ -259,12 +259,16 @@ pinned upstream `Qwen/Qwen3-Embedding-8B` revision
 separate from local LM Studio Q4 vectors.
 
 The Rust contracts, worker, S3 transfer, Pod control, conformance, and sealed
-query-vector paths are implemented and covered by offline contract tests. The
-model artifacts and custom executor image have been built and verified locally.
-No paid Pod has been launched, so
-there is not yet a measured RunPod throughput, cost, or reproducibility result.
-A launch will require explicit credentials and price limits after the offline
-checks pass.
+query-vector paths are implemented and have completed a paid end-to-end run.
+Two fresh RTX 5090 Pods produced byte-identical conformance vectors. The full
+run then embedded 560,842 documents and 128,329,292 exact tokens in 2,191
+restart-safe tasks. The selected production setting was a document batch of
+four with one client request in flight. The completed production Pod ran for
+12,159.466 seconds and cost USD 3.34385315 at the returned USD 0.99/hour price.
+The finalized task reports aggregate 43.224 documents and 9,890.306 tokens per
+active second, 165,886 requests, and 523 retries; some accepted tasks were
+reused from guarded pilots, so the aggregate retains those pilot retries and a
+peak of two requests in flight.
 
 The cloud workflow never uploads occurrence shards because embedding needs only
 prepared documents. It launches a digest-pinned custom executor image, serves
@@ -272,6 +276,24 @@ the model on loopback, writes attempt-scoped outputs, fetches only exact declare
 keys, and terminates the Pod under time and cost guards. Cloud-profile indexes
 use sealed query vectors created by the same profile; local Q4 query vectors
 cannot be mixed with them.
+
+SSH is not part of this workflow. The host copies prepared documents, plans,
+and small control files through RunPod's S3-compatible network-volume API. To
+avoid sending the 15.15 GB model tree from the laptop, the first conformance
+worker downloads the exact files from the pinned public Hugging Face revision
+into that volume. It checks every byte count and SHA-256 digest before starting
+the model server in offline mode. A second fresh Pod and the later embedding
+worker reuse those verified files. Conformance and normal staging therefore
+use `--skip-model-objects` with the same run prefix.
+
+Routine diagnosis uses the worker's sealed stage events, task reports,
+assignment markers, and bounded failure records on the network volume. RunPod's
+web console separately exposes container output and Pod lifecycle logs. If
+those two sources are insufficient, use a different, short-lived diagnostic
+image with an SSH service and explicit network exposure; do not add a shell or
+port to the production worker. A dedicated Ed25519 diagnostic key is already
+registered with RunPod, while its private key remains in the Touch ID-backed
+1Password SSH agent.
 
 The implemented command family is `rag runpod`. Its exact staged checks and
 current limitations are in [the RunPod embedding guide](docs/runpod-embedding.md).
@@ -318,6 +340,6 @@ the active cloud execution plan is in
 
 ## Repository status
 
-This is a private specification and implementation repository. Its GitHub
-remote is private. No model weights, credentials, source telemetry, or built
-indexes are tracked.
+This specification and implementation repository is public. No model weights,
+credentials, source telemetry, generated embeddings, or built indexes are
+tracked.

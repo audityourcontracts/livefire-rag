@@ -840,8 +840,10 @@ ranking-overlap diagnostics only. People have not yet reviewed the pooled
 results and marked which documents are relevant, so no search-quality or
 reduced-dimension default claim is made.
 
-No paid RunPod measurement has been made yet. The active cloud phase will reuse
-this exact 10,000-document input without changing its identity.
+A paid RunPod measurement has now completed on the full M45 corpus. The cloud
+build used a separately sealed FP16 profile rather than relabelling this older
+LM Studio input or its vectors. See [the RunPod embedding guide](runpod-embedding.md)
+for the measured throughput, cost, artifact transfer, and local index result.
 
 ### Step E: one complete large dataset or relation
 

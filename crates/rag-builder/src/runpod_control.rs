@@ -57,6 +57,13 @@ pub enum RunpodControlError {
     },
     #[error("RunPod {operation} response was not the declared JSON shape")]
     MalformedResponse { operation: &'static str },
+    #[error("RunPod {operation} response was not the declared JSON shape: {reason}")]
+    MalformedJsonResponse {
+        operation: &'static str,
+        reason: String,
+    },
+    #[error("RunPod scheduler rejected the Pod request: {reason}")]
+    SchedulerRejected { reason: String },
     #[error("created RunPod Pod was rejected: {reason}; {cleanup}")]
     CreatedPodRejected {
         reason: &'static str,
@@ -261,7 +268,13 @@ impl RunpodClient {
                 StatusCode::OK,
             )
             .await?;
-        let id = envelope.data.pod_find_and_deploy_on_demand.id;
+        let id = envelope
+            .data
+            .and_then(|data| data.pod_find_and_deploy_on_demand)
+            .map(|pod| pod.id)
+            .ok_or_else(|| RunpodControlError::SchedulerRejected {
+                reason: sanitize_graphql_rejection(&envelope.errors),
+            })?;
         validate_identifier(&id).map_err(|_| RunpodControlError::MalformedResponse {
             operation: "schedule Pod with termination",
         })?;
@@ -283,22 +296,31 @@ impl RunpodClient {
     ) -> Result<Pod> {
         let started = std::time::Instant::now();
         loop {
-            match self.get_pod(&scheduled.pod_id).await {
-                Ok(mut pod) => {
-                    let status = pod.desired_status;
+            match self.get_pod_value(&scheduled.pod_id).await {
+                Ok((status, value)) => {
                     if status == PodDesiredStatus::Created {
-                        pod.desired_status = PodDesiredStatus::Running;
-                    }
-                    if let Some(reason) = pod.admission_rejection(specification) {
-                        let cleanup = if self.delete_pod(&pod.id).await.is_ok() {
-                            CleanupOutcome::Succeeded
-                        } else {
-                            CleanupOutcome::Failed
+                        // Scheduling responses intentionally omit the complete
+                        // machine, GPU, price, and network identity. Require
+                        // those only after the provider reports RUNNING.
+                    } else {
+                        let pod = match pod_from_value(value, &scheduled.pod_id) {
+                            Ok(pod) => pod,
+                            Err(error) => {
+                                let _ = self.delete_pod(&scheduled.pod_id).await;
+                                return Err(error);
+                            }
                         };
-                        return Err(RunpodControlError::CreatedPodRejected { reason, cleanup });
-                    }
-                    if status == PodDesiredStatus::Running {
-                        return Ok(pod);
+                        if let Some(reason) = pod.admission_rejection(specification) {
+                            let cleanup = if self.delete_pod(&pod.id).await.is_ok() {
+                                CleanupOutcome::Succeeded
+                            } else {
+                                CleanupOutcome::Failed
+                            };
+                            return Err(RunpodControlError::CreatedPodRejected { reason, cleanup });
+                        }
+                        if pod.desired_status == PodDesiredStatus::Running {
+                            return Ok(pod);
+                        }
                     }
                 }
                 Err(RunpodControlError::UnexpectedStatus { status: 404, .. }) => {}
@@ -333,7 +355,7 @@ impl RunpodClient {
                 "create network volume",
                 self.authorized(self.http.post(self.url("networkvolumes")))
                     .json(&request),
-                StatusCode::OK,
+                StatusCode::CREATED,
             )
             .await?;
         volume
@@ -409,8 +431,13 @@ impl RunpodClient {
     }
 
     pub async fn get_pod(&self, id: &str) -> Result<Pod> {
+        let (_, value) = self.get_pod_value(id).await?;
+        pod_from_value(value, id)
+    }
+
+    async fn get_pod_value(&self, id: &str) -> Result<(PodDesiredStatus, Value)> {
         validate_identifier(id)?;
-        let pod: Pod = self
+        let value: Value = self
             .send_json(
                 "get Pod",
                 self.authorized(self.http.get(self.url(&format!(
@@ -419,16 +446,24 @@ impl RunpodClient {
                 StatusCode::OK,
             )
             .await?;
-        pod.validate()
-            .map_err(|_| RunpodControlError::MalformedResponse {
-                operation: "get Pod",
-            })?;
-        if pod.id != id {
+        let status: PodStatusResponse = serde_json::from_value(value.clone()).map_err(|error| {
+            let reason: String = error
+                .to_string()
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(256)
+                .collect();
+            RunpodControlError::MalformedJsonResponse {
+                operation: "get Pod status",
+                reason,
+            }
+        })?;
+        if status.id != id {
             return Err(RunpodControlError::MalformedResponse {
-                operation: "get Pod",
+                operation: "get Pod status",
             });
         }
-        Ok(pod)
+        Ok((status.desired_status, value))
     }
 
     pub async fn delete_pod(&self, id: &str) -> Result<()> {
@@ -467,8 +502,34 @@ impl RunpodClient {
             });
         }
         let bytes = bounded_body(response, operation, self.maximum_response_bytes).await?;
-        serde_json::from_slice(&bytes)
-            .map_err(|_| RunpodControlError::MalformedResponse { operation })
+        let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+            let reason: String = error
+                .to_string()
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(256)
+                .collect();
+            RunpodControlError::MalformedJsonResponse { operation, reason }
+        })?;
+        let shape = match &value {
+            Value::Object(object) => format!(
+                "top-level object keys [{}]",
+                object.keys().cloned().collect::<Vec<_>>().join(",")
+            ),
+            Value::Array(array) => format!("top-level array length {}", array.len()),
+            Value::Null => "top-level null".to_owned(),
+            Value::Bool(_) => "top-level boolean".to_owned(),
+            Value::Number(_) => "top-level number".to_owned(),
+            Value::String(_) => "top-level string".to_owned(),
+        };
+        serde_json::from_value(value).map_err(|error| {
+            let reason: String = format!("{error}; {shape}")
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(512)
+                .collect();
+            RunpodControlError::MalformedJsonResponse { operation, reason }
+        })
     }
 
     async fn send_empty(
@@ -534,6 +595,7 @@ struct GraphqlCreateInput<'a> {
     data_center_id: &'a str,
     gpu_count: u8,
     gpu_type_id: &'a str,
+    allowed_cuda_versions: [&'a str; 1],
     image_name: &'a str,
     name: &'a str,
     ports: &'static str,
@@ -548,20 +610,44 @@ struct GraphqlCreateInput<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GraphqlCreateEnvelope {
-    data: GraphqlCreateData,
+    data: Option<GraphqlCreateData>,
+    #[serde(default)]
+    errors: Vec<GraphqlError>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GraphqlCreateData {
     #[serde(rename = "podFindAndDeployOnDemand")]
-    pod_find_and_deploy_on_demand: GraphqlCreatedPod,
+    pod_find_and_deploy_on_demand: Option<GraphqlCreatedPod>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlError {
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GraphqlCreatedPod {
     id: String,
+}
+
+fn sanitize_graphql_rejection(errors: &[GraphqlError]) -> String {
+    let reason = errors
+        .first()
+        .map(|error| error.message.as_str())
+        .unwrap_or("request was rejected without a reason");
+    let sanitized: String = reason
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(256)
+        .collect();
+    if sanitized.is_empty() {
+        "request was rejected without a reason".into()
+    } else {
+        sanitized
+    }
 }
 
 fn build_graphql_pod_request<'a>(
@@ -591,6 +677,7 @@ fn build_graphql_pod_request<'a>(
                 data_center_id: &specification.network_volume.data_center_id,
                 gpu_count: 1,
                 gpu_type_id: &specification.gpu_type_id,
+                allowed_cuda_versions: [specification.allowed_cuda_version.as_str()],
                 image_name: &specification.image,
                 name: &specification.name,
                 ports: "",
@@ -664,11 +751,59 @@ impl NetworkVolume {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum RunpodCudaVersion {
+    #[value(name = "11.8")]
+    Cuda11_8,
+    #[value(name = "12.0")]
+    Cuda12_0,
+    #[value(name = "12.1")]
+    Cuda12_1,
+    #[value(name = "12.2")]
+    Cuda12_2,
+    #[value(name = "12.3")]
+    Cuda12_3,
+    #[value(name = "12.4")]
+    Cuda12_4,
+    #[value(name = "12.5")]
+    Cuda12_5,
+    #[value(name = "12.6")]
+    Cuda12_6,
+    #[value(name = "12.7")]
+    Cuda12_7,
+    #[value(name = "12.8")]
+    Cuda12_8,
+    #[value(name = "12.9")]
+    Cuda12_9,
+    #[value(name = "13.0")]
+    Cuda13_0,
+}
+
+impl RunpodCudaVersion {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cuda11_8 => "11.8",
+            Self::Cuda12_0 => "12.0",
+            Self::Cuda12_1 => "12.1",
+            Self::Cuda12_2 => "12.2",
+            Self::Cuda12_3 => "12.3",
+            Self::Cuda12_4 => "12.4",
+            Self::Cuda12_5 => "12.5",
+            Self::Cuda12_6 => "12.6",
+            Self::Cuda12_7 => "12.7",
+            Self::Cuda12_8 => "12.8",
+            Self::Cuda12_9 => "12.9",
+            Self::Cuda13_0 => "13.0",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PodCreateSpec {
     pub name: String,
     pub image: String,
     pub gpu_type_id: String,
+    pub allowed_cuda_version: RunpodCudaVersion,
     pub network_volume: NetworkVolume,
     pub worker_binary: rag_pipeline::ComponentRef,
     pub worker_arguments: Vec<String>,
@@ -711,6 +846,7 @@ struct PodCreateRequest<'a> {
     cloud_type: &'static str,
     compute_type: &'static str,
     gpu_type_ids: [&'a str; 1],
+    allowed_cuda_versions: [&'a str; 1],
     gpu_type_priority: &'static str,
     gpu_count: u8,
     data_center_ids: [&'a str; 1],
@@ -735,6 +871,7 @@ fn build_pod_request(specification: &PodCreateSpec) -> Result<PodCreateRequest<'
         cloud_type: "SECURE",
         compute_type: "GPU",
         gpu_type_ids: [&specification.gpu_type_id],
+        allowed_cuda_versions: [specification.allowed_cuda_version.as_str()],
         gpu_type_priority: "custom",
         gpu_count: 1,
         data_center_ids: [&specification.network_volume.data_center_id],
@@ -762,6 +899,13 @@ pub enum PodDesiredStatus {
     Exited,
     #[serde(rename = "TERMINATED")]
     Terminated,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PodStatusResponse {
+    id: String,
+    desired_status: PodDesiredStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -795,6 +939,145 @@ pub struct Pod {
     pub ports: Vec<String>,
     pub port_mappings: BTreeMap<String, u16>,
     pub volume_mount_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestPodResponse {
+    id: String,
+    name: String,
+    image_name: String,
+    #[serde(default)]
+    adjusted_cost_per_hr: Option<Value>,
+    cost_per_hr: Value,
+    desired_status: PodDesiredStatus,
+    #[serde(default)]
+    interruptible: bool,
+    gpu_count: u32,
+    machine_id: String,
+    machine: RestPodMachine,
+    network_volume: NetworkVolume,
+    #[serde(default)]
+    ports: Vec<String>,
+    #[serde(default)]
+    port_mappings: BTreeMap<String, u16>,
+    volume_mount_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestPodMachine {
+    secure_cloud: bool,
+    data_center_id: String,
+    gpu_type_id: String,
+    #[serde(default)]
+    gpu_display_name: Option<String>,
+}
+
+fn json_price(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(value) => value.as_f64(),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+    .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn rest_pod_from_value(value: Value) -> Result<Pod> {
+    let response: RestPodResponse = serde_json::from_value(value).map_err(|error| {
+        let reason: String = error
+            .to_string()
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(256)
+            .collect();
+        RunpodControlError::MalformedJsonResponse {
+            operation: "get current REST Pod",
+            reason,
+        }
+    })?;
+    let adjusted_cost_per_hr = response
+        .adjusted_cost_per_hr
+        .as_ref()
+        .and_then(json_price)
+        .or_else(|| json_price(&response.cost_per_hr))
+        .ok_or(RunpodControlError::MalformedResponse {
+            operation: "get current REST Pod price",
+        })?;
+    let display_name = response
+        .machine
+        .gpu_display_name
+        .unwrap_or_else(|| response.machine.gpu_type_id.clone());
+    Ok(Pod {
+        id: response.id,
+        name: response.name,
+        image: response.image_name,
+        adjusted_cost_per_hr,
+        desired_status: response.desired_status,
+        // podFindAndDeployOnDemand is RunPod's non-spot scheduling operation.
+        // A returned interruptible field, if present, overrides this default.
+        interruptible: response.interruptible,
+        gpu: PodGpu {
+            id: response.machine.gpu_type_id,
+            count: response.gpu_count,
+            display_name,
+        },
+        machine: PodMachine {
+            id: response.machine_id,
+            secure_cloud: response.machine.secure_cloud,
+            data_center_id: response.machine.data_center_id,
+        },
+        network_volume: response.network_volume,
+        ports: response.ports,
+        port_mappings: response.port_mappings,
+        volume_mount_path: response.volume_mount_path,
+    })
+}
+
+fn pod_from_value(value: Value, expected_id: &str) -> Result<Pod> {
+    let shape = match &value {
+        Value::Object(object) => {
+            let top = object.keys().cloned().collect::<Vec<_>>().join(",");
+            let nested = ["gpu", "machine", "networkVolume"]
+                .into_iter()
+                .filter_map(|name| {
+                    object.get(name).and_then(Value::as_object).map(|child| {
+                        format!(
+                            "{name}=[{}]",
+                            child.keys().cloned().collect::<Vec<_>>().join(",")
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+            format!("top=[{top}]; nested {nested}")
+        }
+        _ => "top-level value is not an object".to_owned(),
+    };
+    let pod: Pod = match serde_json::from_value(value.clone()) {
+        Ok(pod) => pod,
+        Err(first_error) => rest_pod_from_value(value).map_err(|second_error| {
+            let reason: String = format!("{first_error}; {second_error}; {shape}")
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(1024)
+                .collect();
+            RunpodControlError::MalformedJsonResponse {
+                operation: "get Pod",
+                reason,
+            }
+        })?,
+    };
+    pod.validate()
+        .map_err(|_| RunpodControlError::MalformedResponse {
+            operation: "get Pod",
+        })?;
+    if pod.id != expected_id {
+        return Err(RunpodControlError::MalformedResponse {
+            operation: "get Pod",
+        });
+    }
+    Ok(pod)
 }
 
 impl Pod {
@@ -1054,6 +1337,7 @@ mod tests {
             name: "rag-worker".into(),
             image: IMAGE.into(),
             gpu_type_id: "NVIDIA H100 80GB HBM3".into(),
+            allowed_cuda_version: RunpodCudaVersion::Cuda12_9,
             network_volume: volume(),
             worker_binary: rag_pipeline::ComponentRef {
                 id: "livefire.rag.runpod-worker".into(),
@@ -1077,11 +1361,44 @@ mod tests {
         .unwrap()
     }
 
+    fn current_rest_pod_json(price: f64) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "id":"pod-1", "name":"rag-worker", "imageName":IMAGE,
+            "costPerHr":price, "desiredStatus":"RUNNING", "gpuCount":1,
+            "machineId":"machine-1",
+            "machine":{
+                "secureCloud":true, "dataCenterId":"US-KS-2",
+                "gpuTypeId":"NVIDIA H100 80GB HBM3",
+                "location":"test", "supportPublicIp":true
+            },
+            "networkVolume":volume(), "networkVolumeId":"volume-1",
+            "volumeMountPath":"/workspace", "publicIp":"192.0.2.1"
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn current_rest_pod_shape_is_adapted_without_weakening_identity() {
+        let (base, _, server) = spawn_server(vec![response(200, current_rest_pod_json(0.75))]);
+        let pod = client(&base, 4096).get_pod("pod-1").await.unwrap();
+        assert_eq!(pod.id, "pod-1");
+        assert_eq!(pod.image, IMAGE);
+        assert_eq!(pod.adjusted_cost_per_hr, 0.75);
+        assert_eq!(pod.gpu.id, "NVIDIA H100 80GB HBM3");
+        assert_eq!(pod.gpu.count, 1);
+        assert_eq!(pod.machine.id, "machine-1");
+        assert!(pod.machine.secure_cloud);
+        assert_eq!(pod.network_volume, volume());
+        assert!(pod.ports.is_empty());
+        assert!(pod.port_mappings.is_empty());
+        server.join().unwrap();
+    }
+
     #[tokio::test]
     async fn volume_create_get_delete_uses_bearer_auth_and_exact_shapes() {
         let volume_body = serde_json::to_vec(&volume()).unwrap();
         let (base, requests, server) = spawn_server(vec![
-            response(200, volume_body.clone()),
+            response(201, volume_body.clone()),
             response(200, volume_body),
             response(204, Vec::new()),
         ]);
@@ -1131,6 +1448,7 @@ mod tests {
         assert_eq!(body["cloudType"], "SECURE");
         assert_eq!(body["computeType"], "GPU");
         assert_eq!(body["gpuCount"], 1);
+        assert_eq!(body["allowedCudaVersions"], json!(["12.9"]));
         assert_eq!(body["interruptible"], false);
         assert_eq!(body["ports"], json!([]));
         assert_eq!(body["env"], json!({}));
@@ -1187,6 +1505,10 @@ mod tests {
                 .and_then(Value::as_str),
             Some("--bundle /workspace/run/bundle.json")
         );
+        assert_eq!(
+            body.pointer("/variables/input/allowedCudaVersions"),
+            Some(&json!(["12.9"]))
+        );
         assert!(!body_text.contains(SECRET));
         assert!(requests.recv().unwrap().starts_with("GET /v1/pods/pod-1"));
         assert!(
@@ -1195,6 +1517,29 @@ mod tests {
                 .unwrap()
                 .starts_with("DELETE /v1/pods/pod-1")
         );
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn graphql_scheduler_rejection_reports_only_a_bounded_reason() {
+        let rejected = serde_json::to_vec(&json!({
+            "data":{"podFindAndDeployOnDemand":null},
+            "errors":[{
+                "message":"No compatible CUDA host is currently available.\n",
+                "path":["podFindAndDeployOnDemand"]
+            }]
+        }))
+        .unwrap();
+        let (base, _, server) = spawn_server(vec![response(200, rejected)]);
+        let error = client(&base, 8192)
+            .schedule_pod_with_termination(&pod_spec(), "2026-08-18T00:00:00Z")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "RunPod scheduler rejected the Pod request: No compatible CUDA host is currently available."
+        );
+        assert!(!error.to_string().contains(SECRET));
         server.join().unwrap();
     }
 
@@ -1430,6 +1775,10 @@ mod tests {
                 status: 401,
             },
             RunpodControlError::MalformedResponse { operation: "test" },
+            RunpodControlError::MalformedJsonResponse {
+                operation: "test",
+                reason: "missing field".into(),
+            },
             RunpodControlError::CreatedPodRejected {
                 reason: "test",
                 cleanup: CleanupOutcome::Failed,

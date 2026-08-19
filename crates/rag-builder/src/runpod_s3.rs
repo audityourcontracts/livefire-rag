@@ -25,11 +25,14 @@ use aws_sdk_s3::{
     primitives::{ByteStream, Length},
     types::{CompletedMultipartUpload, CompletedPart},
 };
+use aws_smithy_http_client::hyper_014::HyperClientBuilder;
+use md5::Md5;
 #[cfg(test)]
 use rag_pipeline::Digest;
 use rag_pipeline::{
     CloudObjectRef, RunpodEmbeddingBundle, RunpodTeiConformanceCandidate,
-    RunpodTeiConformanceResult, RunpodWorkerAttemptMarker, SafeRelativePath,
+    RunpodTeiConformanceResult, RunpodWorkerAttemptMarker, RunpodWorkerRuntimeEvent,
+    SafeRelativePath,
 };
 use sha2::{Digest as ShaDigest, Sha256};
 use tempfile::NamedTempFile;
@@ -39,10 +42,17 @@ const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
 /// RunPod documents single `PutObject` uploads as smaller than 500 MB.
 pub const RUNPOD_SINGLE_PUT_MAX_BYTES: u64 = 500_000_000 - 1;
 pub const RUNPOD_MULTIPART_PART_BYTES: u64 = 64 * 1024 * 1024;
+const RUNPOD_MULTIPART_UPLOAD_CONCURRENCY: usize = 4;
+const RUNPOD_MULTIPART_PART_WALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const RUNPOD_MULTIPART_PART_ATTEMPTS: u32 = 3;
 const MAX_MULTIPART_PARTS: u64 = 10_000;
+const TRANSIENT_HEAD_FORBIDDEN_ATTEMPTS: usize = 3;
+const TRANSIENT_HEAD_FORBIDDEN_DELAY: Duration = Duration::from_millis(250);
 const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+// RunPod recommends ten standard retries for transient 502 and transfer
+// failures on its filesystem-backed S3 endpoint.
+const DEFAULT_MAX_ATTEMPTS: u32 = 10;
 
 #[derive(Debug, Error)]
 pub enum RunpodS3Error {
@@ -75,6 +85,8 @@ pub enum RunpodS3Error {
     LocalWrite,
     #[error("completion marker is absent, too large, or fails its sealed bundle binding")]
     InvalidCompletionMarker,
+    #[error("worker runtime event is absent, too large, non-canonical, or invalid")]
+    InvalidRuntimeEvent,
     #[error(
         "conformance result is absent, too large, non-canonical, or fails its candidate binding"
     )]
@@ -298,6 +310,16 @@ impl RunpodS3Client {
             .operation_timeout(limits.operation_timeout)
             .operation_attempt_timeout(limits.attempt_timeout)
             .build();
+        // RunPod's Cloudflare-fronted S3 endpoint has repeatedly stalled
+        // streaming PUT request bodies over negotiated HTTP/2. Botocore's
+        // HTTP/1.1 transport does not exhibit that behavior, so pin this
+        // provider adapter to HTTP/1.1 while retaining rustls and native roots.
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let http_client = HyperClientBuilder::new().build(https_connector);
         let config = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .credentials_provider(credentials)
@@ -308,6 +330,7 @@ impl RunpodS3Client {
             .timeout_config(timeout)
             .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
             .response_checksum_validation(ResponseChecksumValidation::WhenRequired)
+            .http_client(http_client)
             .build();
         Ok(Self {
             client: Client::from_conf(config),
@@ -353,9 +376,23 @@ impl RunpodS3Client {
                 }
             }
             Err(error) => {
-                let status = error
-                    .raw_response()
-                    .map(|response| response.status().as_u16());
+                let raw_response = error.raw_response();
+                let status = raw_response.map(|response| response.status().as_u16());
+                // RunPod currently formats Last-Modified with `UTC` instead of
+                // the HTTP-date `GMT` token. The AWS Rust SDK rejects that
+                // otherwise valid HEAD response after retaining its raw 200
+                // response. Accept it only when the raw Content-Length still
+                // proves a bounded, non-empty worker object.
+                if status == Some(200) {
+                    let bytes = raw_response
+                        .and_then(|response| response.headers().get("content-length"))
+                        .and_then(|value| value.parse::<u64>().ok());
+                    return if bytes.is_some_and(|value| value != 0 && value <= MAX_SAFE_INTEGER) {
+                        Ok(HeadObjectState::Present)
+                    } else {
+                        Err(RunpodS3Error::RemoteIdentityMismatch)
+                    };
+                }
                 if status == Some(404) {
                     Ok(HeadObjectState::Missing)
                 } else {
@@ -383,6 +420,7 @@ impl RunpodS3Client {
             local_root,
             RUNPOD_SINGLE_PUT_MAX_BYTES,
             RUNPOD_MULTIPART_PART_BYTES,
+            RUNPOD_MULTIPART_UPLOAD_CONCURRENCY,
         )
         .await
     }
@@ -394,6 +432,7 @@ impl RunpodS3Client {
         local_root: &Path,
         single_put_max_bytes: u64,
         multipart_part_bytes: u64,
+        multipart_upload_concurrency: usize,
     ) -> Result<()> {
         let object = manifest.declared(requested)?;
         if self.head_declared(manifest, object).await? == HeadObjectState::Present {
@@ -404,8 +443,14 @@ impl RunpodS3Client {
         if object.bytes <= single_put_max_bytes {
             self.put_single(manifest, object, &path).await
         } else {
-            self.put_multipart(manifest, object, &path, multipart_part_bytes)
-                .await
+            self.put_multipart(
+                manifest,
+                object,
+                &path,
+                multipart_part_bytes,
+                multipart_upload_concurrency,
+            )
+            .await
         }
     }
 
@@ -457,13 +502,14 @@ impl RunpodS3Client {
         object: &CloudObjectRef,
         path: &Path,
         part_bytes: u64,
+        upload_concurrency: usize,
     ) -> Result<()> {
         // RunPod implements multipart completion but does not document an
         // atomic If-None-Match condition for it. The preliminary HEAD and the
         // run-unique prefix prevent normal reuse; a separate writer racing the
         // same sealed run key remains detectable only by post-complete identity.
-        if part_bytes == 0 {
-            return Err(RunpodS3Error::Invalid("multipart part size"));
+        if part_bytes == 0 || upload_concurrency == 0 {
+            return Err(RunpodS3Error::Invalid("multipart upload policy"));
         }
         let part_count = object.bytes.div_ceil(part_bytes);
         if part_count == 0 || part_count > MAX_MULTIPART_PARTS {
@@ -492,66 +538,53 @@ impl RunpodS3Client {
                 status: Some(200),
             })?
             .to_owned();
-        if created.bucket() != Some(self.bucket.as_str()) || created.key() != Some(key.as_str()) {
+        if created.bucket() != Some(self.bucket.as_str())
+            || !created
+                .key()
+                .is_some_and(|value| runpod_response_key_matches(value, &key))
+        {
             return Err(self
                 .multipart_failure(&key, &upload_id, "CREATE identity")
                 .await);
         }
 
+        let mut uploads = tokio::task::JoinSet::new();
+        let mut next_part = 0_u64;
         let mut completed_parts = Vec::with_capacity(part_count as usize);
-        for part_index in 0..part_count {
-            let offset = part_index * part_bytes;
-            let length = (object.bytes - offset).min(part_bytes);
-            let part_number = i32::try_from(part_index + 1)
-                .map_err(|_| RunpodS3Error::Invalid("multipart part number"))?;
-            let body = match ByteStream::read_from()
-                .path(path)
-                .offset(offset)
-                .length(Length::Exact(length))
-                .buffer_size(1024 * 1024)
-                .build()
-                .await
-            {
-                Ok(body) => body,
-                Err(_) => {
-                    return Err(self.multipart_failure(&key, &upload_id, "read part").await);
+        let upload = MultipartPartUpload {
+            client: self.client.clone(),
+            bucket: self.bucket.clone(),
+            key: key.clone(),
+            upload_id: upload_id.clone(),
+            path: path.to_path_buf(),
+            total_bytes: object.bytes,
+            part_bytes,
+        };
+        while next_part < part_count || !uploads.is_empty() {
+            while next_part < part_count && uploads.len() < upload_concurrency {
+                let upload = upload.clone();
+                let part_index = next_part;
+                uploads.spawn(async move { upload.execute(part_index).await });
+                next_part += 1;
+            }
+            let part = uploads.join_next().await;
+            match part {
+                Some(Ok(Ok(part))) => completed_parts.push(part),
+                Some(Ok(Err(stage))) => {
+                    uploads.abort_all();
+                    while uploads.join_next().await.is_some() {}
+                    return Err(self.multipart_failure(&key, &upload_id, stage).await);
                 }
-            };
-            let uploaded = self
-                .client
-                .upload_part()
-                .bucket(&self.bucket)
-                .key(&key)
-                .upload_id(&upload_id)
-                .part_number(part_number)
-                .content_length(
-                    i64::try_from(length)
-                        .map_err(|_| RunpodS3Error::Invalid("multipart part length"))?,
-                )
-                .body(body)
-                .send()
-                .await;
-            let uploaded = match uploaded {
-                Ok(uploaded) => uploaded,
-                Err(_) => {
+                Some(Err(_)) | None => {
+                    uploads.abort_all();
+                    while uploads.join_next().await.is_some() {}
                     return Err(self
-                        .multipart_failure(&key, &upload_id, "upload part")
+                        .multipart_failure(&key, &upload_id, "upload part task")
                         .await);
                 }
-            };
-            let Some(etag) = uploaded
-                .e_tag()
-                .filter(|value| valid_opaque_response_value(value))
-            else {
-                return Err(self.multipart_failure(&key, &upload_id, "part ETag").await);
-            };
-            completed_parts.push(
-                CompletedPart::builder()
-                    .part_number(part_number)
-                    .e_tag(etag)
-                    .build(),
-            );
+            }
         }
+        completed_parts.sort_by_key(CompletedPart::part_number);
 
         let completed = self
             .client
@@ -575,7 +608,9 @@ impl RunpodS3Client {
             }
         };
         if completed.bucket() != Some(self.bucket.as_str())
-            || completed.key() != Some(key.as_str())
+            || !completed
+                .key()
+                .is_some_and(|value| runpod_response_key_matches(value, &key))
             || !completed.e_tag().is_some_and(valid_opaque_response_value)
         {
             return Err(self
@@ -640,6 +675,88 @@ impl RunpodS3Client {
     ) -> Result<PathBuf> {
         self.get_declared_object(manifest, requested, destination_root, false)
             .await
+    }
+
+    /// Verify a previously staged host input without re-downloading a large
+    /// model shard. The local file is first checked against its sealed SHA-256
+    /// identity. Its expected S3 ETag is then derived from the exact bytes and
+    /// this adapter's fixed single-part or 64 MiB multipart layout and matched
+    /// against RunPod's remote response. The worker independently performs the
+    /// authoritative SHA-256 check on the mounted bytes before inference.
+    pub async fn verify_staged_object(
+        &self,
+        manifest: &RunpodS3Manifest,
+        requested: &CloudObjectRef,
+        local_root: &Path,
+    ) -> Result<()> {
+        self.verify_staged_object_with_policy(
+            manifest,
+            requested,
+            local_root,
+            RUNPOD_SINGLE_PUT_MAX_BYTES,
+            RUNPOD_MULTIPART_PART_BYTES,
+        )
+        .await
+    }
+
+    async fn verify_staged_object_with_policy(
+        &self,
+        manifest: &RunpodS3Manifest,
+        requested: &CloudObjectRef,
+        local_root: &Path,
+        single_put_max_bytes: u64,
+        multipart_part_bytes: u64,
+    ) -> Result<()> {
+        let object = manifest.declared(requested)?;
+        let path = resolve_existing_file(local_root, &object.key)?;
+        verify_file(&path, object)?;
+        let expected_etag = expected_s3_etag(
+            &path,
+            object.bytes,
+            single_put_max_bytes,
+            multipart_part_bytes,
+        )?;
+        let output = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(manifest.storage_key(object))
+            .send()
+            .await;
+        let (bytes, etag) = match output {
+            Ok(output) => (
+                output
+                    .content_length()
+                    .and_then(|value| u64::try_from(value).ok()),
+                output.e_tag().and_then(normalize_etag).map(str::to_owned),
+            ),
+            Err(error) => {
+                let response = error.raw_response();
+                let status = response.map(|value| value.status().as_u16());
+                if status == Some(404) {
+                    return Err(RunpodS3Error::RemoteObjectMissing);
+                }
+                if status != Some(200) {
+                    return Err(RunpodS3Error::Remote {
+                        operation: "HEAD staged object",
+                        status,
+                    });
+                }
+                (
+                    response
+                        .and_then(|value| value.headers().get("content-length"))
+                        .and_then(|value| value.parse::<u64>().ok()),
+                    response
+                        .and_then(|value| value.headers().get("etag"))
+                        .and_then(normalize_etag)
+                        .map(str::to_owned),
+                )
+            }
+        };
+        if bytes != Some(object.bytes) || etag.as_deref() != Some(expected_etag.as_str()) {
+            return Err(RunpodS3Error::RemoteIdentityMismatch);
+        }
+        Ok(())
     }
 
     async fn get_declared_object(
@@ -831,6 +948,66 @@ impl RunpodS3Client {
         Ok((marker, destination))
     }
 
+    /// Fetch and validate one deterministic, self-sealed worker runtime event.
+    /// Runtime events are small mounted-filesystem writes and therefore do not
+    /// rely on S3 user metadata.
+    pub async fn get_worker_runtime_event(
+        &self,
+        run_prefix: &SafeRelativePath,
+        key: &SafeRelativePath,
+    ) -> Result<RunpodWorkerRuntimeEvent> {
+        let output = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(format!("{run_prefix}/{key}"))
+            .send()
+            .await
+            .map_err(|error| RunpodS3Error::Remote {
+                operation: "GET worker runtime event",
+                status: error
+                    .raw_response()
+                    .map(|response| response.status().as_u16()),
+            })?;
+        const MAX_RUNTIME_EVENT_BYTES: u64 = 64 * 1024;
+        let declared_bytes = output
+            .content_length()
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|bytes| (1..=MAX_RUNTIME_EVENT_BYTES).contains(bytes))
+            .ok_or(RunpodS3Error::InvalidRuntimeEvent)?;
+        let mut body = output.body;
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(declared_bytes).map_err(|_| RunpodS3Error::InvalidRuntimeEvent)?,
+        );
+        while let Some(chunk) = body.try_next().await.map_err(|_| RunpodS3Error::Remote {
+            operation: "GET worker runtime event body",
+            status: None,
+        })? {
+            if bytes
+                .len()
+                .checked_add(chunk.len())
+                .is_none_or(|length| length > MAX_RUNTIME_EVENT_BYTES as usize)
+            {
+                return Err(RunpodS3Error::InvalidRuntimeEvent);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.len() as u64 != declared_bytes {
+            return Err(RunpodS3Error::InvalidRuntimeEvent);
+        }
+        let event: RunpodWorkerRuntimeEvent =
+            serde_json::from_slice(&bytes).map_err(|_| RunpodS3Error::InvalidRuntimeEvent)?;
+        event
+            .validate()
+            .map_err(|_| RunpodS3Error::InvalidRuntimeEvent)?;
+        let canonical = rag_pipeline::canonical_json_bytes(&event)
+            .map_err(|_| RunpodS3Error::InvalidRuntimeEvent)?;
+        if canonical != bytes {
+            return Err(RunpodS3Error::InvalidRuntimeEvent);
+        }
+        Ok(event)
+    }
+
     /// Fetch one known conformance result without listing. The result key is
     /// derived from the caller-selected run ID, and the canonical JSON must
     /// validate against the sealed candidate before local publication.
@@ -916,19 +1093,45 @@ impl RunpodS3Client {
         manifest: &RunpodS3Manifest,
         object: &CloudObjectRef,
     ) -> Result<HeadObjectState> {
-        let output = self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(manifest.storage_key(object))
-            .send()
-            .await;
+        let mut output = None;
+        for attempt in 0..TRANSIENT_HEAD_FORBIDDEN_ATTEMPTS {
+            let current = self
+                .client
+                .head_object()
+                .bucket(&self.bucket)
+                .key(manifest.storage_key(object))
+                .send()
+                .await;
+            let is_forbidden = current
+                .as_ref()
+                .err()
+                .and_then(|error| error.raw_response())
+                .is_some_and(|response| response.status().as_u16() == 403);
+            output = Some(current);
+            if !is_forbidden || attempt + 1 == TRANSIENT_HEAD_FORBIDDEN_ATTEMPTS {
+                break;
+            }
+            tokio::time::sleep(TRANSIENT_HEAD_FORBIDDEN_DELAY).await;
+        }
+        let output = output.ok_or(RunpodS3Error::Remote {
+            operation: "HEAD",
+            status: None,
+        })?;
         let output = match output {
             Ok(output) => output,
             Err(error) => {
-                let status = error
-                    .raw_response()
-                    .map(|response| response.status().as_u16());
+                let raw_response = error.raw_response();
+                let status = raw_response.map(|response| response.status().as_u16());
+                if status == Some(200) {
+                    let bytes = raw_response
+                        .and_then(|response| response.headers().get("content-length"))
+                        .and_then(|value| value.parse::<u64>().ok());
+                    return if bytes == Some(object.bytes) {
+                        Ok(HeadObjectState::Present)
+                    } else {
+                        Err(RunpodS3Error::RemoteIdentityMismatch)
+                    };
+                }
                 return if status == Some(404) {
                     Ok(HeadObjectState::Missing)
                 } else {
@@ -943,14 +1146,77 @@ impl RunpodS3Client {
             .content_length()
             .and_then(|value| u64::try_from(value).ok())
             != Some(object.bytes)
-            || output
-                .metadata()
-                .and_then(|metadata| metadata.get("sha256"))
-                .is_none_or(|digest| digest != object.sha256.as_str())
         {
             return Err(RunpodS3Error::RemoteIdentityMismatch);
         }
         Ok(HeadObjectState::Present)
+    }
+}
+
+#[derive(Clone)]
+struct MultipartPartUpload {
+    client: Client,
+    bucket: String,
+    key: String,
+    upload_id: String,
+    path: PathBuf,
+    total_bytes: u64,
+    part_bytes: u64,
+}
+
+impl MultipartPartUpload {
+    async fn execute(self, part_index: u64) -> std::result::Result<CompletedPart, &'static str> {
+        let offset = part_index
+            .checked_mul(self.part_bytes)
+            .ok_or("multipart part offset")?;
+        let length = self
+            .total_bytes
+            .checked_sub(offset)
+            .ok_or("multipart part offset")?
+            .min(self.part_bytes);
+        let part_number = i32::try_from(part_index + 1).map_err(|_| "multipart part number")?;
+        let content_length = i64::try_from(length).map_err(|_| "multipart part length")?;
+        let mut last_stage = "upload part";
+        for _attempt in 0..RUNPOD_MULTIPART_PART_ATTEMPTS {
+            let body = ByteStream::read_from()
+                .path(&self.path)
+                .offset(offset)
+                .length(Length::Exact(length))
+                .buffer_size(1024 * 1024)
+                .build()
+                .await
+                .map_err(|_| "read part")?;
+            match tokio::time::timeout(
+                RUNPOD_MULTIPART_PART_WALL_TIMEOUT,
+                self.client
+                    .upload_part()
+                    .bucket(&self.bucket)
+                    .key(&self.key)
+                    .upload_id(&self.upload_id)
+                    .part_number(part_number)
+                    .content_length(content_length)
+                    .body(body)
+                    .send(),
+            )
+            .await
+            {
+                Ok(Ok(uploaded)) => {
+                    if let Some(etag) = uploaded
+                        .e_tag()
+                        .filter(|value| valid_opaque_response_value(value))
+                    {
+                        return Ok(CompletedPart::builder()
+                            .part_number(part_number)
+                            .e_tag(etag)
+                            .build());
+                    }
+                    last_stage = "part ETag";
+                }
+                Ok(Err(_)) => last_stage = "upload part",
+                Err(_) => last_stage = "upload part timeout",
+            }
+        }
+        Err(last_stage)
     }
 }
 
@@ -1005,6 +1271,84 @@ fn validate_credential(value: &str) -> Result<()> {
 
 fn valid_opaque_response_value(value: &str) -> bool {
     !value.is_empty() && value.len() <= 1024 && !value.chars().any(char::is_control)
+}
+
+fn normalize_etag(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(value);
+    if value.is_empty()
+        || value.len() > 128
+        || value
+            .chars()
+            .any(|character| !character.is_ascii_hexdigit() && character != '-')
+    {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn expected_s3_etag(
+    path: &Path,
+    bytes: u64,
+    single_put_max_bytes: u64,
+    multipart_part_bytes: u64,
+) -> Result<String> {
+    if bytes == 0 || multipart_part_bytes == 0 {
+        return Err(RunpodS3Error::Invalid("S3 ETag input"));
+    }
+    let mut file = File::open(path).map_err(|_| RunpodS3Error::LocalRead)?;
+    if bytes <= single_put_max_bytes {
+        let mut hasher = Md5::new();
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .map_err(|_| RunpodS3Error::LocalRead)?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        return Ok(format!("{:x}", hasher.finalize()));
+    }
+
+    let part_count = bytes.div_ceil(multipart_part_bytes);
+    if part_count == 0 || part_count > MAX_MULTIPART_PARTS {
+        return Err(RunpodS3Error::Invalid("multipart part count"));
+    }
+    let mut remaining = bytes;
+    let mut part_digests = Md5::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    for _ in 0..part_count {
+        let mut part_remaining = remaining.min(multipart_part_bytes);
+        let mut part = Md5::new();
+        while part_remaining != 0 {
+            let wanted = usize::try_from(part_remaining.min(buffer.len() as u64))
+                .map_err(|_| RunpodS3Error::LocalRead)?;
+            file.read_exact(&mut buffer[..wanted])
+                .map_err(|_| RunpodS3Error::LocalRead)?;
+            part.update(&buffer[..wanted]);
+            part_remaining -= wanted as u64;
+        }
+        let digest = part.finalize();
+        part_digests.update(&digest[..]);
+        remaining = remaining.saturating_sub(multipart_part_bytes);
+    }
+    if remaining != 0 {
+        return Err(RunpodS3Error::LocalRead);
+    }
+    Ok(format!("{:x}-{part_count}", part_digests.finalize()))
+}
+
+fn runpod_response_key_matches(response_key: &str, requested_key: &str) -> bool {
+    response_key == requested_key
+        || response_key
+            .strip_prefix('/')
+            .is_some_and(|value| value == requested_key)
 }
 
 fn read_credential(environment: &str) -> Result<String> {
@@ -1238,14 +1582,14 @@ mod tests {
 
     fn create_multipart_xml(key: &str) -> Vec<u8> {
         format!(
-            "<InitiateMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Bucket>volume-1</Bucket><Key>{key}</Key><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>"
+            "<InitiateMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Bucket>volume-1</Bucket><Key>/{key}</Key><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>"
         )
         .into_bytes()
     }
 
     fn complete_multipart_xml(key: &str) -> Vec<u8> {
         format!(
-            "<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Location>http://example.invalid/{key}</Location><Bucket>volume-1</Bucket><Key>{key}</Key><ETag>&quot;complete-etag&quot;</ETag></CompleteMultipartUploadResult>"
+            "<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Location>http://example.invalid/{key}</Location><Bucket>volume-1</Bucket><Key>/{key}</Key><ETag>&quot;complete-etag&quot;</ETag></CompleteMultipartUploadResult>"
         )
         .into_bytes()
     }
@@ -1350,6 +1694,8 @@ mod tests {
             FakeResponse::new(404, Vec::new()),
             FakeResponse::new(200, create_multipart_xml(key))
                 .header("content-type", "application/xml"),
+            FakeResponse::new(500, b"<Error><Code>InternalError</Code></Error>".to_vec())
+                .header("content-type", "application/xml"),
         ];
         for etag in ["part-1", "part-2", "part-3"] {
             responses.push(FakeResponse::new(200, Vec::new()).header("etag", etag));
@@ -1365,21 +1711,22 @@ mod tests {
         );
         let (endpoint, requests, server) = spawn_server(responses);
         client(&endpoint, 1)
-            .put_object_with_policy(&manifest(&expected), &expected, staging.path(), 8, 8)
+            .put_object_with_policy(&manifest(&expected), &expected, staging.path(), 8, 8, 1)
             .await
             .unwrap();
         let requests = requests.iter().collect::<Vec<_>>();
-        assert_eq!(requests.len(), 7);
+        assert_eq!(requests.len(), 8);
         let create = request_text(&requests[1]);
         assert!(create.starts_with("post /volume-1/runs/test-run/inputs/shard.parquet?uploads"));
         assert!(create.contains(&format!("x-amz-meta-sha256: {}", expected.sha256)));
-        for (index, request) in requests[2..5].iter().enumerate() {
+        assert!(request_text(&requests[2]).contains("partnumber=1"));
+        for (index, request) in requests[3..6].iter().enumerate() {
             let text = request_text(request);
             assert!(text.starts_with("put /volume-1/runs/test-run/inputs/shard.parquet?"));
             assert!(text.contains(&format!("partnumber={}", index + 1)));
             assert!(text.contains("uploadid=upload-1"));
         }
-        let complete = request_text(&requests[5]);
+        let complete = request_text(&requests[6]);
         assert!(complete.starts_with("post /volume-1/runs/test-run/inputs/shard.parquet?"));
         assert!(complete.contains("uploadid=upload-1"));
         assert!(complete.contains("<partnumber>1</partnumber>"));
@@ -1401,10 +1748,14 @@ mod tests {
                 .header("content-type", "application/xml"),
             FakeResponse::new(500, b"<Error><Code>InternalError</Code></Error>".to_vec())
                 .header("content-type", "application/xml"),
+            FakeResponse::new(500, b"<Error><Code>InternalError</Code></Error>".to_vec())
+                .header("content-type", "application/xml"),
+            FakeResponse::new(500, b"<Error><Code>InternalError</Code></Error>".to_vec())
+                .header("content-type", "application/xml"),
             FakeResponse::new(204, Vec::new()),
         ]);
         let error = client(&endpoint, 1)
-            .put_object_with_policy(&manifest(&expected), &expected, staging.path(), 8, 8)
+            .put_object_with_policy(&manifest(&expected), &expected, staging.path(), 8, 8, 1)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -1415,9 +1766,9 @@ mod tests {
             }
         ));
         let requests = requests.iter().collect::<Vec<_>>();
-        assert_eq!(requests.len(), 4);
-        assert!(request_text(&requests[3]).starts_with("delete "));
-        assert!(request_text(&requests[3]).contains("uploadid=upload-1"));
+        assert_eq!(requests.len(), 6);
+        assert!(request_text(&requests[5]).starts_with("delete "));
+        assert!(request_text(&requests[5]).contains("uploadid=upload-1"));
         server.join().unwrap();
 
         let mut responses = vec![
@@ -1435,7 +1786,7 @@ mod tests {
         responses.push(FakeResponse::new(204, Vec::new()));
         let (endpoint, requests, server) = spawn_server(responses);
         let error = client(&endpoint, 1)
-            .put_object_with_policy(&manifest(&expected), &expected, staging.path(), 8, 8)
+            .put_object_with_policy(&manifest(&expected), &expected, staging.path(), 8, 8, 1)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -1452,16 +1803,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_sha256_metadata_is_required_for_head_and_get() {
+    async fn head_uses_exact_length_while_metadata_bearing_get_remains_strict() {
         let expected = object(BODY);
         let (endpoint, _, server) = spawn_server(vec![
             FakeResponse::new(200, Vec::new()).declared_length(BODY.len()),
         ]);
-        let error = client(&endpoint, 1)
-            .head_object(&manifest(&expected), &expected)
-            .await
-            .unwrap_err();
-        assert!(matches!(error, RunpodS3Error::RemoteIdentityMismatch));
+        assert_eq!(
+            client(&endpoint, 1)
+                .head_object(&manifest(&expected), &expected)
+                .await
+                .unwrap(),
+            HeadObjectState::Present
+        );
         server.join().unwrap();
 
         let destination = tempfile::tempdir().unwrap();
@@ -1472,6 +1825,60 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, RunpodS3Error::RemoteIdentityMismatch));
         assert!(!destination.path().join(expected.key.to_string()).exists());
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_object_verification_matches_runpod_etags_without_downloading() {
+        let staging = tempfile::tempdir().unwrap();
+        fs::create_dir(staging.path().join("inputs")).unwrap();
+        let path = staging.path().join("inputs/shard.parquet");
+        fs::write(&path, BODY).unwrap();
+        let expected = object(BODY);
+
+        let single_etag = expected_s3_etag(
+            &path,
+            expected.bytes,
+            RUNPOD_SINGLE_PUT_MAX_BYTES,
+            RUNPOD_MULTIPART_PART_BYTES,
+        )
+        .unwrap();
+        let (endpoint, requests, server) = spawn_server(vec![
+            FakeResponse::new(200, Vec::new())
+                .declared_length(BODY.len())
+                .header("last-modified", "Mon, 17 Aug 2026 10:15:46 UTC")
+                .header("etag", &format!("\"{single_etag}\"")),
+        ]);
+        client(&endpoint, 1)
+            .verify_staged_object(&manifest(&expected), &expected, staging.path())
+            .await
+            .unwrap();
+        assert!(request_text(&requests.recv().unwrap()).starts_with("head "));
+        server.join().unwrap();
+
+        let multipart_etag = expected_s3_etag(&path, expected.bytes, 8, 8).unwrap();
+        let (endpoint, _, server) = spawn_server(vec![
+            FakeResponse::new(200, Vec::new())
+                .declared_length(BODY.len())
+                .header("etag", &format!("\"{multipart_etag}\"")),
+        ]);
+        client(&endpoint, 1)
+            .verify_staged_object_with_policy(&manifest(&expected), &expected, staging.path(), 8, 8)
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        let (endpoint, _, server) = spawn_server(vec![
+            FakeResponse::new(200, Vec::new())
+                .declared_length(BODY.len())
+                .header("etag", "\"00000000000000000000000000000000\""),
+        ]);
+        assert!(matches!(
+            client(&endpoint, 1)
+                .verify_staged_object(&manifest(&expected), &expected, staging.path())
+                .await,
+            Err(RunpodS3Error::RemoteIdentityMismatch)
+        ));
         server.join().unwrap();
     }
 
@@ -1535,6 +1942,51 @@ mod tests {
                 .get_worker_output(&manifest(&expected), &expected, destination.path())
                 .await,
             Err(RunpodS3Error::DownloadIdentityMismatch)
+        ));
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_runtime_event_is_self_sealed_and_canonical() {
+        let event = RunpodWorkerRuntimeEvent::failure(
+            Digest::new("a".repeat(64)).unwrap(),
+            "worker-0000".into(),
+            "attempt-1".into(),
+            1,
+            3,
+            "model_tree_verified",
+            "model_object_binding",
+        )
+        .unwrap();
+        let bytes = rag_pipeline::canonical_json_bytes(&event).unwrap();
+        let (endpoint, requests, server) =
+            spawn_server(vec![FakeResponse::new(200, bytes.clone())]);
+        let observed = client(&endpoint, 1)
+            .get_worker_runtime_event(
+                &SafeRelativePath::new("runs/test-run").unwrap(),
+                &SafeRelativePath::new("runtime/worker-0000/attempts/attempt-1/failed.json")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(observed, event);
+        assert!(request_text(&requests.recv().unwrap()).starts_with(
+            "get /volume-1/runs/test-run/runtime/worker-0000/attempts/attempt-1/failed.json"
+        ));
+        server.join().unwrap();
+
+        let mut noncanonical = serde_json::to_vec_pretty(&event).unwrap();
+        noncanonical.push(b'\n');
+        let (endpoint, _, server) = spawn_server(vec![FakeResponse::new(200, noncanonical)]);
+        assert!(matches!(
+            client(&endpoint, 1)
+                .get_worker_runtime_event(
+                    &SafeRelativePath::new("runs/test-run").unwrap(),
+                    &SafeRelativePath::new("runtime/worker-0000/attempts/attempt-1/failed.json")
+                        .unwrap()
+                )
+                .await,
+            Err(RunpodS3Error::InvalidRuntimeEvent)
         ));
         server.join().unwrap();
     }
@@ -1676,6 +2128,41 @@ mod tests {
         let request = request_text(&requests.recv().unwrap());
         assert!(request.starts_with("head "));
         assert!(!request.contains("list-type"));
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn transient_forbidden_head_is_retried_but_remains_fail_closed() {
+        let expected = object(BODY);
+        let (endpoint, requests, server) = spawn_server(vec![
+            FakeResponse::new(403, Vec::new()),
+            FakeResponse::new(404, Vec::new()),
+        ]);
+        assert_eq!(
+            client(&endpoint, 1)
+                .head_object(&manifest(&expected), &expected)
+                .await
+                .unwrap(),
+            HeadObjectState::Missing
+        );
+        assert_eq!(requests.iter().count(), 2);
+        server.join().unwrap();
+
+        let (endpoint, requests, server) = spawn_server(vec![
+            FakeResponse::new(403, Vec::new()),
+            FakeResponse::new(403, Vec::new()),
+            FakeResponse::new(403, Vec::new()),
+        ]);
+        assert!(matches!(
+            client(&endpoint, 1)
+                .head_object(&manifest(&expected), &expected)
+                .await,
+            Err(RunpodS3Error::Remote {
+                operation: "HEAD",
+                status: Some(403),
+            })
+        ));
+        assert_eq!(requests.iter().count(), 3);
         server.join().unwrap();
     }
 

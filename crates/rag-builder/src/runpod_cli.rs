@@ -14,10 +14,11 @@ use rag_pipeline::{
     ExactTokenizer, ExecutableTokenizerRef, RUNPOD_EXECUTOR_IMAGE_BUILD_RECEIPT_SCHEMA,
     RunpodAcceleratorIdentity, RunpodBundleArtifacts, RunpodEmbeddingBundle,
     RunpodExecutionIdentity, RunpodExecutorImageBuildReceipt, RunpodMachineIdentity,
-    RunpodRunReport, RunpodStorageChallengeResponse, RunpodTeiArtifactObject,
-    RunpodTeiBoundArtifact, RunpodTeiConformanceCandidate, RunpodTeiConformanceOutcome,
-    RunpodTeiConformanceResult, RunpodTeiImageIdentity, RunpodWorkerAttemptMarker,
-    SafeRelativePath, SealedQueryVectorSet, TokenizerArtifactFormat, WorkerAttemptOutcome,
+    RunpodRunReport, RunpodStorageChallengeFailure, RunpodStorageChallengeResponse,
+    RunpodTeiArtifactObject, RunpodTeiBoundArtifact, RunpodTeiConformanceCandidate,
+    RunpodTeiConformanceOutcome, RunpodTeiConformanceResult, RunpodTeiImageIdentity,
+    RunpodWorkerAssignment, RunpodWorkerAttemptMarker, RunpodWorkerRuntimeEvent, SafeRelativePath,
+    SealedQueryVectorSet, TokenizerArtifactFormat, WorkerAttemptOutcome,
     build_runpod_embedding_bundle, build_runpod_run_report, component_digest,
     query_vector_plan_queries, read_json, seal_embedding_policy_v3_conformance,
     write_canonical_json,
@@ -183,6 +184,8 @@ pub(crate) enum ConformanceCommand {
     Validate(ConformanceValidateOptions),
     /// Upload only the candidate and its exact declared input objects.
     Stage(ConformanceStageOptions),
+    /// Check the exact remote candidate objects without uploading or listing.
+    RemoteStatus(ConformanceRemoteStatusOptions),
     /// Fetch one deterministic result and its exact normalized-vector object.
     Fetch(ConformanceFetchOptions),
     /// Print one conformance Pod request without reading credentials.
@@ -285,6 +288,10 @@ pub(crate) struct StageOptions {
     network_volume_id: String,
     #[arg(long)]
     datacenter_id: String,
+    /// Do not upload model files. Use only when the conformance worker will
+    /// hydrate the exact manifest-bound model into this same run prefix.
+    #[arg(long, default_value_t = false)]
+    skip_model_objects: bool,
     /// Environment variable containing the S3 access key.
     #[arg(long, default_value = "RUNPOD_S3_ACCESS_KEY")]
     access_key_environment: String,
@@ -369,14 +376,28 @@ pub(crate) struct PodLaunchOptions {
     image: String,
     #[arg(long)]
     gpu_type_id: String,
+    /// Host CUDA version required by the pinned image.
+    #[arg(long)]
+    allowed_cuda_version: runpod_control::RunpodCudaVersion,
     #[arg(long)]
     name: String,
     #[arg(long)]
     worker_id: String,
+    /// Execute this many consecutive token-balanced assignments in one Pod so
+    /// the model tree is verified and loaded only once.
+    #[arg(long, default_value_t = 1)]
+    assignment_count: u32,
     #[arg(long)]
     attempt_id: String,
     #[arg(long, default_value_t = 1)]
     attempt_number: u32,
+    /// Number of documents sent in one embedding request. Start conservatively
+    /// on a new GPU/runtime combination and raise it only after a measured pilot.
+    #[arg(long, default_value_t = 16)]
+    batch_size: usize,
+    /// Maximum embedding requests issued concurrently by this worker.
+    #[arg(long, default_value_t = 1)]
+    requests_in_flight: usize,
     #[arg(long)]
     run_prefix: String,
     #[arg(long, default_value_t = 50)]
@@ -425,6 +446,26 @@ pub(crate) struct ConformanceValidateOptions {
 
 #[derive(Debug, Args)]
 pub(crate) struct ConformanceStageOptions {
+    #[arg(long)]
+    candidate: PathBuf,
+    #[arg(long)]
+    run_prefix: String,
+    #[arg(long)]
+    network_volume_id: String,
+    #[arg(long)]
+    datacenter_id: String,
+    /// Stage only the control artifacts. The worker downloads missing model
+    /// files from the exact manifest-bound Hugging Face revision before TEI.
+    #[arg(long, default_value_t = false)]
+    skip_model_objects: bool,
+    #[arg(long, default_value = "RUNPOD_S3_ACCESS_KEY")]
+    access_key_environment: String,
+    #[arg(long, default_value = "RUNPOD_S3_SECRET_KEY")]
+    secret_key_environment: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ConformanceRemoteStatusOptions {
     #[arg(long)]
     candidate: PathBuf,
     #[arg(long)]
@@ -483,6 +524,9 @@ pub(crate) struct ConformanceLaunchOptions {
     image: String,
     #[arg(long)]
     gpu_type_id: String,
+    /// Host CUDA version required by the pinned image.
+    #[arg(long)]
+    allowed_cuda_version: runpod_control::RunpodCudaVersion,
     #[arg(long)]
     name: String,
     #[arg(long)]
@@ -526,6 +570,9 @@ pub(crate) struct StorageChallengeOptions {
     image: String,
     #[arg(long)]
     gpu_type_id: String,
+    /// Host CUDA version required by the pinned image.
+    #[arg(long)]
+    allowed_cuda_version: runpod_control::RunpodCudaVersion,
     #[arg(long)]
     name: String,
     /// Unique, unused path below the RunPod network-volume bucket.
@@ -715,11 +762,68 @@ async fn run_conformance(command: ConformanceCommand) -> Result<()> {
             Ok(())
         }
         ConformanceCommand::Stage(options) => stage_conformance_candidate(options).await,
+        ConformanceCommand::RemoteStatus(options) => conformance_remote_status(options).await,
         ConformanceCommand::Fetch(options) => fetch_conformance_result(options).await,
         ConformanceCommand::PodDryRun(options) => conformance_pod_dry_run(options),
         ConformanceCommand::PodCreate(options) => conformance_pod_create(options).await,
         ConformanceCommand::Seal(options) => seal_conformance_policy(options),
     }
+}
+
+async fn conformance_remote_status(options: ConformanceRemoteStatusOptions) -> Result<()> {
+    let candidate = load_conformance_candidate(&options.candidate)?;
+    let objects = candidate
+        .model_objects
+        .iter()
+        .map(|object| CloudObjectRef {
+            key: object.path.clone(),
+            bytes: object.bytes,
+            sha256: object.sha256.clone(),
+        })
+        .collect::<Vec<_>>();
+    let run_prefix = SafeRelativePath::new(options.run_prefix)?;
+    let manifest = runpod_s3::RunpodS3Manifest::new(run_prefix.clone(), objects.clone())?;
+    let client = runpod_s3::RunpodS3Client::from_environment(
+        &options.network_volume_id,
+        &options.datacenter_id,
+        &options.access_key_environment,
+        &options.secret_key_environment,
+        runpod_s3::RunpodS3Limits::default(),
+    )?;
+    let mut present = Vec::new();
+    let mut missing = Vec::new();
+    let mut present_bytes = 0_u64;
+    let mut missing_bytes = 0_u64;
+    for object in &objects {
+        match client.head_object(&manifest, object).await? {
+            runpod_s3::HeadObjectState::Present => {
+                present_bytes = present_bytes
+                    .checked_add(object.bytes)
+                    .ok_or(RunpodCliError::Invalid("remote object byte total"))?;
+                present.push(object.key.to_string());
+            }
+            runpod_s3::HeadObjectState::Missing => {
+                missing_bytes = missing_bytes
+                    .checked_add(object.bytes)
+                    .ok_or(RunpodCliError::Invalid("remote object byte total"))?;
+                missing.push(object.key.to_string());
+            }
+        }
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": "livefire.rag.runpod-conformance-remote-status/1",
+            "candidate_sha256": candidate.component_sha256,
+            "run_prefix": run_prefix.to_string(),
+            "model_objects": objects.len(),
+            "present_objects": present,
+            "present_bytes": present_bytes,
+            "missing_objects": missing,
+            "missing_bytes": missing_bytes,
+        }))?
+    );
+    Ok(())
 }
 
 fn build_conformance_candidate(options: ConformanceBuildOptions) -> Result<()> {
@@ -897,6 +1001,14 @@ fn validate_executor_image_build_receipt(
 async fn stage_conformance_candidate(options: ConformanceStageOptions) -> Result<()> {
     let candidate = load_conformance_candidate(&options.candidate)?;
     let mut objects = conformance_input_objects(&options.candidate, &candidate)?;
+    if options.skip_model_objects {
+        objects.retain(|object| {
+            !candidate
+                .model_objects
+                .iter()
+                .any(|model| model.path == object.key)
+        });
+    }
     objects.push(object_for_file(
         &options.candidate.join("candidate.json"),
         "candidate.json",
@@ -914,7 +1026,11 @@ async fn stage_conformance_candidate(options: ConformanceStageOptions) -> Result
     )?;
     for object in &objects {
         match client.head_object(&manifest, object).await? {
-            runpod_s3::HeadObjectState::Present => {}
+            runpod_s3::HeadObjectState::Present => {
+                client
+                    .verify_staged_object(&manifest, object, &options.candidate)
+                    .await?;
+            }
             runpod_s3::HeadObjectState::Missing => {
                 client
                     .put_object(&manifest, object, &options.candidate)
@@ -1229,6 +1345,13 @@ const STORAGE_CHALLENGE_INPUT_KEY: &str = ".storage-challenge.bin";
 // challenge parent directories with provider-selected ownership, while the
 // worker explicitly owns the exact run root and must create its own outputs.
 const STORAGE_CHALLENGE_RESPONSE_KEY: &str = ".storage-challenge-response.json";
+const STORAGE_CHALLENGE_FAILURE_PREFIX: &str = ".storage-challenge-failure";
+
+struct PreparedStorageChallengeFailure {
+    code: String,
+    response: RunpodStorageChallengeFailure,
+    object: CloudObjectRef,
+}
 
 struct PreparedStorageChallenge {
     _temporary: tempfile::TempDir,
@@ -1237,6 +1360,7 @@ struct PreparedStorageChallenge {
     challenge: CloudObjectRef,
     response: CloudObjectRef,
     expected_response: RunpodStorageChallengeResponse,
+    failures: Vec<PreparedStorageChallengeFailure>,
 }
 
 fn prepare_storage_challenge(executor_image: &str) -> Result<PreparedStorageChallenge> {
@@ -1267,6 +1391,19 @@ fn prepare_storage_challenge(executor_image: &str) -> Result<PreparedStorageChal
     let response_path = root.join(STORAGE_CHALLENGE_RESPONSE_KEY);
     write_canonical_json(&response_path, &expected_response)?;
     let response = object_for_file(&response_path, STORAGE_CHALLENGE_RESPONSE_KEY)?;
+    let mut failures = Vec::new();
+    for code in rag_pipeline::RUNPOD_STORAGE_CHALLENGE_FAILURE_CODES {
+        let failure =
+            RunpodStorageChallengeFailure::new(executor_image.to_owned(), challenge.clone())?;
+        let key = format!("{STORAGE_CHALLENGE_FAILURE_PREFIX}-{code}.json");
+        let path = root.join(&key);
+        write_canonical_json(&path, &failure)?;
+        failures.push(PreparedStorageChallengeFailure {
+            code: (*code).into(),
+            response: failure,
+            object: object_for_file(&path, &key)?,
+        });
+    }
     Ok(PreparedStorageChallenge {
         _temporary: temporary,
         root,
@@ -1274,6 +1411,7 @@ fn prepare_storage_challenge(executor_image: &str) -> Result<PreparedStorageChal
         challenge,
         response,
         expected_response,
+        failures,
     })
 }
 
@@ -1303,6 +1441,7 @@ fn storage_challenge_specification(
         name: options.name.clone(),
         image: options.image.clone(),
         gpu_type_id: options.gpu_type_id.clone(),
+        allowed_cuda_version: options.allowed_cuda_version,
         network_volume: volume,
         worker_binary: ComponentRef {
             id: "livefire.rag.runpod-worker".into(),
@@ -1325,6 +1464,8 @@ fn storage_challenge_specification(
             challenge.sha256.to_string(),
             "--response".into(),
             STORAGE_CHALLENGE_RESPONSE_KEY.into(),
+            "--failure-prefix".into(),
+            STORAGE_CHALLENGE_FAILURE_PREFIX.into(),
             "--wait-seconds".into(),
             options.maximum_runtime_seconds.to_string(),
         ],
@@ -1347,6 +1488,8 @@ struct RunpodStorageChallengeReceipt {
     challenge: CloudObjectRef,
     response: CloudObjectRef,
     response_verified: bool,
+    worker_failure_code: Option<String>,
+    worker_failure_verified: bool,
     requested_terminate_after: String,
     termination_binding: &'static str,
     schedule_receipt_sha256: Digest,
@@ -1372,6 +1515,7 @@ impl RunpodStorageChallengeReceipt {
 
 struct StorageChallengeWatchdog {
     outcome: &'static str,
+    worker_failure_code: Option<String>,
     pod_termination: &'static str,
     completed_at_ms: u64,
     elapsed_ms: u64,
@@ -1381,6 +1525,7 @@ struct StorageChallengeWatchdog {
 struct StorageChallengeSupervisionRequest {
     run_prefix: SafeRelativePath,
     response_key: SafeRelativePath,
+    failure_keys: Vec<(String, SafeRelativePath)>,
     started: Instant,
     maximum_runtime_seconds: u64,
     maximum_total_compute_usd: f64,
@@ -1392,6 +1537,7 @@ async fn supervise_storage_challenge(
     pod: &runpod_control::Pod,
     request: StorageChallengeSupervisionRequest,
 ) -> StorageChallengeWatchdog {
+    let mut worker_failure_code = None;
     let mut outcome = loop {
         let elapsed = request.started.elapsed();
         let observed_cost = pod.adjusted_cost_per_hr * elapsed.as_secs_f64() / 3600.0;
@@ -1408,6 +1554,28 @@ async fn supervise_storage_challenge(
             Ok(runpod_s3::HeadObjectState::Present) => break "response_published",
             Ok(runpod_s3::HeadObjectState::Missing) => {}
             Err(_) => break "storage_poll_failed",
+        }
+        let mut published_failure = None;
+        let mut failure_poll_failed = false;
+        for (code, key) in &request.failure_keys {
+            match s3.head_worker_key(&request.run_prefix, key).await {
+                Ok(runpod_s3::HeadObjectState::Present) => {
+                    published_failure = Some(code.clone());
+                    break;
+                }
+                Ok(runpod_s3::HeadObjectState::Missing) => {}
+                Err(_) => {
+                    failure_poll_failed = true;
+                    break;
+                }
+            }
+        }
+        if failure_poll_failed {
+            break "storage_poll_failed";
+        }
+        if let Some(code) = published_failure {
+            worker_failure_code = Some(code);
+            break "worker_failure_published";
         }
         match control.get_pod(&pod.id).await {
             Ok(observed)
@@ -1426,7 +1594,7 @@ async fn supervise_storage_challenge(
         )
         .await;
     };
-    let pod_termination = if control.delete_pod(&pod.id).await.is_ok() {
+    let pod_termination = if delete_pod_with_retries(control, &pod.id).await {
         "succeeded"
     } else {
         outcome = "cleanup_failed";
@@ -1435,6 +1603,7 @@ async fn supervise_storage_challenge(
     let elapsed_ms = u64::try_from(request.started.elapsed().as_millis()).unwrap_or(u64::MAX);
     StorageChallengeWatchdog {
         outcome,
+        worker_failure_code,
         pod_termination,
         completed_at_ms: unix_time_ms(),
         elapsed_ms,
@@ -1484,14 +1653,18 @@ async fn storage_challenge_create(
     let mut launch_output = ReservedJsonOutput::new(launch_path)?;
     let mut create_output = ReservedJsonOutput::new(create_path)?;
     let run_prefix = SafeRelativePath::new(options.run_prefix.clone())?;
-    let transfer = runpod_s3::RunpodS3Manifest::new(
-        run_prefix.clone(),
-        [
-            prepared.bootstrap.clone(),
-            prepared.challenge.clone(),
-            prepared.response.clone(),
-        ],
-    )?;
+    let mut transfer_objects = vec![
+        prepared.bootstrap.clone(),
+        prepared.challenge.clone(),
+        prepared.response.clone(),
+    ];
+    transfer_objects.extend(
+        prepared
+            .failures
+            .iter()
+            .map(|failure| failure.object.clone()),
+    );
+    let transfer = runpod_s3::RunpodS3Manifest::new(run_prefix.clone(), transfer_objects.clone())?;
     let control = runpod_control::RunpodClient::from_environment(
         &options.api_key_environment,
         runpod_control::RunpodClientLimits::default(),
@@ -1503,7 +1676,7 @@ async fn storage_challenge_create(
         &options.secret_key_environment,
         runpod_s3::RunpodS3Limits::default(),
     )?;
-    for object in [&prepared.bootstrap, &prepared.challenge, &prepared.response] {
+    for object in &transfer_objects {
         if s3.head_object(&transfer, object).await? != runpod_s3::HeadObjectState::Missing {
             return Err(RunpodCliError::Invalid(
                 "storage challenge run prefix is not unused",
@@ -1522,7 +1695,7 @@ async fn storage_challenge_create(
         .schedule_pod_with_termination(&specification, &requested_terminate_after)
         .await?;
     if let Err(error) = create_output.write(&scheduled) {
-        let cleanup = if control.delete_pod(&scheduled.pod_id).await.is_ok() {
+        let cleanup = if delete_pod_with_retries(&control, &scheduled.pod_id).await {
             "succeeded"
         } else {
             "failed"
@@ -1537,7 +1710,7 @@ async fn storage_challenge_create(
         .admit_scheduled_pod(&scheduled, &specification)
         .await?;
     if let Err(error) = launch_output.write(&pod) {
-        let cleanup = if control.delete_pod(&pod.id).await.is_ok() {
+        let cleanup = if delete_pod_with_retries(&control, &pod.id).await {
             "succeeded"
         } else {
             "failed"
@@ -1552,7 +1725,7 @@ async fn storage_challenge_create(
         .put_object(&transfer, &prepared.challenge, &prepared.root)
         .await
     {
-        let pod_termination = if control.delete_pod(&pod.id).await.is_ok() {
+        let pod_termination = if delete_pod_with_retries(&control, &pod.id).await {
             "succeeded"
         } else {
             "failed"
@@ -1570,6 +1743,8 @@ async fn storage_challenge_create(
             challenge: prepared.challenge,
             response: prepared.response,
             response_verified: false,
+            worker_failure_code: None,
+            worker_failure_verified: false,
             requested_terminate_after,
             termination_binding: "requested_unobservable",
             schedule_receipt_sha256,
@@ -1597,6 +1772,11 @@ async fn storage_challenge_create(
         StorageChallengeSupervisionRequest {
             run_prefix: run_prefix.clone(),
             response_key: prepared.response.key.clone(),
+            failure_keys: prepared
+                .failures
+                .iter()
+                .map(|failure| (failure.code.clone(), failure.object.key.clone()))
+                .collect(),
             started,
             maximum_runtime_seconds: options.maximum_runtime_seconds,
             maximum_total_compute_usd: options.maximum_total_compute_usd,
@@ -1605,6 +1785,7 @@ async fn storage_challenge_create(
     .await;
     let mut outcome = watchdog.outcome;
     let mut response_verified = false;
+    let mut worker_failure_verified = false;
     if outcome == "response_published" {
         let destination = tempfile::tempdir()?;
         match s3
@@ -1623,6 +1804,32 @@ async fn storage_challenge_create(
             Err(_) => outcome = "response_fetch_failed",
         }
     }
+    if outcome == "worker_failure_published" {
+        if let Some(failure) = watchdog.worker_failure_code.as_ref().and_then(|code| {
+            prepared
+                .failures
+                .iter()
+                .find(|failure| &failure.code == code)
+        }) {
+            let destination = tempfile::tempdir()?;
+            match s3
+                .get_worker_output(&transfer, &failure.object, destination.path())
+                .await
+            {
+                Ok(path) => {
+                    let observed: RunpodStorageChallengeFailure = read_json(&path)?;
+                    if observed == failure.response && observed.validate().is_ok() {
+                        worker_failure_verified = true;
+                    } else {
+                        outcome = "worker_failure_binding_failed";
+                    }
+                }
+                Err(_) => outcome = "worker_failure_fetch_failed",
+            }
+        } else {
+            outcome = "worker_failure_binding_failed";
+        }
+    }
     let mut receipt = RunpodStorageChallengeReceipt {
         schema_version: "livefire.rag.runpod-storage-challenge-receipt/1",
         component_sha256: digest(b"unsealed storage challenge receipt"),
@@ -1635,6 +1842,8 @@ async fn storage_challenge_create(
         challenge: prepared.challenge,
         response: prepared.response,
         response_verified,
+        worker_failure_code: watchdog.worker_failure_code,
+        worker_failure_verified,
         requested_terminate_after,
         termination_binding: "requested_unobservable",
         schedule_receipt_sha256,
@@ -1669,6 +1878,10 @@ struct RunpodSupervisedRunReceipt {
     network_volume_id: String,
     run_prefix: String,
     completion_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worker_failure: Option<RunpodWorkerRuntimeEvent>,
     requested_terminate_after: String,
     termination_binding: &'static str,
     schedule_receipt_sha256: Digest,
@@ -1693,6 +1906,7 @@ struct SupervisionRequest {
     started_at_ms: u64,
     run_prefix: SafeRelativePath,
     completion_key: SafeRelativePath,
+    worker_failure: Option<WorkerFailureExpectation>,
     maximum_hourly_price: f64,
     maximum_runtime_seconds: u64,
     maximum_total_compute_usd: f64,
@@ -1703,12 +1917,36 @@ struct SupervisionRequest {
     launch_receipt_sha256: Digest,
 }
 
+struct WorkerFailureExpectation {
+    key: SafeRelativePath,
+    bundle_file_sha256: Digest,
+    worker_id: String,
+    attempt_id: String,
+    attempt_number: u32,
+}
+
+async fn delete_pod_with_retries(control: &runpod_control::RunpodClient, pod_id: &str) -> bool {
+    for attempt in 0_u64..10 {
+        match control.delete_pod(pod_id).await {
+            Ok(())
+            | Err(runpod_control::RunpodControlError::UnexpectedStatus {
+                operation: "delete Pod",
+                status: 404,
+            }) => return true,
+            Err(_) => {}
+        }
+        tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
+    }
+    false
+}
+
 async fn supervise_pod(
     control: &runpod_control::RunpodClient,
     s3: &runpod_s3::RunpodS3Client,
     pod: &runpod_control::Pod,
     request: SupervisionRequest,
 ) -> RunpodSupervisedRunReceipt {
+    let mut worker_failure = None;
     let mut outcome = loop {
         let elapsed = request.started.elapsed();
         let observed_cost = pod.adjusted_cost_per_hr * elapsed.as_secs_f64() / 3600.0;
@@ -1725,6 +1963,30 @@ async fn supervise_pod(
             Ok(runpod_s3::HeadObjectState::Present) => break "completed",
             Ok(runpod_s3::HeadObjectState::Missing) => {}
             Err(_) => break "poll_failed",
+        }
+        if let Some(expected) = &request.worker_failure {
+            match s3.head_worker_key(&request.run_prefix, &expected.key).await {
+                Ok(runpod_s3::HeadObjectState::Present) => {
+                    match s3
+                        .get_worker_runtime_event(&request.run_prefix, &expected.key)
+                        .await
+                    {
+                        Ok(event)
+                            if event.bundle_file_sha256 == expected.bundle_file_sha256
+                                && event.worker_id == expected.worker_id
+                                && event.attempt_id == expected.attempt_id
+                                && event.attempt_number == expected.attempt_number
+                                && event.status == "failed" =>
+                        {
+                            worker_failure = Some(event);
+                            break "worker_failure_published";
+                        }
+                        Ok(_) | Err(_) => break "worker_failure_invalid",
+                    }
+                }
+                Ok(runpod_s3::HeadObjectState::Missing) => {}
+                Err(_) => break "poll_failed",
+            }
         }
         match control.get_pod(&pod.id).await {
             Ok(observed)
@@ -1746,7 +2008,7 @@ async fn supervise_pod(
         )
         .await;
     };
-    let termination = if control.delete_pod(&pod.id).await.is_ok() {
+    let termination = if delete_pod_with_retries(control, &pod.id).await {
         "succeeded"
     } else {
         outcome = "cleanup_failed";
@@ -1760,6 +2022,11 @@ async fn supervise_pod(
         network_volume_id: pod.network_volume.id.clone(),
         run_prefix: request.run_prefix.to_string(),
         completion_key: request.completion_key.to_string(),
+        failure_key: request
+            .worker_failure
+            .as_ref()
+            .map(|expected| expected.key.to_string()),
+        worker_failure,
         requested_terminate_after: request.requested_terminate_after,
         termination_binding: "requested_unobservable",
         schedule_receipt_sha256: request.schedule_receipt_sha256,
@@ -1854,7 +2121,7 @@ async fn conformance_pod_create(options: ConformanceLaunchOptions) -> Result<()>
         .schedule_pod_with_termination(&specification, &requested_terminate_after)
         .await?;
     if let Err(error) = create_output.write(&scheduled) {
-        let cleanup = if client.delete_pod(&scheduled.pod_id).await.is_ok() {
+        let cleanup = if delete_pod_with_retries(&client, &scheduled.pod_id).await {
             "succeeded"
         } else {
             "failed"
@@ -1869,7 +2136,7 @@ async fn conformance_pod_create(options: ConformanceLaunchOptions) -> Result<()>
         .admit_scheduled_pod(&scheduled, &specification)
         .await?;
     if let Err(error) = launch_output.write(&pod) {
-        let cleanup = if client.delete_pod(&pod.id).await.is_ok() {
+        let cleanup = if delete_pod_with_retries(&client, &pod.id).await {
             "succeeded"
         } else {
             "failed"
@@ -1884,7 +2151,7 @@ async fn conformance_pod_create(options: ConformanceLaunchOptions) -> Result<()>
         match stage_conformance_observation(&options, &candidate, &pod).await {
             Ok(bytes) => bytes,
             Err(error) => {
-                let cleanup = if client.delete_pod(&pod.id).await.is_ok() {
+                let cleanup = if delete_pod_with_retries(&client, &pod.id).await {
                     "succeeded"
                 } else {
                     "failed"
@@ -1907,6 +2174,7 @@ async fn conformance_pod_create(options: ConformanceLaunchOptions) -> Result<()>
                 "conformance/results/{}.json",
                 options.run_id
             ))?,
+            worker_failure: None,
             maximum_hourly_price: options.maximum_hourly_price,
             maximum_runtime_seconds: options.maximum_runtime_seconds,
             maximum_total_compute_usd: options.maximum_total_compute_usd,
@@ -1953,6 +2221,7 @@ fn conformance_pod_specification(
         name: options.name.clone(),
         image: options.image.clone(),
         gpu_type_id: options.gpu_type_id.clone(),
+        allowed_cuda_version: options.allowed_cuda_version,
         network_volume: volume,
         worker_binary: candidate.execution.worker_binary.clone(),
         worker_arguments: vec![
@@ -2140,7 +2409,7 @@ fn build_bundle(options: BuildBundleOptions) -> Result<()> {
     let document_token_counts = staged_object(
         root,
         &plan.document_token_counts_object.path.join_to(plan_root),
-        "input/plan/document-token-counts.u32le",
+        &bundle_plan_object_key(&plan.document_token_counts_object.path)?,
     )?;
     let embedding_profile = staged_component(
         root,
@@ -2187,7 +2456,7 @@ fn build_bundle(options: BuildBundleOptions) -> Result<()> {
                 &options.model_root,
                 &SafeRelativePath::new(object.path.clone())?,
             )?,
-            &format!("input/model/files/{}", object.path),
+            &bundle_model_object_key(&object.path)?,
         )?;
         if staged.bytes != object.bytes || staged.sha256.as_str() != object.sha256 {
             return Err(RunpodCliError::Invalid(
@@ -2196,6 +2465,10 @@ fn build_bundle(options: BuildBundleOptions) -> Result<()> {
         }
         model_objects.push(staged);
     }
+    // The worker accepts an optional common prefix when locating model files.
+    // Put shorter exact paths before longer nested paths so `config.json`
+    // cannot be shadowed by `1_Pooling/config.json` during that lookup.
+    sort_model_objects_for_worker(&mut model_objects);
 
     let mut prepared_documents = Vec::with_capacity(prepared.documents.len());
     for document in &prepared.documents {
@@ -2299,19 +2572,16 @@ fn load_and_validate_bundle(root: &Path) -> Result<RunpodEmbeddingBundle> {
             "model object coverage differs from the complete model manifest",
         ));
     }
-    for (declared, expected) in bundle
-        .artifacts
-        .model_objects
-        .iter()
-        .zip(model_manifest.objects.iter())
-    {
-        if !declared
-            .key
-            .as_str()
-            .ends_with(&format!("/{}", expected.path))
-            || declared.bytes != expected.bytes
-            || declared.sha256.as_str() != expected.sha256
-        {
+    for expected in &model_manifest.objects {
+        let declared = bundle
+            .artifacts
+            .model_objects
+            .iter()
+            .find(|object| object.key.as_str() == expected.path)
+            .ok_or(RunpodCliError::Invalid(
+                "model objects differ from the complete model manifest",
+            ))?;
+        if declared.bytes != expected.bytes || declared.sha256.as_str() != expected.sha256 {
             return Err(RunpodCliError::Invalid(
                 "model objects differ from the complete model manifest",
             ));
@@ -2320,10 +2590,34 @@ fn load_and_validate_bundle(root: &Path) -> Result<RunpodEmbeddingBundle> {
     Ok(bundle)
 }
 
+fn bundle_plan_object_key(path: &SafeRelativePath) -> Result<String> {
+    let key = format!("input/plan/{}", path.as_str());
+    SafeRelativePath::new(key.clone())?;
+    Ok(key)
+}
+
+fn bundle_model_object_key(path: &str) -> Result<String> {
+    SafeRelativePath::new(path.to_owned())?;
+    Ok(path.to_owned())
+}
+
+fn sort_model_objects_for_worker(objects: &mut [CloudObjectRef]) {
+    objects.sort_by(|left, right| {
+        left.key
+            .as_str()
+            .len()
+            .cmp(&right.key.as_str().len())
+            .then_with(|| left.key.as_str().cmp(right.key.as_str()))
+    });
+}
+
 async fn stage(options: StageOptions) -> Result<()> {
     let bundle = load_and_validate_bundle(&options.bundle)?;
     let run_prefix = SafeRelativePath::new(options.run_prefix)?;
     let mut objects = bundle_input_objects(&bundle);
+    if options.skip_model_objects {
+        objects.retain(|object| !bundle.artifacts.model_objects.contains(object));
+    }
     objects.push(staged_bundle_object(&options.bundle)?);
     let manifest = runpod_s3::RunpodS3Manifest::new(run_prefix, objects.clone())?;
     let client = runpod_s3::RunpodS3Client::from_environment(
@@ -2335,7 +2629,11 @@ async fn stage(options: StageOptions) -> Result<()> {
     )?;
     for object in &objects {
         match client.head_object(&manifest, object).await? {
-            runpod_s3::HeadObjectState::Present => {}
+            runpod_s3::HeadObjectState::Present => {
+                client
+                    .verify_staged_object(&manifest, object, &options.bundle)
+                    .await?;
+            }
             runpod_s3::HeadObjectState::Missing => {
                 client
                     .put_object(&manifest, object, &options.bundle)
@@ -2752,6 +3050,12 @@ async fn run_pod(command: PodCommand) -> Result<()> {
             let mut create_output = ReservedJsonOutput::new(create_path)?;
             let specification = pod_specification(&options)?;
             let bundle = load_and_validate_bundle(&options.bundle)?;
+            let completion_worker_id =
+                selected_assignments(&bundle, &options.worker_id, options.assignment_count)?
+                    .last()
+                    .ok_or(RunpodCliError::Invalid("worker assignment range is empty"))?
+                    .worker_id
+                    .clone();
             let declared_staged_input_bytes = checked_object_bytes(
                 bundle_input_objects(&bundle)
                     .into_iter()
@@ -2775,7 +3079,7 @@ async fn run_pod(command: PodCommand) -> Result<()> {
                 .schedule_pod_with_termination(&specification, &requested_terminate_after)
                 .await?;
             if let Err(error) = create_output.write(&scheduled) {
-                let cleanup = if client.delete_pod(&scheduled.pod_id).await.is_ok() {
+                let cleanup = if delete_pod_with_retries(&client, &scheduled.pod_id).await {
                     "succeeded"
                 } else {
                     "failed"
@@ -2791,7 +3095,7 @@ async fn run_pod(command: PodCommand) -> Result<()> {
                 .admit_scheduled_pod(&scheduled, &specification)
                 .await?;
             if let Err(error) = launch_output.write(&pod) {
-                let cleanup = if client.delete_pod(&pod.id).await.is_ok() {
+                let cleanup = if delete_pod_with_retries(&client, &pod.id).await {
                     "succeeded"
                 } else {
                     "failed"
@@ -2805,7 +3109,7 @@ async fn run_pod(command: PodCommand) -> Result<()> {
             let observation_staged_bytes = match stage_worker_observation(&options, &pod).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    let cleanup = if client.delete_pod(&pod.id).await.is_ok() {
+                    let cleanup = if delete_pod_with_retries(&client, &pod.id).await {
                         "succeeded"
                     } else {
                         "failed"
@@ -2826,8 +3130,18 @@ async fn run_pod(command: PodCommand) -> Result<()> {
                     run_prefix: SafeRelativePath::new(options.run_prefix.clone())?,
                     completion_key: SafeRelativePath::new(format!(
                         "attempts/{}/completed.json",
-                        options.worker_id
+                        completion_worker_id
                     ))?,
+                    worker_failure: Some(WorkerFailureExpectation {
+                        key: SafeRelativePath::new(format!(
+                            "runtime/{}/attempts/{}/failed.json",
+                            options.worker_id, options.attempt_id
+                        ))?,
+                        bundle_file_sha256: staged_bundle_object(&options.bundle)?.sha256,
+                        worker_id: options.worker_id.clone(),
+                        attempt_id: options.attempt_id.clone(),
+                        attempt_number: options.attempt_number,
+                    }),
                     maximum_hourly_price: options.maximum_hourly_price,
                     maximum_runtime_seconds: options.maximum_runtime_seconds,
                     maximum_total_compute_usd: options.maximum_total_compute_usd,
@@ -2950,6 +3264,29 @@ fn returned_accelerator(
     })
 }
 
+fn selected_assignments<'a>(
+    bundle: &'a RunpodEmbeddingBundle,
+    worker_id: &str,
+    assignment_count: u32,
+) -> Result<&'a [RunpodWorkerAssignment]> {
+    let start = bundle
+        .assignments
+        .iter()
+        .position(|assignment| assignment.worker_id == worker_id)
+        .ok_or(RunpodCliError::Invalid(
+            "worker ID is not assigned by the bundle",
+        ))?;
+    let count = usize::try_from(assignment_count)
+        .map_err(|_| RunpodCliError::Invalid("worker assignment count is invalid"))?;
+    let end = start
+        .checked_add(count)
+        .filter(|end| count != 0 && *end <= bundle.assignments.len())
+        .ok_or(RunpodCliError::Invalid(
+            "worker assignment range exceeds the bundle",
+        ))?;
+    Ok(&bundle.assignments[start..end])
+}
+
 fn pod_specification(options: &PodLaunchOptions) -> Result<runpod_control::PodCreateSpec> {
     let bundle = load_and_validate_bundle(&options.bundle)?;
     validate_watchdog_limits(
@@ -2957,13 +3294,9 @@ fn pod_specification(options: &PodLaunchOptions) -> Result<runpod_control::PodCr
         options.maximum_runtime_seconds,
         options.maximum_total_compute_usd,
     )?;
-    let assignment = bundle
-        .assignments
-        .iter()
-        .find(|assignment| assignment.worker_id == options.worker_id)
-        .ok_or(RunpodCliError::Invalid(
-            "worker ID is not assigned by the bundle",
-        ))?;
+    let assignment = selected_assignments(&bundle, &options.worker_id, options.assignment_count)?
+        .first()
+        .ok_or(RunpodCliError::Invalid("worker assignment range is empty"))?;
     if options.attempt_number == 0 || options.attempt_id.is_empty() {
         return Err(RunpodCliError::Invalid("attempt identity is invalid"));
     }
@@ -2978,6 +3311,15 @@ fn pod_specification(options: &PodLaunchOptions) -> Result<runpod_control::PodCr
             .join_to(&options.bundle),
     )?;
     let policy = parse_tei_checkpoint_profile_v3(&policy_bytes)?;
+    if options.batch_size == 0
+        || options.batch_size > policy.batching.maximum_batch_items as usize
+        || options.requests_in_flight == 0
+        || options.requests_in_flight > policy.batching.maximum_concurrent_requests as usize
+    {
+        return Err(RunpodCliError::Invalid(
+            "Pod batch size or request concurrency exceeds the measured embedding policy",
+        ));
+    }
     let expected_image = format!(
         "{}@{}",
         policy.executor_image.repository, policy.executor_image.digest
@@ -2996,6 +3338,7 @@ fn pod_specification(options: &PodLaunchOptions) -> Result<runpod_control::PodCr
         name: options.name.clone(),
         image: options.image.clone(),
         gpu_type_id: options.gpu_type_id.clone(),
+        allowed_cuda_version: options.allowed_cuda_version,
         network_volume: volume,
         worker_binary: bundle.execution.worker_binary.clone(),
         worker_arguments: vec![
@@ -3006,10 +3349,16 @@ fn pod_specification(options: &PodLaunchOptions) -> Result<runpod_control::PodCr
             BUNDLE_FILE.into(),
             "--worker-id".into(),
             assignment.worker_id.clone(),
+            "--assignment-count".into(),
+            options.assignment_count.to_string(),
             "--attempt-id".into(),
             options.attempt_id.clone(),
             "--attempt-number".into(),
             options.attempt_number.to_string(),
+            "--batch-size".into(),
+            options.batch_size.to_string(),
+            "--requests-in-flight".into(),
+            options.requests_in_flight.to_string(),
             "--observation".into(),
             observation,
             "--observation-wait-seconds".into(),
@@ -3271,6 +3620,42 @@ mod tests {
                 "rag",
                 "runpod",
                 "pod",
+                "dry-run",
+                "--bundle",
+                "sealed",
+                "--volume",
+                "volume.json",
+                "--image",
+                "ghcr.io/example/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "--gpu-type-id",
+                "NVIDIA GeForce RTX 5090",
+                "--allowed-cuda-version",
+                "12.9",
+                "--name",
+                "embedding-pilot",
+                "--worker-id",
+                "worker-0000",
+                "--assignment-count",
+                "4",
+                "--attempt-id",
+                "attempt-0001",
+                "--batch-size",
+                "4",
+                "--requests-in-flight",
+                "1",
+                "--run-prefix",
+                "runs/embedding-pilot",
+                "--maximum-hourly-price",
+                "0.99",
+                "--maximum-runtime-seconds",
+                "900",
+                "--maximum-total-compute-usd",
+                "0.25",
+            ],
+            vec![
+                "rag",
+                "runpod",
+                "pod",
                 "terminate",
                 "--id",
                 "pod-1",
@@ -3318,6 +3703,8 @@ mod tests {
                 "ghcr.io/example/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "--gpu-type-id",
                 "NVIDIA A30",
+                "--allowed-cuda-version",
+                "12.9",
                 "--name",
                 "storage-proof",
                 "--run-prefix",
@@ -3342,6 +3729,12 @@ mod tests {
                     "../../rag-pipeline/schema/runpod-storage-challenge-response.v1.schema.json"
                 ),
                 "https://livefire.dev/rag/runpod-storage-challenge-response.v1.schema.json",
+            ),
+            (
+                include_str!(
+                    "../../rag-pipeline/schema/runpod-storage-challenge-failure.v1.schema.json"
+                ),
+                "https://livefire.dev/rag/runpod-storage-challenge-failure.v1.schema.json",
             ),
             (
                 include_str!(
@@ -3401,6 +3794,7 @@ mod tests {
             volume: volume_path,
             image: image.clone(),
             gpu_type_id: "NVIDIA A30".into(),
+            allowed_cuda_version: runpod_control::RunpodCudaVersion::Cuda12_9,
             name: "storage-proof".into(),
             run_prefix: "runs/storage-proof".into(),
             container_disk_gb: 20,
@@ -3503,6 +3897,47 @@ mod tests {
         fs::write(another.join(BUNDLE_FILE), b"changed").unwrap();
         assert!(publish_without_overwrite(&another, &destination).is_err());
         assert_eq!(fs::read(destination.join(BUNDLE_FILE)).unwrap(), b"bundle");
+    }
+
+    #[test]
+    fn bundle_preserves_the_plan_relative_token_count_path() {
+        let path = SafeRelativePath::new("token-counts/document-token-counts.u32le").unwrap();
+        assert_eq!(
+            bundle_plan_object_key(&path).unwrap(),
+            "input/plan/token-counts/document-token-counts.u32le"
+        );
+    }
+
+    #[test]
+    fn bundle_reuses_the_conformance_model_tree_at_the_run_root() {
+        assert_eq!(
+            bundle_model_object_key("model-00001-of-00004.safetensors").unwrap(),
+            "model-00001-of-00004.safetensors"
+        );
+        assert_eq!(
+            bundle_model_object_key("1_Pooling/config.json").unwrap(),
+            "1_Pooling/config.json"
+        );
+        assert!(bundle_model_object_key("../model.safetensors").is_err());
+    }
+
+    #[test]
+    fn exact_model_path_precedes_a_nested_suffix_during_worker_lookup() {
+        let mut objects = vec![
+            CloudObjectRef {
+                key: SafeRelativePath::new("1_Pooling/config.json").unwrap(),
+                bytes: 2,
+                sha256: digest(b"nested"),
+            },
+            CloudObjectRef {
+                key: SafeRelativePath::new("config.json").unwrap(),
+                bytes: 1,
+                sha256: digest(b"root"),
+            },
+        ];
+        sort_model_objects_for_worker(&mut objects);
+        assert_eq!(objects[0].key.as_str(), "config.json");
+        assert_eq!(objects[1].key.as_str(), "1_Pooling/config.json");
     }
 
     #[test]

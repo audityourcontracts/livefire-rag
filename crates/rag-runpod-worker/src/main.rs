@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use rag_runpod_worker::{
     ConformanceOptions, RunOptions, StorageChallengeOptions, conformance, prepare_runtime_storage,
-    run, storage_challenge, verify_storage_objects,
+    publish_storage_challenge_failure, run, storage_challenge, verify_storage_objects,
 };
 
 #[derive(Debug, Parser)]
@@ -46,6 +46,9 @@ enum Command {
         challenge_sha256: String,
         #[arg(long)]
         response: String,
+        /// Prefix for a content-bound, code-suffixed failure receipt.
+        #[arg(long)]
+        failure_prefix: String,
         #[arg(long, default_value_t = 300)]
         wait_seconds: u64,
     },
@@ -73,6 +76,10 @@ enum Command {
         bundle: String,
         #[arg(long)]
         worker_id: String,
+        /// Number of consecutive token-balanced assignments to execute while
+        /// the verified model remains loaded in this Pod.
+        #[arg(long, default_value_t = 1)]
+        assignment_count: u32,
         #[arg(long)]
         attempt_id: String,
         #[arg(long)]
@@ -114,24 +121,38 @@ async fn main() {
             challenge_bytes,
             challenge_sha256,
             response,
+            failure_prefix,
             wait_seconds,
-        } => match prepare_runtime_storage(&root) {
-            Ok(root) => {
-                storage_challenge(StorageChallengeOptions {
-                    root,
-                    executor_image: format!(
-                        "{executor_image_repository}@{executor_image_digest}"
-                    ),
+        } => {
+            let executor_image = format!("{executor_image_repository}@{executor_image_digest}");
+            let result = match prepare_runtime_storage(&root) {
+                Ok(prepared_root) => {
+                    storage_challenge(StorageChallengeOptions {
+                        root: prepared_root,
+                        executor_image: executor_image.clone(),
+                        challenge: challenge.clone(),
+                        challenge_bytes,
+                        challenge_sha256: challenge_sha256.clone(),
+                        response,
+                        wait_seconds,
+                    })
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = &result {
+                let _ = publish_storage_challenge_failure(
+                    &root,
+                    &failure_prefix,
+                    executor_image,
                     challenge,
                     challenge_bytes,
                     challenge_sha256,
-                    response,
-                    wait_seconds,
-                })
-                .await
+                    error.public_code(),
+                );
             }
-            Err(error) => Err(error),
-        },
+            result
+        }
         Command::Conformance {
             root,
             candidate,
@@ -157,6 +178,7 @@ async fn main() {
             root,
             bundle,
             worker_id,
+            assignment_count,
             attempt_id,
             attempt_number,
             observation,
@@ -170,6 +192,7 @@ async fn main() {
                 root,
                 bundle,
                 worker_id,
+                assignment_count,
                 attempt_id,
                 attempt_number,
                 observation,

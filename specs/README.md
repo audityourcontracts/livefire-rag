@@ -53,11 +53,17 @@ they do not define an OpenBOTS compatibility path.
   identity written by the Rust host and verified by the Rust worker. This is an
   active internal host-to-worker wire contract, so it is included in the
   offline schema bundle; it is not a public provider tool API.
-- `runpod-storage-challenge-response.v1` and
+- `runpod-worker-runtime-event.v1`: immutable startup checkpoints and a sealed
+  terminal failure for each embedding-worker attempt. These records make slow
+  input verification distinguishable from model startup or inference failure
+  without SSH or access to container standard error.
+- `runpod-storage-challenge-response.v1`,
+  `runpod-storage-challenge-failure.v1`, and
   `runpod-storage-challenge-receipt.v1`: the exact image-and-object-bound reply
-  produced after the worker reads a fresh host upload through the mounted
-  volume, and the host's Pod, price-cap, watchdog, response-verification, and
-  termination evidence. These contain no credential values.
+  or bounded startup failure produced after the worker reads a fresh host
+  upload through the mounted volume, and the host's Pod, price-cap, watchdog,
+  response-verification, and termination evidence. These contain no credential
+  values.
 - `embedding-plan.v2`: exact tokenizer-bound, token-balanced embedding tasks
   over consecutive prepared-document ranges. It keeps the portable vector
   receipt/result formats while making task sizes and token counts reproducible.

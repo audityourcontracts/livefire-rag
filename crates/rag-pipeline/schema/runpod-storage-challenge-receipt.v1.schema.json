@@ -25,6 +25,8 @@
     "challenge": {"$ref": "#/$defs/object"},
     "response": {"$ref": "#/$defs/object"},
     "response_verified": {"type": "boolean"},
+    "worker_failure_code": {"type": ["string", "null"], "enum": [null, "contract_failure", "io_failure", "privilege_drop", "run_root", "storage_challenge_contract", "storage_challenge_wait", "storage_ownership", "storage_probe", "system_time", "worker_user"]},
+    "worker_failure_verified": {"type": "boolean"},
     "requested_terminate_after": {"type": "string", "format": "date-time"},
     "termination_binding": {"const": "requested_unobservable"},
     "schedule_receipt_sha256": {"$ref": "#/$defs/digest"},
@@ -38,7 +40,7 @@
     "elapsed_ms": {"$ref": "#/$defs/safeInteger"},
     "observed_compute_usd": {"type": "number", "minimum": 0},
     "outcome": {
-      "enum": ["completed", "challenge_upload_failed", "runtime_limit", "cost_limit", "storage_poll_failed", "control_poll_failed", "pod_exited", "cleanup_failed", "response_binding_failed", "response_fetch_failed"]
+      "enum": ["completed", "challenge_upload_failed", "runtime_limit", "cost_limit", "storage_poll_failed", "control_poll_failed", "pod_exited", "cleanup_failed", "response_binding_failed", "response_fetch_failed", "worker_failure_published", "worker_failure_binding_failed", "worker_failure_fetch_failed"]
     },
     "pod_termination": {"enum": ["succeeded", "failed"]}
   },

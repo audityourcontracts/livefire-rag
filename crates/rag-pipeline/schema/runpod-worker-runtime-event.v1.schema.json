@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://livefire.dev/rag/runpod-worker-runtime-event.v1.schema.json",
+  "title": "RunPod worker runtime event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "component_sha256",
+    "bundle_file_sha256",
+    "worker_id",
+    "attempt_id",
+    "attempt_number",
+    "sequence",
+    "phase",
+    "status"
+  ],
+  "properties": {
+    "schema_version": { "const": "livefire.rag.runpod-worker-runtime-event/1" },
+    "component_sha256": { "$ref": "#/$defs/sha256" },
+    "bundle_file_sha256": { "$ref": "#/$defs/sha256" },
+    "worker_id": { "$ref": "#/$defs/identifier" },
+    "attempt_id": { "$ref": "#/$defs/identifier" },
+    "attempt_number": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "sequence": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "phase": {
+      "enum": [
+        "worker_started",
+        "control_objects_verified",
+        "model_tree_verified",
+        "observation_verified",
+        "gpu_verified",
+        "tei_started",
+        "tei_healthy",
+        "conformance_passed",
+        "query_vectors_published",
+        "first_task_published",
+        "assignment_completed"
+      ]
+    },
+    "status": { "enum": ["completed", "failed"] },
+    "failure_code": { "$ref": "#/$defs/identifier" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "failed" } } },
+      "then": { "required": ["failure_code"] },
+      "else": { "not": { "required": ["failure_code"] } }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    }
+  }
+}

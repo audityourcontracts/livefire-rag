@@ -50,6 +50,7 @@ mod dataset_catalogue;
 mod query_vector_set;
 mod runpod_conformance;
 mod runpod_storage_challenge;
+mod runpod_worker_runtime;
 mod token_plan;
 
 pub use benchmark_selection::{
@@ -89,7 +90,12 @@ pub use runpod_conformance::{
     seal_embedding_policy_v3_conformance,
 };
 pub use runpod_storage_challenge::{
-    RUNPOD_STORAGE_CHALLENGE_RESPONSE_SCHEMA, RunpodStorageChallengeResponse,
+    RUNPOD_STORAGE_CHALLENGE_FAILURE_CODES, RUNPOD_STORAGE_CHALLENGE_FAILURE_SCHEMA,
+    RUNPOD_STORAGE_CHALLENGE_RESPONSE_SCHEMA, RunpodStorageChallengeFailure,
+    RunpodStorageChallengeResponse,
+};
+pub use runpod_worker_runtime::{
+    RUNPOD_WORKER_RUNTIME_EVENT_SCHEMA, RUNPOD_WORKER_RUNTIME_PHASES, RunpodWorkerRuntimeEvent,
 };
 pub use token_plan::{
     DOCUMENT_TOKEN_COUNTS_PATH, DocumentTokenCountsObject, EmbeddingInputSliceV2, EmbeddingPlanV2,

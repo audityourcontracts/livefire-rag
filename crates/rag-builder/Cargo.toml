@@ -13,8 +13,11 @@ path = "src/main.rs"
 arrow-array.workspace = true
 arrow-schema.workspace = true
 aws-sdk-s3.workspace = true
+aws-smithy-http-client.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 clap.workspace = true
+md-5.workspace = true
+hyper-rustls.workspace = true
 parquet.workspace = true
 rag-embedding.workspace = true
 rag-index.workspace = true

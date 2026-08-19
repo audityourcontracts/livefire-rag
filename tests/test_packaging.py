@@ -120,6 +120,7 @@ class PackagingTests(unittest.TestCase):
                     "tei-model-artifact-set.v1.schema.json",
                     "runpod-embedding-bundle.v1.schema.json",
                     "runpod-worker-attempt.v1.schema.json",
+                    "runpod-worker-runtime-event.v1.schema.json",
                     "runpod-run-report.v1.schema.json",
                     "runpod-tei-conformance-candidate.v1.schema.json",
                     "runpod-tei-conformance-result.v1.schema.json",

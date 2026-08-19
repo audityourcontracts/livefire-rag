@@ -14,13 +14,13 @@ RUN cargo build --locked --release --target x86_64-unknown-linux-gnu -p rag-runp
 FROM scratch AS worker-artifact
 COPY --from=build /source/target/x86_64-unknown-linux-gnu/release/rag-runpod-worker /rag-runpod-worker
 
-FROM --platform=linux/amd64 ghcr.io/huggingface/text-embeddings-inference:1.9.3@sha256:39a82da7c30641fbc5f7776f512db0878cf3573e1ea8d60a886391fb4bdcba66
+FROM --platform=linux/amd64 ghcr.io/huggingface/text-embeddings-inference:120-1.9@sha256:144aaa80ddcb520d49df83f915dc188ddd7cc6b1b3b9684a829c21dd39cbe3c5
 # The CUDA-linked TEI router cannot execute on a CPU-only build host, even for
 # `--help`. The Rust worker fixes `--auto-truncate=false`; the fresh-GPU
 # conformance run proves that exact argument against this digest-pinned base.
 LABEL org.opencontainers.image.title="Livefire RAG RunPod worker" \
-      org.opencontainers.image.base.name="ghcr.io/huggingface/text-embeddings-inference:1.9.3" \
-      org.opencontainers.image.base.digest="sha256:39a82da7c30641fbc5f7776f512db0878cf3573e1ea8d60a886391fb4bdcba66"
+      org.opencontainers.image.base.name="ghcr.io/huggingface/text-embeddings-inference:120-1.9" \
+      org.opencontainers.image.base.digest="sha256:144aaa80ddcb520d49df83f915dc188ddd7cc6b1b3b9684a829c21dd39cbe3c5"
 COPY --from=build /source/target/x86_64-unknown-linux-gnu/release/rag-runpod-worker /usr/local/bin/rag-runpod-worker
 # The worker starts as root only long enough to take ownership of its exact
 # /workspace/<run-prefix> directory. It then permanently drops to 1000:1000

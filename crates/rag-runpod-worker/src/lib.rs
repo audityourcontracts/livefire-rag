@@ -25,15 +25,16 @@ use rag_pipeline::{
     ExecutorReceipt, PreparedCorpusManifest, PreparedDocumentRow, QueryVectorExecutionBinding,
     QueryVectorSetInput, RUNPOD_TEI_CONFORMANCE_RESULT_SCHEMA, RUNPOD_WORKER_ATTEMPT_SCHEMA,
     RunpodAcceleratorIdentity, RunpodEmbeddingBundle, RunpodExecutorImageBuildReceipt,
-    RunpodMachineIdentity, RunpodQueryVectorSetOutput, RunpodStorageChallengeResponse,
-    RunpodTaskOutput, RunpodTeiArtifactObject, RunpodTeiConformanceCandidate,
-    RunpodTeiConformanceOutcome, RunpodTeiConformanceResult, RunpodTeiMachineIdentity,
-    RunpodTeiNormalizedOutput, RunpodWorkerAssignment, RunpodWorkerAttemptMarker, SafeRelativePath,
-    SealedQueryVectorSet, TokenizerArtifactFormat, VECTOR_RECEIPT_SCHEMA, VectorObject,
-    VectorResultReceipt, WorkerAttemptOutcome, canonical_digest, canonical_json_bytes,
-    digest_bytes, embedding_input_order_digest, format_document_input_exact,
-    query_vector_plan_queries, read_json, read_prepared_documents, resolve_existing_artifact,
-    resolve_output_artifact, write_query_vector_set,
+    RunpodMachineIdentity, RunpodQueryVectorSetOutput, RunpodStorageChallengeFailure,
+    RunpodStorageChallengeResponse, RunpodTaskOutput, RunpodTeiArtifactObject,
+    RunpodTeiConformanceCandidate, RunpodTeiConformanceOutcome, RunpodTeiConformanceResult,
+    RunpodTeiMachineIdentity, RunpodTeiNormalizedOutput, RunpodWorkerAssignment,
+    RunpodWorkerAttemptMarker, RunpodWorkerRuntimeEvent, SafeRelativePath, SealedQueryVectorSet,
+    TokenizerArtifactFormat, VECTOR_RECEIPT_SCHEMA, VectorObject, VectorResultReceipt,
+    WorkerAttemptOutcome, canonical_digest, canonical_json_bytes, digest_bytes,
+    embedding_input_order_digest, format_document_input_exact, query_vector_plan_queries,
+    read_json, read_prepared_documents, resolve_existing_artifact, resolve_output_artifact,
+    write_query_vector_set,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -42,8 +43,8 @@ use tokio::{process::Child, time::sleep};
 
 const TEI_ENTRYPOINT: &str = "/entrypoint.sh";
 const PINNED_TEI_IMAGE_SHA256: &str =
-    "39a82da7c30641fbc5f7776f512db0878cf3573e1ea8d60a886391fb4bdcba66";
-const PINNED_TEI_COMPUTE_CAPABILITY: &str = "8.0";
+    "144aaa80ddcb520d49df83f915dc188ddd7cc6b1b3b9684a829c21dd39cbe3c5";
+const PINNED_TEI_COMPUTE_CAPABILITY: &str = "12.0";
 const MAX_OBSERVATION_BYTES: u64 = 64 * 1024;
 const MAX_CONTROL_BYTES: u64 = 16 * 1024 * 1024;
 const WORKSPACE_ROOT: &str = "/workspace";
@@ -60,6 +61,8 @@ pub enum WorkerError {
     Json(#[from] serde_json::Error),
     #[error("embedding execution failed")]
     Embedding(#[from] rag_embedding::EmbeddingError),
+    #[error("model hydration failed")]
+    ModelHydration(#[from] reqwest::Error),
     #[error("pipeline validation failed")]
     Pipeline(#[from] rag_pipeline::PipelineError),
 }
@@ -72,6 +75,7 @@ impl WorkerError {
             Self::Io(_) => "io_failure",
             Self::Json(_) => "json_failure",
             Self::Embedding(_) => "embedding_failure",
+            Self::ModelHydration(_) => "model_hydration_failure",
             Self::Pipeline(_) => "contract_failure",
         }
     }
@@ -79,22 +83,26 @@ impl WorkerError {
 
 type Result<T> = std::result::Result<T, WorkerError>;
 
-/// Own only the selected run directory, then permanently leave root before
-/// any model or result processing begins.
+/// Try to restrict the selected run directory, then permanently leave root
+/// before any model or result processing begins. Some network-volume
+/// filesystems do not implement `chown`; in that case the mandatory probe
+/// after the privilege drop is the admission test for the mounted prefix.
 pub fn prepare_runtime_storage(root: &Path) -> Result<PathBuf> {
     let root = validate_workspace_run_root(root)?;
     let effective_uid = nix::unistd::geteuid();
     if effective_uid.is_root() {
-        nix::unistd::chown(
+        let ownership_hardened = nix::unistd::chown(
             &root,
             Some(nix::unistd::Uid::from_raw(WORKER_UID)),
             Some(nix::unistd::Gid::from_raw(WORKER_GID)),
         )
-        .map_err(|_| WorkerError::Invalid("storage_ownership"))?;
+        .is_ok();
         #[cfg(unix)]
-        {
+        if ownership_hardened {
             use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+            // Permission tightening is defense in depth. The post-drop probe
+            // below remains mandatory even when this succeeds.
+            let _ = fs::set_permissions(&root, fs::Permissions::from_mode(0o700));
         }
         clear_supplementary_groups()?;
         nix::unistd::setgid(nix::unistd::Gid::from_raw(WORKER_GID))
@@ -306,6 +314,7 @@ pub struct RunOptions {
     pub root: PathBuf,
     pub bundle: String,
     pub worker_id: String,
+    pub assignment_count: u32,
     pub attempt_id: String,
     pub attempt_number: u32,
     pub observation: String,
@@ -379,6 +388,34 @@ pub async fn storage_challenge(options: StorageChallengeOptions) -> Result<()> {
     publish_no_overwrite(&output, &canonical_json_bytes(&expected)?)
 }
 
+/// Best-effort diagnostic publication for a failed storage challenge. This is
+/// deliberately separate from the success path and can run either before or
+/// after the permanent privilege drop, provided the exact run root itself is
+/// valid and writable.
+pub fn publish_storage_challenge_failure(
+    root: &Path,
+    failure_prefix: &str,
+    executor_image: String,
+    challenge: String,
+    challenge_bytes: u64,
+    challenge_sha256: String,
+    failure_code: &str,
+) -> Result<()> {
+    if !rag_pipeline::RUNPOD_STORAGE_CHALLENGE_FAILURE_CODES.contains(&failure_code) {
+        return Err(WorkerError::Invalid("storage_challenge_failure_code"));
+    }
+    let root = validate_workspace_run_root(root)?;
+    let challenge = CloudObjectRef {
+        key: SafeRelativePath::new(challenge)?,
+        bytes: challenge_bytes,
+        sha256: Digest::new(challenge_sha256)?,
+    };
+    let failure = RunpodStorageChallengeFailure::new(executor_image, challenge)?;
+    let key = SafeRelativePath::new(format!("{failure_prefix}-{failure_code}.json"))?;
+    let output = resolve_output_artifact(&root, &key)?;
+    publish_no_overwrite(&output, &canonical_json_bytes(&failure)?)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerObservation {
@@ -404,6 +441,7 @@ struct ValidatedWork {
     root: PathBuf,
     bundle: RunpodEmbeddingBundle,
     assignment: RunpodWorkerAssignment,
+    additional_assignments: Vec<RunpodWorkerAssignment>,
     prepared: PreparedCorpusManifest,
     plan: EmbeddingPlanV2,
     backend_version: String,
@@ -422,10 +460,96 @@ struct ValidatedWork {
     observation: WorkerObservation,
 }
 
+struct RuntimeReporter {
+    root: PathBuf,
+    bundle_file_sha256: Digest,
+    worker_id: String,
+    attempt_id: String,
+    attempt_number: u32,
+    sequence: u32,
+    current_phase: &'static str,
+}
+
+impl RuntimeReporter {
+    fn open(options: &RunOptions) -> Result<Self> {
+        let root = fs::canonicalize(&options.root)?;
+        let bundle_path = contained_existing(&root, &options.bundle)?;
+        ensure_bounded(&bundle_path, MAX_CONTROL_BYTES)?;
+        Ok(Self {
+            root,
+            bundle_file_sha256: digest_bytes(&fs::read(bundle_path)?),
+            worker_id: options.worker_id.clone(),
+            attempt_id: options.attempt_id.clone(),
+            attempt_number: options.attempt_number,
+            sequence: 0,
+            current_phase: "worker_started",
+        })
+    }
+
+    fn begin(&mut self, phase: &'static str) {
+        self.current_phase = phase;
+    }
+
+    fn complete(&mut self, phase: &'static str) -> Result<()> {
+        self.begin(phase);
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(WorkerError::Invalid("runtime_event_sequence"))?;
+        let event = RunpodWorkerRuntimeEvent::progress(
+            self.bundle_file_sha256.clone(),
+            self.worker_id.clone(),
+            self.attempt_id.clone(),
+            self.attempt_number,
+            self.sequence,
+            phase,
+        )?;
+        let key = SafeRelativePath::new(format!(
+            "runtime/{}/attempts/{}/phases/{:02}-{phase}.json",
+            self.worker_id, self.attempt_id, self.sequence
+        ))?;
+        let path = resolve_output_artifact(&self.root, &key)?;
+        publish_no_overwrite(&path, &canonical_json_bytes(&event)?)
+    }
+
+    fn fail(&mut self, failure_code: &str) -> Result<()> {
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(WorkerError::Invalid("runtime_event_sequence"))?;
+        let event = RunpodWorkerRuntimeEvent::failure(
+            self.bundle_file_sha256.clone(),
+            self.worker_id.clone(),
+            self.attempt_id.clone(),
+            self.attempt_number,
+            self.sequence,
+            self.current_phase,
+            failure_code,
+        )?;
+        let key = SafeRelativePath::new(format!(
+            "runtime/{}/attempts/{}/failed.json",
+            self.worker_id, self.attempt_id
+        ))?;
+        let path = resolve_output_artifact(&self.root, &key)?;
+        publish_no_overwrite(&path, &canonical_json_bytes(&event)?)
+    }
+}
+
 pub async fn run(options: RunOptions) -> Result<()> {
     validate_cli(&options)?;
+    let mut reporter = RuntimeReporter::open(&options)?;
+    reporter.complete("worker_started")?;
+    let result = run_reported(&options, &mut reporter).await;
+    if let Err(error) = &result {
+        let _ = reporter.fail(error.public_code());
+    }
+    result
+}
+
+async fn run_reported(options: &RunOptions, reporter: &mut RuntimeReporter) -> Result<()> {
     let executable = std::env::current_exe()?;
-    let work = ValidatedWork::load(&options, &executable).await?;
+    let mut work = ValidatedWork::load(options, &executable, reporter).await?;
+    reporter.begin("tei_started");
     let mut tei = TeiProcess::start(
         &work.model_dir,
         options.port,
@@ -435,6 +559,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         work.maximum_concurrent_requests as usize,
         &work.served_model,
     )?;
+    reporter.complete("tei_started")?;
     let endpoint = format!("http://127.0.0.1:{}", options.port);
     let embedder = Arc::new(TeiEmbedder::checkpoint_profile_loopback(
         &endpoint,
@@ -451,17 +576,30 @@ pub async fn run(options: RunOptions) -> Result<()> {
         tei.stop().await;
         return Err(error);
     }
-    let outcome = execute_assignment(
-        &work,
-        embedder,
-        &options.attempt_id,
-        options.attempt_number,
-        options.batch_size,
-        options.requests_in_flight,
-    )
-    .await;
+    reporter.complete("tei_healthy")?;
+    let mut assignments = Vec::with_capacity(1 + work.additional_assignments.len());
+    assignments.push(work.assignment.clone());
+    assignments.append(&mut work.additional_assignments);
+    let mut outcome = Ok(());
+    for assignment in assignments {
+        work.assignment = assignment;
+        if let Err(error) = execute_assignment(
+            &work,
+            Arc::clone(&embedder),
+            &options.attempt_id,
+            options.attempt_number,
+            options.batch_size,
+            options.requests_in_flight,
+            Some(&mut *reporter),
+        )
+        .await
+        {
+            outcome = Err(error);
+            break;
+        }
+    }
     tei.stop().await;
-    outcome.map(|_| ())
+    outcome
 }
 
 pub async fn conformance(options: ConformanceOptions) -> Result<()> {
@@ -522,6 +660,7 @@ pub async fn conformance(options: ConformanceOptions) -> Result<()> {
     {
         return Err(WorkerError::Invalid("model_manifest_binding"));
     }
+    hydrate_candidate_model_tree(&root, &candidate).await?;
     let tokenizer_path = verified_tei_object(&root, &candidate.tokenizer.object)?;
     let tokenizer = ExactTokenizer::from_bytes(
         ExecutableTokenizerRef {
@@ -667,6 +806,7 @@ pub async fn conformance(options: ConformanceOptions) -> Result<()> {
 fn validate_cli(options: &RunOptions) -> Result<()> {
     if options.attempt_number == 0
         || options.port == 0
+        || options.assignment_count == 0
         || options.batch_size == 0
         || options.batch_size > 32
         || options.requests_in_flight == 0
@@ -682,7 +822,12 @@ fn validate_cli(options: &RunOptions) -> Result<()> {
 }
 
 impl ValidatedWork {
-    async fn load(options: &RunOptions, executable: &Path) -> Result<Self> {
+    async fn load(
+        options: &RunOptions,
+        executable: &Path,
+        reporter: &mut RuntimeReporter,
+    ) -> Result<Self> {
+        reporter.begin("control_objects_verified");
         let root = fs::canonicalize(&options.root)?;
         if !root.is_dir() {
             return Err(WorkerError::Invalid("run_root"));
@@ -702,12 +847,13 @@ impl ValidatedWork {
             return Err(WorkerError::Invalid("bundle_component_binding"));
         }
 
-        let assignment = bundle
-            .assignments
-            .iter()
-            .find(|item| item.worker_id == options.worker_id)
-            .cloned()
-            .ok_or(WorkerError::Invalid("worker_assignment"))?;
+        let mut assignments =
+            selected_worker_assignments(&bundle, &options.worker_id, options.assignment_count)?
+                .into_iter();
+        let assignment = assignments
+            .next()
+            .ok_or(WorkerError::Invalid("worker_assignment_count"))?;
+        let additional_assignments = assignments.collect();
 
         let policy_path = verified_object(&root, &bundle.artifacts.embedding_profile.object)?;
         ensure_bounded(&policy_path, MAX_CONTROL_BYTES)?;
@@ -796,7 +942,6 @@ impl ValidatedWork {
         {
             return Err(WorkerError::Invalid("model_manifest_binding"));
         }
-        let model_dir = validate_model_tree(&root, &bundle, &policy)?;
 
         let staged_worker = verified_object(&root, &bundle.artifacts.worker_binary.object)?;
         if file_digest(&staged_worker)? != bundle.execution.worker_binary.sha256
@@ -804,7 +949,13 @@ impl ValidatedWork {
         {
             return Err(WorkerError::Invalid("worker_binary_binding"));
         }
+        reporter.complete("control_objects_verified")?;
 
+        reporter.begin("model_tree_verified");
+        let model_dir = validate_model_tree(&root, &bundle, &policy)?;
+        reporter.complete("model_tree_verified")?;
+
+        reporter.begin("observation_verified");
         let observation = wait_for_observation(
             &root,
             &options.observation,
@@ -812,7 +963,10 @@ impl ValidatedWork {
         )
         .await?;
         observation.validate(&bundle.execution.accelerator)?;
+        reporter.complete("observation_verified")?;
+        reporter.begin("gpu_verified");
         validate_local_gpu(&bundle.execution.accelerator).await?;
+        reporter.complete("gpu_verified")?;
 
         let document_objects = bundle
             .artifacts
@@ -824,6 +978,7 @@ impl ValidatedWork {
             root,
             bundle,
             assignment,
+            additional_assignments,
             prepared,
             plan,
             backend_version: policy.inference_engine.version.clone(),
@@ -842,6 +997,25 @@ impl ValidatedWork {
             observation,
         })
     }
+}
+
+fn selected_worker_assignments(
+    bundle: &RunpodEmbeddingBundle,
+    worker_id: &str,
+    assignment_count: u32,
+) -> Result<Vec<RunpodWorkerAssignment>> {
+    let start = bundle
+        .assignments
+        .iter()
+        .position(|item| item.worker_id == worker_id)
+        .ok_or(WorkerError::Invalid("worker_assignment"))?;
+    let count = usize::try_from(assignment_count)
+        .map_err(|_| WorkerError::Invalid("worker_assignment_count"))?;
+    let end = start
+        .checked_add(count)
+        .filter(|end| count != 0 && *end <= bundle.assignments.len())
+        .ok_or(WorkerError::Invalid("worker_assignment_count"))?;
+    Ok(bundle.assignments[start..end].to_vec())
 }
 
 fn validate_execution_binding(
@@ -996,6 +1170,7 @@ async fn execute_assignment<E: WorkerBackend>(
     attempt_number: u32,
     batch_size: usize,
     requests_in_flight: usize,
+    mut reporter: Option<&mut RuntimeReporter>,
 ) -> Result<RunpodWorkerAttemptMarker> {
     let marker_key = SafeRelativePath::new(format!(
         "attempts/{}/completed.json",
@@ -1011,10 +1186,19 @@ async fn execute_assignment<E: WorkerBackend>(
         {
             return Err(WorkerError::Invalid("completion_marker_exists"));
         }
+        if let Some(reporter) = reporter {
+            reporter.complete("assignment_completed")?;
+        }
         return Ok(marker);
     }
     let started_at_ms = unix_ms()?;
+    if let Some(reporter) = reporter.as_deref_mut() {
+        reporter.begin("conformance_passed");
+    }
     backend.conformance(&work.fixture_bytes).await?;
+    if let Some(reporter) = reporter.as_deref_mut() {
+        reporter.complete("conformance_passed")?;
+    }
     let mut outputs = Vec::new();
     // The exact conformance probe is one model request and is part of the
     // attempt even when all durable task outputs can be reused.
@@ -1022,8 +1206,14 @@ async fn execute_assignment<E: WorkerBackend>(
     let mut retries = 0_u64;
     let (query_vector_set, query_requests) =
         if work.assignment.worker_id == work.bundle.query_vector_output.worker_id {
+            if let Some(reporter) = reporter.as_deref_mut() {
+                reporter.begin("query_vectors_published");
+            }
             let (output, requests) =
                 execute_query_vector_set(work, backend.as_ref(), batch_size).await?;
+            if let Some(reporter) = reporter.as_deref_mut() {
+                reporter.complete("query_vectors_published")?;
+            }
             (Some(output), requests)
         } else {
             (None, 0)
@@ -1031,6 +1221,10 @@ async fn execute_assignment<E: WorkerBackend>(
     requests = requests
         .checked_add(query_requests)
         .ok_or(WorkerError::Invalid("request_count"))?;
+    if let Some(reporter) = reporter.as_deref_mut() {
+        reporter.begin("first_task_published");
+    }
+    let mut first_task_reported = false;
     for expected in &work.assignment.tasks {
         let task_index = usize::try_from(expected.task_ordinal)
             .map_err(|_| WorkerError::Invalid("task_ordinal"))?;
@@ -1041,6 +1235,12 @@ async fn execute_assignment<E: WorkerBackend>(
             .ok_or(WorkerError::Invalid("task_ordinal"))?;
         if let Some(output) = reusable_output(work, expected, task_index)? {
             outputs.push(output);
+            if !first_task_reported {
+                if let Some(reporter) = reporter.as_deref_mut() {
+                    reporter.complete("first_task_published")?;
+                }
+                first_task_reported = true;
+            }
             continue;
         }
         let rows = load_task_rows(work, task)?;
@@ -1124,6 +1324,12 @@ async fn execute_assignment<E: WorkerBackend>(
             &receipt_path,
             &report_path,
         )?);
+        if !first_task_reported {
+            if let Some(reporter) = reporter.as_deref_mut() {
+                reporter.complete("first_task_published")?;
+            }
+            first_task_reported = true;
+        }
     }
     let mut marker = RunpodWorkerAttemptMarker {
         schema_version: RUNPOD_WORKER_ATTEMPT_SCHEMA.into(),
@@ -1148,6 +1354,9 @@ async fn execute_assignment<E: WorkerBackend>(
     marker.validate_against(&work.bundle)?;
     let marker_path = resolve_output_artifact(&work.root, &marker_key)?;
     publish_no_overwrite(&marker_path, &canonical_json_bytes(&marker)?)?;
+    if let Some(reporter) = reporter {
+        reporter.complete("assignment_completed")?;
+    }
     Ok(marker)
 }
 
@@ -1605,6 +1814,181 @@ fn verified_tei_object(root: &Path, object: &RunpodTeiArtifactObject) -> Result<
     Ok(path)
 }
 
+async fn hydrate_candidate_model_tree(
+    root: &Path,
+    candidate: &RunpodTeiConformanceCandidate,
+) -> Result<()> {
+    if candidate.model_repository != "Qwen/Qwen3-Embedding-8B"
+        || candidate.model_revision.len() != 40
+        || !candidate
+            .model_revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(WorkerError::Invalid("model_hydration_source"));
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 || attempt.url().scheme() != "https" {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()?;
+    let mut downloads = tokio::task::JoinSet::new();
+    for object in &candidate.model_objects {
+        if verified_tei_object(root, object).is_ok() {
+            continue;
+        }
+        let client = client.clone();
+        let root = root.to_path_buf();
+        let repository = candidate.model_repository.clone();
+        let revision = candidate.model_revision.clone();
+        let object = object.clone();
+        downloads.spawn(async move {
+            hydrate_model_object(&client, &root, &repository, &revision, &object).await?;
+            verified_tei_object(&root, &object)?;
+            Ok::<(), WorkerError>(())
+        });
+        if downloads.len() == 4 {
+            downloads
+                .join_next()
+                .await
+                .ok_or(WorkerError::Invalid("model_hydration_task"))?
+                .map_err(|_| WorkerError::Invalid("model_hydration_task"))??;
+        }
+    }
+    while let Some(result) = downloads.join_next().await {
+        result.map_err(|_| WorkerError::Invalid("model_hydration_task"))??;
+    }
+    Ok(())
+}
+
+async fn hydrate_model_object(
+    client: &reqwest::Client,
+    root: &Path,
+    repository: &str,
+    revision: &str,
+    object: &RunpodTeiArtifactObject,
+) -> Result<()> {
+    let destination = resolve_output_artifact(root, &object.path)?;
+    if destination.exists() {
+        verified_tei_object(root, object)?;
+        return Ok(());
+    }
+    let parent = destination
+        .parent()
+        .ok_or(WorkerError::Invalid("model_hydration_path"))?;
+    fs::create_dir_all(parent)?;
+    let partial = destination.with_extension("hf.partial");
+    if partial.exists() {
+        let metadata = fs::symlink_metadata(&partial)?;
+        if !metadata.file_type().is_file() || metadata.len() > object.bytes {
+            return Err(WorkerError::Invalid("model_hydration_partial"));
+        }
+    } else {
+        File::options()
+            .write(true)
+            .create_new(true)
+            .open(&partial)?
+            .sync_all()?;
+    }
+    let url = hugging_face_model_url(repository, revision, object.path.as_str())?;
+    for _attempt in 0..5 {
+        let offset = fs::metadata(&partial)?.len();
+        if offset == object.bytes {
+            break;
+        }
+        let mut request = client.get(url.clone());
+        if offset != 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+        }
+        let mut response = match request.send().await {
+            Ok(response) => response,
+            Err(_) => continue,
+        };
+        let expected_status = if offset == 0 {
+            reqwest::StatusCode::OK
+        } else {
+            reqwest::StatusCode::PARTIAL_CONTENT
+        };
+        if response.status() != expected_status
+            || response
+                .content_length()
+                .is_some_and(|bytes| bytes != object.bytes - offset)
+            || offset != 0
+                && response
+                    .headers()
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|value| value.to_str().ok())
+                    != Some(
+                        format!("bytes {offset}-{}/{}", object.bytes - 1, object.bytes).as_str(),
+                    )
+        {
+            return Err(WorkerError::Invalid("model_hydration_response"));
+        }
+        let mut file = File::options().append(true).open(&partial)?;
+        let mut downloaded = offset;
+        loop {
+            let chunk = match tokio::time::timeout(Duration::from_secs(60), response.chunk()).await
+            {
+                Ok(Ok(Some(chunk))) => chunk,
+                Ok(Ok(None)) => break,
+                Ok(Err(_)) | Err(_) => break,
+            };
+            downloaded = downloaded
+                .checked_add(chunk.len() as u64)
+                .ok_or(WorkerError::Invalid("model_hydration_bytes"))?;
+            if downloaded > object.bytes {
+                return Err(WorkerError::Invalid("model_hydration_bytes"));
+            }
+            file.write_all(&chunk)?;
+        }
+        file.sync_all()?;
+        if downloaded == object.bytes {
+            break;
+        }
+    }
+    if fs::metadata(&partial)?.len() != object.bytes
+        || file_digest(&partial)?.as_str() != object.sha256.as_str()
+    {
+        return Err(WorkerError::Invalid("model_hydration_digest"));
+    }
+    match fs::hard_link(&partial, &destination) {
+        Ok(()) => fs::remove_file(&partial)?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            verified_tei_object(root, object)?;
+            fs::remove_file(&partial)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn hugging_face_model_url(repository: &str, revision: &str, path: &str) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse("https://huggingface.co/")
+        .map_err(|_| WorkerError::Invalid("model_hydration_url"))?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| WorkerError::Invalid("model_hydration_url"))?;
+        for segment in repository
+            .split('/')
+            .chain(["resolve", revision])
+            .chain(path.split('/'))
+        {
+            if segment.is_empty() || matches!(segment, "." | "..") {
+                return Err(WorkerError::Invalid("model_hydration_url"));
+            }
+            segments.push(segment);
+        }
+    }
+    Ok(url)
+}
+
 fn validate_candidate_model_tree(
     root: &Path,
     candidate: &RunpodTeiConformanceCandidate,
@@ -2031,6 +2415,7 @@ mod tests {
             root: fs::canonicalize(root).unwrap(),
             bundle,
             assignment,
+            additional_assignments: Vec::new(),
             prepared,
             plan,
             backend_version: "1.9.3".into(),
@@ -2068,6 +2453,22 @@ mod tests {
     }
 
     #[test]
+    fn hugging_face_model_url_is_exactly_revision_and_path_bound() {
+        let url = hugging_face_model_url(
+            "Qwen/Qwen3-Embedding-8B",
+            "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af",
+            "1_Pooling/config.json",
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://huggingface.co/Qwen/Qwen3-Embedding-8B/resolve/1d8ad4ca9b3dd8059ad90a75d4983776a23d44af/1_Pooling/config.json"
+        );
+        assert!(hugging_face_model_url("Qwen//model", "revision", "config.json").is_err());
+        assert!(hugging_face_model_url("Qwen/model", "revision", "../config.json").is_err());
+    }
+
+    #[test]
     fn tei_command_is_loopback_and_policy_bound() {
         let args = tei_command_args(
             Path::new("/workspace/model"),
@@ -2080,8 +2481,8 @@ mod tests {
         );
         let dockerfile = include_str!("../Dockerfile");
         assert!(dockerfile.contains(
-            "ghcr.io/huggingface/text-embeddings-inference:1.9.3@sha256:\
-             39a82da7c30641fbc5f7776f512db0878cf3573e1ea8d60a886391fb4bdcba66"
+            "ghcr.io/huggingface/text-embeddings-inference:120-1.9@sha256:\
+             144aaa80ddcb520d49df83f915dc188ddd7cc6b1b3b9684a829c21dd39cbe3c5"
         ));
         assert_eq!(
             args,
@@ -2199,6 +2600,75 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn runtime_reporter_publishes_progress_and_a_sealed_failure() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("bundle.json"), b"exact bundle bytes").unwrap();
+        let options = RunOptions {
+            root: root.path().to_path_buf(),
+            bundle: "bundle.json".into(),
+            worker_id: "worker-0000".into(),
+            assignment_count: 1,
+            attempt_id: "attempt-1".into(),
+            attempt_number: 1,
+            observation: "observation.json".into(),
+            observation_wait_seconds: 1,
+            port: 8080,
+            batch_size: 1,
+            requests_in_flight: 1,
+            health_wait_seconds: 1,
+        };
+        let mut reporter = RuntimeReporter::open(&options).unwrap();
+        reporter.complete("worker_started").unwrap();
+        reporter.begin("model_tree_verified");
+        reporter.fail("model_object_binding").unwrap();
+
+        let progress: RunpodWorkerRuntimeEvent = read_json(
+            &root
+                .path()
+                .join("runtime/worker-0000/attempts/attempt-1/phases/01-worker_started.json"),
+        )
+        .unwrap();
+        progress.validate().unwrap();
+        let failure: RunpodWorkerRuntimeEvent = read_json(
+            &root
+                .path()
+                .join("runtime/worker-0000/attempts/attempt-1/failed.json"),
+        )
+        .unwrap();
+        failure.validate().unwrap();
+        assert_eq!(failure.phase, "model_tree_verified");
+        assert_eq!(
+            failure.failure_code.as_deref(),
+            Some("model_object_binding")
+        );
+        assert_eq!(
+            failure.bundle_file_sha256,
+            digest_bytes(b"exact bundle bytes")
+        );
+    }
+
+    #[test]
+    fn contiguous_assignments_are_bounded_by_the_sealed_bundle_order() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bundle = fake_work(root.path()).bundle;
+        let mut second = bundle.assignments[0].clone();
+        second.worker_id = "worker-0001".into();
+        second.component_sha256 = component_digest(&second).unwrap();
+        bundle.assignments.push(second);
+        let selected = selected_worker_assignments(&bundle, "worker-0000", 2).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|assignment| assignment.worker_id.as_str())
+                .collect::<Vec<_>>(),
+            ["worker-0000", "worker-0001"]
+        );
+        assert!(selected_worker_assignments(&bundle, "worker-0001", 2).is_err());
+        assert!(selected_worker_assignments(&bundle, "worker-0000", 0).is_err());
+        assert!(selected_worker_assignments(&bundle, "unknown", 1).is_err());
+    }
+
     #[tokio::test]
     async fn waits_for_a_root_contained_observation() {
         let root = tempfile::tempdir().unwrap();
@@ -2242,7 +2712,7 @@ mod tests {
     async fn fake_backend_publishes_and_reuses_a_complete_assignment() {
         let root = tempfile::tempdir().unwrap();
         let work = fake_work(root.path());
-        let first = execute_assignment(&work, Arc::new(FakeBackend), "attempt-1", 1, 1, 1)
+        let first = execute_assignment(&work, Arc::new(FakeBackend), "attempt-1", 1, 1, 1, None)
             .await
             .unwrap();
         assert_eq!(first.outputs.len(), 1);
@@ -2253,7 +2723,7 @@ mod tests {
         );
         assert!(root.path().join("query-vectors/manifest.json").is_file());
         assert!(root.path().join("query-vectors/vectors.f32le").is_file());
-        let second = execute_assignment(&work, Arc::new(FakeBackend), "attempt-1", 1, 1, 1)
+        let second = execute_assignment(&work, Arc::new(FakeBackend), "attempt-1", 1, 1, 1, None)
             .await
             .unwrap();
         assert_eq!(first, second);

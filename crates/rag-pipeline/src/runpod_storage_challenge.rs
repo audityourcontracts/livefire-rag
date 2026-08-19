@@ -6,6 +6,20 @@ use super::{CloudObjectRef, PipelineError, Result};
 
 pub const RUNPOD_STORAGE_CHALLENGE_RESPONSE_SCHEMA: &str =
     "livefire.rag.runpod-storage-challenge-response/1";
+pub const RUNPOD_STORAGE_CHALLENGE_FAILURE_SCHEMA: &str =
+    "livefire.rag.runpod-storage-challenge-failure/1";
+pub const RUNPOD_STORAGE_CHALLENGE_FAILURE_CODES: &[&str] = &[
+    "contract_failure",
+    "io_failure",
+    "privilege_drop",
+    "run_root",
+    "storage_challenge_contract",
+    "storage_challenge_wait",
+    "storage_ownership",
+    "storage_probe",
+    "system_time",
+    "worker_user",
+];
 
 /// The exact bytes a storage-only worker publishes after reading the host's
 /// challenge through the mounted network volume.
@@ -57,6 +71,51 @@ impl RunpodStorageChallengeResponse {
     }
 }
 
+/// A content-bound diagnostic written only when the storage challenge cannot
+/// complete. The public failure code is carried in the immutable object key;
+/// this body proves which image and challenge produced the diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunpodStorageChallengeFailure {
+    pub schema_version: String,
+    pub executor_image: String,
+    pub challenge: CloudObjectRef,
+    pub status: String,
+    pub publication: String,
+}
+
+impl RunpodStorageChallengeFailure {
+    pub fn new(executor_image: String, challenge: CloudObjectRef) -> Result<Self> {
+        let failure = Self {
+            schema_version: RUNPOD_STORAGE_CHALLENGE_FAILURE_SCHEMA.into(),
+            executor_image,
+            challenge,
+            status: "failed".into(),
+            publication: "hard_link_no_overwrite".into(),
+        };
+        failure.validate()?;
+        Ok(failure)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let response = RunpodStorageChallengeResponse {
+            schema_version: RUNPOD_STORAGE_CHALLENGE_RESPONSE_SCHEMA.into(),
+            executor_image: self.executor_image.clone(),
+            challenge: self.challenge.clone(),
+            uid: 1000,
+            gid: 1000,
+            publication: self.publication.clone(),
+        };
+        if self.schema_version != RUNPOD_STORAGE_CHALLENGE_FAILURE_SCHEMA
+            || self.status != "failed"
+            || response.validate().is_err()
+        {
+            return Err(PipelineError::Invalid("storage challenge failure"));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +149,31 @@ mod tests {
             "https://livefire.dev/rag/runpod-storage-challenge-response.v1.schema.json"
         );
         assert_eq!(schema["additionalProperties"], false);
+        let failure_schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../schema/runpod-storage-challenge-failure.v1.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            failure_schema["$id"],
+            "https://livefire.dev/rag/runpod-storage-challenge-failure.v1.schema.json"
+        );
+        assert_eq!(failure_schema["additionalProperties"], false);
+    }
+
+    #[test]
+    fn failure_binds_the_same_exact_image_and_challenge() {
+        let failure = RunpodStorageChallengeFailure::new(
+            format!("ghcr.io/example/worker@sha256:{}", "a".repeat(64)),
+            CloudObjectRef {
+                key: SafeRelativePath::new("runtime/storage-challenge/challenge.bin").unwrap(),
+                bytes: 32,
+                sha256: Digest::new("b".repeat(64)).unwrap(),
+            },
+        )
+        .unwrap();
+        failure.validate().unwrap();
+        let mut changed = failure;
+        changed.status = "completed".into();
+        assert!(changed.validate().is_err());
     }
 }
